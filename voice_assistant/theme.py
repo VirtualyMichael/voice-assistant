@@ -30,5 +30,10 @@ QProgressBar {{ background: #232733; border: none; border-radius: 2px; }}
 QProgressBar::chunk {{ background: #34d399; border-radius: 2px; }}
 QSlider::groove:horizontal {{ background: #2a2f3c; height: 4px; border-radius: 2px; }}
 QSlider::handle:horizontal {{ background: {ACCENT}; width: 14px; margin: -6px 0; border-radius: 7px; }}
+QTabWidget::pane {{ border: none; }}
+QTabBar::tab {{ background: transparent; color: {MUTED}; padding: 6px 8px; border-bottom: 2px solid transparent; }}
+QTabBar::tab:selected {{ color: {TEXT}; border-bottom: 2px solid {ACCENT}; }}
+QTabBar::tab:hover {{ color: {TEXT}; }}
+QListWidget {{ background: {BG}; border: 1px solid #2a2f3c; border-radius: 8px; }}
 QToolTip {{ background: {PANEL}; color: {TEXT}; border: 1px solid #2a2f3c; }}
 """

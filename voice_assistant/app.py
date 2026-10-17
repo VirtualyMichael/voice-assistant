@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QInputDialog, QListWidget, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QInputDialog, QListWidget, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
@@ -64,6 +64,35 @@ class QtEvents(SessionEvents):
     def assistant_delta(self, t): self.b.delta.emit(t)
     def assistant_done(self, m: TurnMetrics): self.b.done.emit(m.describe())
     def error(self, msg): self.b.error.emit(msg)
+
+
+class TabbedForm:
+    """Presents the old single-form API (addRow / insertRow) but spreads rows over scrollable tabs."""
+
+    def __init__(self, tabs: QTabWidget, names: list[str]):
+        self.forms: dict[str, QFormLayout] = {}
+        for n in names:
+            page = QWidget()
+            form = QFormLayout(page)
+            form.setContentsMargins(10, 12, 10, 10)
+            form.setVerticalSpacing(10)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setWidget(page)
+            tabs.addTab(scroll, n)
+            self.forms[n] = form
+        self.current = names[0]
+
+    def use(self, name: str) -> "TabbedForm":
+        self.current = name
+        return self
+
+    def addRow(self, *args) -> None:
+        self.forms[self.current].addRow(*args)
+
+    def insertRow(self, index: int, *args) -> None:
+        self.forms[self.current].insertRow(index, *args)
 
 
 class Chat(QScrollArea):
@@ -226,9 +255,14 @@ class MainWindow(QMainWindow):
     def _build_settings(self) -> QFrame:
         cfg = self.cfg
         panel = QFrame(objectName="panel")
-        form = QFormLayout(panel)
+        panel.setMaximumHeight(360)
+        tabs = QTabWidget()
+        tabs.setUsesScrollButtons(False)
+        QVBoxLayout(panel).addWidget(tabs)
+        panel.layout().setContentsMargins(8, 6, 8, 6)
+        form = TabbedForm(tabs, ["Voice", "Audio", "VR", "AI", "Apps", "General"])
         self._form = form
-        form.setContentsMargins(14, 12, 14, 12)
+        form.use("Audio")
         self.dev = {}
         for key, label, kind, optional in (
             ("input_device", "Microphone", "input", False),
@@ -265,6 +299,7 @@ class MainWindow(QMainWindow):
         acc.setChecked(cfg.accurate_asr)
         acc.setToolTip("Needs the Parakeet model (setup guide > download). Restart to apply.")
         acc.toggled.connect(lambda v: self._set_field("accurate_asr", v))
+        form.use("Voice")
         form.addRow("Keep listening after a reply", follow)
         form.addRow("Wait for me to start speaking", wait)
         form.addRow("End of sentence after silence", endsil)
@@ -282,6 +317,7 @@ class MainWindow(QMainWindow):
         form.addRow("Interrupt", mode)
         opacity = QSlider(Qt.Horizontal, minimum=40, maximum=100, value=int(cfg.opacity * 100))
         opacity.valueChanged.connect(self._set_opacity)
+        form.use("General")
         form.addRow("Opacity", opacity)
         self.prov = QComboBox()
         for pid, label in PROVIDERS.items():
@@ -295,6 +331,7 @@ class MainWindow(QMainWindow):
         self.prov.currentIndexChanged.connect(lambda _i: self._set_provider(self.prov.currentData()))
         self.model_edit.editingFinished.connect(self._set_model_name)
         key_btn.clicked.connect(self._ask_key)
+        form.use("AI")
         form.addRow("AI model", self.prov)
         form.addRow("Model name", self.model_edit)
         form.addRow(key_btn)
@@ -316,6 +353,7 @@ class MainWindow(QMainWindow):
         wake.setChecked(cfg.wake_word_enabled)
         wake.toggled.connect(lambda v: self._set_field("wake_word_enabled", v))
         phrase.editingFinished.connect(lambda: self._set_field("wake_phrase", phrase.text().strip() or "hey assistant"))
+        form.use("Voice")
         form.addRow("Wake word", wake)
         form.addRow("Wake phrase", phrase)
         reserve = QDoubleSpinBox(minimum=0, maximum=64, singleStep=0.5, value=cfg.vram_reserve_gb, suffix=" GB")
@@ -330,12 +368,14 @@ class MainWindow(QMainWindow):
 
         reserve.valueChanged.connect(lambda v: (self._set_field("vram_reserve_gb", v), show_profile()))
         show_profile()
+        form.use("AI")
         form.addRow("VRAM reserve", reserve)
         form.addRow(info)
         fwd = QCheckBox("Send my mic to the 2nd output (game voice)")
         fwd.setToolTip("Replaces Windows 'Listen to this device'. Follows the VR mic when VR auto-switch is active.")
         fwd.setChecked(cfg.mic_forward)
         fwd.toggled.connect(self._set_forward)
+        form.use("VR")
         form.addRow(fwd)
         vr_on = QCheckBox("Switch devices while SteamVR is running")
         vr_on.setChecked(cfg.vr_autoswitch)
@@ -367,9 +407,9 @@ class MainWindow(QMainWindow):
         self.vr_box.setVisible(cfg.vr_autoswitch)
         form.addRow(self.vr_box)
         vr_on.toggled.connect(self._set_vr_autoswitch)
-        form.addRow(QLabel("Apps the assistant can open:", objectName="small"))
+        form.use("Apps")
         self.apps_count = QLabel("Scanning installed apps\u2026", objectName="small")
-        ask = QCheckBox("Ask before opening an app")
+        ask = self.ask_apps = QCheckBox("Ask before opening an app")
         ask.setChecked(cfg.confirm_launch)
         ask.toggled.connect(lambda v: self._set_field("confirm_launch", v))
         self.apps_list = QListWidget()
@@ -383,23 +423,33 @@ class MainWindow(QMainWindow):
         app_row = QHBoxLayout()
         for w in (add_app, rem_app, rescan):
             app_row.addWidget(w)
-        form.addRow(self.apps_count)
         form.addRow(ask)
+        form.addRow(self.apps_count)
         form.addRow(self.apps_list)
         form.addRow(app_row)
-        test, folder = QPushButton("Test speaker"), QPushButton("Add approved folder…")
-        cfg_btn = QPushButton("Open settings file")
-        setup_btn = QPushButton("Run setup again")
-        setup_btn.clicked.connect(self._rerun_setup)
-        cfg_btn.clicked.connect(self._open_config)
+        test = QPushButton("Test speaker")
         test.clicked.connect(self._test_speaker)
-        folder.clicked.connect(self._add_folder)
-        row = QHBoxLayout()
-        row.addWidget(test)
-        row.addWidget(folder)
-        row.addWidget(cfg_btn)
-        row.addWidget(setup_btn)
-        form.addRow(row)
+        form.use("Voice")
+        form.insertRow(0, test)
+        form.use("Apps")
+        form.addRow(QLabel("Folders the assistant may read and write:", objectName="small"))
+        self.folders_list = QListWidget()
+        self.folders_list.setMaximumHeight(80)
+        self._fill_folders()
+        add_f, rem_f = QPushButton("Add folder\u2026"), QPushButton("Remove")
+        add_f.clicked.connect(self._add_folder)
+        rem_f.clicked.connect(self._remove_folder)
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(add_f)
+        folder_row.addWidget(rem_f)
+        form.addRow(self.folders_list)
+        form.addRow(folder_row)
+        cfg_btn, setup_btn = QPushButton("Open settings file"), QPushButton("Run setup again")
+        cfg_btn.clicked.connect(self._open_config)
+        setup_btn.clicked.connect(self._rerun_setup)
+        form.use("General")
+        form.addRow(setup_btn)
+        form.addRow(cfg_btn)
         return panel
 
     # ---- wiring ----------------------------------------------------------------
@@ -474,6 +524,7 @@ class MainWindow(QMainWindow):
         box.setCurrentIndex(max(box.findData(cur.id), 0))
         box.setToolTip("Install the Kokoro model (fetch-models kokoro) for more natural voices" if self.synth.engine == "piper" else "")
         box.currentIndexChanged.connect(lambda _i: self._set_voice(box.currentData()))
+        self._form.use("Voice")
         self._form.insertRow(0, "Voice", box)
 
     def _set_voice(self, voice_id: str) -> None:
@@ -505,7 +556,17 @@ class MainWindow(QMainWindow):
         self.latency.setText(desc)
 
     def _on_confirm(self, prompt: str, holder: _Holder) -> None:
-        holder.result = QMessageBox.question(self, "Confirm action", prompt) == QMessageBox.Yes
+        box = QMessageBox(QMessageBox.Question, "Confirm action", prompt, QMessageBox.Yes | QMessageBox.No, self)
+        is_app = prompt.startswith("Open ") and "\n" not in prompt  # app launches only (links carry the URL on a second line)
+        never = QCheckBox("Don't ask again when opening apps") if is_app else None
+        if never:
+            box.setCheckBox(never)
+        holder.result = box.exec() == QMessageBox.Yes
+        if never and never.isChecked() and holder.result:
+            self.cfg.confirm_launch = False
+            save_config(self.cfg)
+            if hasattr(self, "ask_apps"):
+                self.ask_apps.setChecked(False)
         holder.event.set()
 
     def _send_text(self) -> None:
@@ -695,6 +756,19 @@ class MainWindow(QMainWindow):
         save_config(self.cfg)
         self.session.stop()  # re-evaluates the resting state (open mic vs idle)
 
+    def _fill_folders(self) -> None:
+        self.folders_list.clear()
+        for f in self.cfg.approved_folders:
+            self.folders_list.addItem(f)
+
+    def _remove_folder(self) -> None:
+        row = self.folders_list.currentRow()
+        if row >= 0:
+            folder = self.cfg.approved_folders.pop(row)
+            self.policy.remove(folder)
+            save_config(self.cfg)
+            self._fill_folders()
+
     def _add_folder(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Approve a folder for file tasks")
         if d:
@@ -702,6 +776,7 @@ class MainWindow(QMainWindow):
             if d not in self.cfg.approved_folders:
                 self.cfg.approved_folders.append(d)
             save_config(self.cfg)
+            self._fill_folders()
             self.chat.add("bubbleNote", f"Approved folder: {d}")
 
     def _set_device(self, key: str, value) -> None:

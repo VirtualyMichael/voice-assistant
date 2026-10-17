@@ -58,6 +58,10 @@ Choices are saved by device name. A level meter shows what the mic hears, and "T
 `listen_mode`: `push` (hotkey/Talk) or `always` (open mic). In `voice` interrupt mode, words that match what the
 assistant is currently saying are treated as echo, but headphones or a cable output are still best.
 
+## Settings tabs
+
+Settings is split into **Voice** (voice picker, listening timings, wake word, interrupt mode), **Audio** (microphone and speaker devices), **VR** (game voice, mic forwarding, SteamVR switching), **AI** (model provider, key, memory, web/shell abilities, VRAM guidance), **Apps** (app list, folders the assistant may use) and **General** (opacity, setup guide, settings file).
+
 ## Window, wake word, hardware profile
 
 - Dark chat window; **Pin on top** keeps it above games and other apps (remembered), plus an opacity slider in Settings.
@@ -157,6 +161,8 @@ as untrusted data. Tested against a real stdio MCP server (discovery, confirm/re
 failing server).
 
 ## Opening apps
+
+Apps open after a confirmation by default. Turn it off in Settings > Apps (*Ask before opening an app*), or tick *Don't ask again when opening apps* in the confirmation box itself. Links, clipboard access, file writes and shell commands keep asking regardless.
 
 The assistant reads the Start-menu app list at start-up (`Get-StartApps`: desktop apps, Store apps and browser-installed web
 apps such as YouTube Music), so "open YouTube Music" works without configuration. Matching ignores the punctuation speech recognition adds ("Open YouTube Music."), filler words ("the Chrome browser please"), extra or missing words ("creator companion"), split or joined words and small mis-hearings ("calculater"); uninstallers and help entries never win. It tolerates spoken names ("steam vr"

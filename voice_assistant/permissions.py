@@ -23,6 +23,10 @@ class FolderPolicy:
         if root not in self._roots:
             self._roots.append(root)
 
+    def remove(self, folder: str | Path) -> None:
+        root = Path(folder).expanduser().resolve()
+        self._roots = [r for r in self._roots if r != root]
+
     def resolve(self, path: str) -> Path:
         """Resolve `path` (relative paths are taken against the first approved folder)."""
         if not self._roots:
