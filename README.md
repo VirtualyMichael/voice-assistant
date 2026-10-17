@@ -183,6 +183,8 @@ is feeding a mic into the cable you forward into, it says so and names the mic; 
 Recording tab (mic > Properties > Listen > untick). The tab also shows what is routed right now, and only the active
 profile's mic and speaker are ever open: VR = headset mic and headset speakers, desktop = desktop mic and speakers.
 
+Confirmed by the user: after unticking Listen only one copy of their voice is heard.
+
 Also hardened: restarts of the microphone pipeline are serialised (before, overlapping restarts could leave a second
 copy running; with 12 simultaneous restarts the old code leaked 24 streams in a test and the new code keeps exactly 2),
 VR switches that arrive in quick succession are collapsed so only the newest is applied, the same mic is never opened
