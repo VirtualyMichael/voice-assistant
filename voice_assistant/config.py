@@ -21,6 +21,7 @@ def default_models_dir() -> Path:
 @dataclass
 class Config:
     hotkey: str = "ctrl+alt+space"
+    setup_done: bool = False  # the first-run wizard has been completed
     # voice: speaking or hotkey interrupts | hotkey: only hotkey | ignore: reply always finishes
     interrupt_mode: str = "hotkey"
     barge_in_min_chars: int = 8
@@ -75,6 +76,8 @@ class Config:
     )
     approved_folders: list[str] = field(default_factory=list)
     max_tool_rounds: int = 8
+    remember_conversation: bool = True  # saved on this PC only (conversation.json); "New chat" or untick to erase
+    history_messages: int = 40  # how many recent messages are kept and sent to the model
     allow_web: bool = False  # web_search / fetch_page send queries and URLs to the internet
     allow_shell: bool = False  # run_powershell (still asks before every command)
     app_shortcuts: dict = field(default_factory=lambda: {

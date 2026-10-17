@@ -6,3 +6,6 @@ models/
 .claude/
 .pytest_cache/
 CLAUDE.md
+dist/
+build/
+*.spec.bak

@@ -1,4 +1,4 @@
-"""python -m voice_assistant [run|doctor|setup|fetch-models [kokoro] [--yes]]"""
+"""python -m voice_assistant [run|--setup|--selftest [file]|doctor|setup|fetch-models [kokoro] [--yes]]"""
 from __future__ import annotations
 
 import sys
@@ -76,6 +76,12 @@ def fetch_models(args: list[str]) -> int:
 
 def main(argv: list[str]) -> int:
     cmd = argv[0] if argv else "run"
+    if cmd == "--selftest":
+        from pathlib import Path
+
+        from .selftest import run as selftest
+
+        return selftest(Path(argv[1]) if len(argv) > 1 else None)
     if cmd == "doctor":
         return doctor()
     if cmd == "setup":
@@ -84,7 +90,7 @@ def main(argv: list[str]) -> int:
         return fetch_models(argv[1:])
     from .app import main as run
 
-    return run()
+    return run(argv if argv and argv[0].startswith("--") else [])
 
 
 if __name__ == "__main__":

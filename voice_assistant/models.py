@@ -23,14 +23,15 @@ class ModelSpec:
     url: str
     note: str
     core: bool = True  # fetched by default; optional models only when named
+    size_mb: int = 0
 
 
 # Check each model's license before distributing a packaged build.
 MODEL_SPECS = [
-    ModelSpec("asr", "streaming zipformer en 20M", f"{REL}/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2", "speech recognition"),
-    ModelSpec("tts", "piper en_US amy low", f"{REL}/tts-models/vits-piper-en_US-amy-low.tar.bz2", "text to speech"),
-    ModelSpec("kws", "zipformer gigaspeech 3.3M", f"{REL}/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2", "wake word (optional; needs keywords.txt)"),
-    ModelSpec("kokoro", "Kokoro English v0.19 (11 natural voices)", f"{REL}/tts-models/kokoro-en-v0_19.tar.bz2", "natural-sounding speech, ~305 MB", core=False),
+    ModelSpec("asr", "streaming zipformer en 20M", f"{REL}/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2", "speech recognition", size_mb=122),
+    ModelSpec("tts", "piper en_US amy low", f"{REL}/tts-models/vits-piper-en_US-amy-low.tar.bz2", "basic voice (fallback)", size_mb=64),
+    ModelSpec("kws", "zipformer gigaspeech 3.3M", f"{REL}/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2", "wake word (optional)", size_mb=17, core=False),
+    ModelSpec("kokoro", "Kokoro English v0.19 (11 natural voices)", f"{REL}/tts-models/kokoro-en-v0_19.tar.bz2", "natural-sounding voices (recommended)", size_mb=305, core=False),
 ]
 
 
@@ -202,12 +203,13 @@ def load_synth(models_dir: Path, speed: float, threads: int, voice: str) -> Sher
     return SherpaSynth(models_dir / slot, speed, threads, voice)
 
 
-def fetch_model(spec: ModelSpec, models_dir: Path) -> Path:
+def fetch_model(spec: ModelSpec, models_dir: Path, progress=None) -> Path:
     """Download and extract one model into models_dir/<slot>. Caller must have the user's consent."""
     dest = models_dir / spec.slot
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "m.tar.bz2"
-        urllib.request.urlretrieve(spec.url, archive)  # noqa: S310 - fixed https URLs above
+        hook = (lambda blocks, size, total: progress(min(blocks * size / total, 1.0)) if total > 0 else None) if progress else None
+        urllib.request.urlretrieve(spec.url, archive, hook)  # noqa: S310 - fixed https URLs above
         out = Path(tmp) / "x"
         with tarfile.open(archive) as tf:
             tf.extractall(out, filter="data")

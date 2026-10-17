@@ -21,6 +21,15 @@ class Agent:
         self.llm, self.tools, self.max_rounds, self.max_messages = llm, tools, max_rounds, max_messages
         self.on_tool = on_tool or (lambda _msg: None)
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        self.on_update: Callable[[list[dict]], None] | None = None  # called after every turn (used to save the chat)
+
+    def load_history(self, history: list[dict]) -> None:
+        """Continue an earlier conversation: user/assistant messages after the system prompt."""
+        self.messages = self.messages[:1] + [dict(m) for m in history]
+        self._trim()
+
+    def reset(self) -> None:
+        self.messages = self.messages[:1]
 
     def respond(self, user_text: str, cancel: threading.Event) -> Iterator[str]:
         self.messages.append({"role": "user", "content": user_text})
@@ -65,6 +74,11 @@ class Agent:
         finally:
             if pending:
                 self.messages.append({"role": "assistant", "content": "".join(pending) + " [interrupted]"})
+            if self.on_update:
+                try:
+                    self.on_update(self.messages)
+                except Exception:  # saving must never break a reply
+                    pass
 
     def _trim(self) -> None:
         """Drop the oldest whole exchanges, never splitting a tool call from its results."""

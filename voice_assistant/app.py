@@ -19,12 +19,14 @@ from .audio_io import AudioIO, list_devices
 from .hardware import detect_gpus, recommend
 from .config import INTERRUPT_MODES, LISTEN_MODES, Config, config_dir, load_config, save_config
 from .mcp_client import McpHub
+from .memory import ConversationStore
 from .metrics import TurnMetrics
 from .models import ModelsMissing, SherpaRecognizer, SherpaWakeWord, load_synth
 from .permissions import FolderPolicy
 from .providers import PROVIDERS, make_llm, model_for, save_key, set_model, get_key
 from .session import Session, SessionEvents
 from .speaker import Speaker
+from .setup_wizard import run_wizard
 from .theme import STATE_COLORS, STYLE
 from .agent_tools import Timers, build_agent_tools, capabilities_prompt
 from .tools import build_file_tools
@@ -99,6 +101,17 @@ class Chat(QScrollArea):
         self._ai = None if kind != "bubbleAI" else label
         return label
 
+    def clear(self) -> None:
+        while self.col.count() > 1:  # keep the trailing stretch
+            item = self.col.takeAt(0)
+            if item.layout():
+                while item.layout().count():
+                    w = item.layout().takeAt(0).widget()
+                    if w:
+                        w.deleteLater()
+        self._labels.clear()
+        self._ai = None
+
     def stream(self, delta: str) -> None:
         if self._ai is None:
             self.add("bubbleAI", "")
@@ -129,12 +142,15 @@ class MainWindow(QMainWindow):
         self.pin = QPushButton("Pin on top", objectName="icon", checkable=True)
         self.pin.setToolTip("Keep this window above other apps")
         self.mute = QPushButton("Mute game mic", objectName="icon", checkable=True)
+        new_chat = QPushButton("New chat", objectName="icon")
+        new_chat.setToolTip("Forget the conversation so far and start fresh")
         self.mute.setVisible(cfg.mic_forward)
         gear = QPushButton("Settings", objectName="icon", checkable=True)
         head = QHBoxLayout()
         head.addWidget(self.status)
         head.addStretch(1)
         head.addWidget(self.mute)
+        head.addWidget(new_chat)
         head.addWidget(self.pin)
         head.addWidget(gear)
 
@@ -179,6 +195,7 @@ class MainWindow(QMainWindow):
         stop.clicked.connect(self.session.stop)
         gear.toggled.connect(self.settings.setVisible)
         self.pin.toggled.connect(self._set_pin)
+        new_chat.clicked.connect(self._new_chat)
         self.mute.toggled.connect(lambda m: setattr(self.audio, "forward_muted", m))
         self.entry.returnPressed.connect(self._send_text)
         self.timer = QTimer(self, interval=100)
@@ -196,6 +213,7 @@ class MainWindow(QMainWindow):
         self.setWindowOpacity(cfg.opacity)
         if cfg.always_on_top:
             self.pin.setChecked(True)
+        self._restore_chat()
         for w in self.warnings:
             self.chat.add("bubbleNote", w)
         if not cfg.approved_folders:
@@ -260,6 +278,10 @@ class MainWindow(QMainWindow):
         form.addRow("Model name", self.model_edit)
         form.addRow(key_btn)
         form.addRow(self.prov_status)
+        remember = QCheckBox("Remember our conversation between sessions")
+        remember.setChecked(cfg.remember_conversation)
+        remember.toggled.connect(self._set_remember)
+        form.addRow(remember)
         web = QCheckBox("Let the agent search/read the web")
         web.setChecked(cfg.allow_web)
         web.toggled.connect(lambda v: self._set_field("allow_web", v))
@@ -326,6 +348,8 @@ class MainWindow(QMainWindow):
         vr_on.toggled.connect(self._set_vr_autoswitch)
         test, folder = QPushButton("Test speaker"), QPushButton("Add approved folder…")
         cfg_btn = QPushButton("Open settings file")
+        setup_btn = QPushButton("Run setup again")
+        setup_btn.clicked.connect(self._rerun_setup)
         cfg_btn.clicked.connect(self._open_config)
         test.clicked.connect(self._test_speaker)
         folder.clicked.connect(self._add_folder)
@@ -333,6 +357,7 @@ class MainWindow(QMainWindow):
         row.addWidget(test)
         row.addWidget(folder)
         row.addWidget(cfg_btn)
+        row.addWidget(setup_btn)
         form.addRow(row)
         return panel
 
@@ -362,8 +387,13 @@ class MainWindow(QMainWindow):
         registry.add(build_agent_tools(cfg, self.policy, self._confirm, lambda t: self.session.announce(t), self.timers))
         agent = Agent(
             llm, cfg.system_prompt + capabilities_prompt(cfg, registry.names()), registry, cfg.max_tool_rounds,
+            max_messages=cfg.history_messages,
             on_tool=lambda m: self.bridge.tool.emit(m),
         )
+        self.store = ConversationStore(max_messages=cfg.history_messages)
+        self.history = self.store.load() if cfg.remember_conversation else []
+        agent.load_history(self.history)
+        agent.on_update = self.store.save if cfg.remember_conversation else None
         self.audio = AudioIO(cfg, lambda x: self.session.feed_audio(x), lambda m: self.bridge.error.emit(m))
         self.synth = parts["synth"]
         speaker = Speaker(parts["synth"], self.audio.player) if parts["synth"] else None
@@ -550,9 +580,38 @@ class MainWindow(QMainWindow):
                 return
             self._rebuild_llm()
 
+    def _rerun_setup(self) -> None:
+        if run_wizard(self.cfg, self):
+            QMessageBox.information(self, "Setup", "Saved. Restart the assistant to apply the changes.")
+
     def _open_config(self) -> None:
         save_config(self.cfg)
         os.startfile(config_dir() / "config.json")  # noqa: S606
+
+    # ---- conversation memory ---------------------------------------------------------
+    def _restore_chat(self) -> None:
+        if not self.history:
+            return
+        self.chat.add("bubbleNote", f"Continuing our last conversation ({len(self.history)} messages). Press New chat to start over.")
+        for m in self.history:
+            self.chat.add("bubbleUser" if m["role"] == "user" else "bubbleAI", m["content"])
+        self.chat.end_stream()
+
+    def _new_chat(self) -> None:
+        self.session.stop()
+        self.session.agent.reset()
+        self.store.clear()
+        self.chat.clear()
+        self.chat.add("bubbleNote", "New conversation started.")
+
+    def _set_remember(self, on: bool) -> None:
+        self._set_field("remember_conversation", on)
+        if on:
+            self.session.agent.on_update = self.store.save
+            self.store.save(self.session.agent.messages)
+        else:
+            self.session.agent.on_update = None
+            self.store.clear()  # turning it off erases what was saved
 
     def _set_mode(self, mode: str) -> None:
         self.cfg.interrupt_mode = mode
@@ -602,9 +661,24 @@ class MainWindow(QMainWindow):
         super().closeEvent(e)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    from PySide6.QtCore import QLockFile
+
+    argv = argv if argv is not None else sys.argv[1:]
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLE)
+    config_dir().mkdir(parents=True, exist_ok=True)
+    lock = QLockFile(str(config_dir() / "app.lock"))
+    if not lock.tryLock(200):  # a second copy would fight over the mic and hotkey
+        QMessageBox.information(None, "Voice Assistant", "Voice Assistant is already running.")
+        return 0
+    cfg = load_config()
+    if not cfg.setup_done or "--setup" in argv:
+        if not run_wizard(cfg) and not cfg.setup_done:
+            cfg.setup_done = True  # user skipped it: do not nag on every start (Settings > Run setup again)
+            save_config(cfg)
     win = MainWindow(load_config())
     win.show()
-    return app.exec()
+    code = app.exec()
+    lock.unlock()
+    return code

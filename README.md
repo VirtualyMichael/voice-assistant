@@ -1,5 +1,21 @@
 # Voice Assistant — milestone 1 prototype
 
+## Install (Windows 10/11)
+
+1. Download `VoiceAssistant-Setup-<version>.exe` from the repository's Releases page and run it. No admin rights needed.
+   The installer is not code-signed, so Windows SmartScreen shows "Unknown publisher": choose *More info > Run anyway*.
+2. On first start a setup guide checks your mic, speakers, GPU, a local AI server (LM Studio etc.) and VB-Cable, downloads
+   the speech models only after you tick them (recognizer 122 MB, natural voices 305 MB, optional basic voice 64 MB and
+   wake word 17 MB), and lets you choose local, Claude or OpenAI. It can be rerun from Settings or the Start menu.
+3. Your conversation is remembered between sessions (stored on this PC only, `%APPDATA%\\VoiceAssistant\\conversation.json`;
+   only your messages and the assistant's replies, never tool output). *New chat* erases it.
+
+Build the installer yourself: `powershell -File packaging\\build.ps1 -Version 0.1.0` (needs PyInstaller and Inno Setup 6).
+The build is gated on `VoiceAssistant.exe --selftest`, which checks that every dependency is inside the package.
+Verified here: the packaged app starts with real models, a fresh profile shows the wizard, a second copy is refused, and the
+installer installs, passes the self-test from the installed copy, then uninstalls leaving your data. Not verified: a clean
+PC without Python or Visual C++ runtimes (the package bundles what it found on this machine), or a signed build.
+
 Windows 11 voice assistant: hotkey (or optional wake word) → local streaming speech recognition →
 streamed text in the window → reply spoken sentence by sentence. Local LM Studio endpoint by default;
 any OpenAI-compatible cloud endpoint works with your own key. Audio and transcripts stay in memory only.
