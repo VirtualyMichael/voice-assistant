@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -23,6 +24,7 @@ from .memory import ConversationStore
 from .metrics import TurnMetrics
 from .models import AccurateRecognizer, ModelsMissing, SherpaRecognizer, SherpaWakeWord, load_synth
 from .permissions import FolderPolicy
+from .routing import double_voice_warnings, listen_routes
 from .providers import PROVIDERS, make_llm, model_for, save_key, set_model, get_key
 from .session import Session, SessionEvents
 from .speaker import Speaker
@@ -47,6 +49,7 @@ class Bridge(QObject):
     vr_note = Signal(str)
     note = Signal(str)
     apps_count = Signal(int)
+    route = Signal(str, bool)
 
 
 class _Holder:
@@ -160,6 +163,9 @@ class Chat(QScrollArea):
             lbl.setMaximumWidth(self._max_width())
 
 
+VR_SETTLE_S = 6.0  # the headset's audio devices can appear a few seconds after SteamVR starts
+
+
 class MainWindow(QMainWindow):
     def __init__(self, cfg: Config):
         super().__init__()
@@ -167,6 +173,9 @@ class MainWindow(QMainWindow):
         self.resize(*(cfg.window_size or [440, 700]))
         self.cfg, self.bridge, self.policy = cfg, Bridge(), FolderPolicy(cfg.approved_folders)
         self.warnings: list[str] = []
+        self._vr_gen = 0
+        self._vr_apply_lock = threading.Lock()
+        self._warned_routes: set[str] = set()
 
         self.status = QLabel()
         self.meter = QProgressBar(textVisible=False, maximumHeight=4)
@@ -237,6 +246,7 @@ class MainWindow(QMainWindow):
         b.vr_note.connect(self._on_vr_note)
         b.note.connect(lambda m: self.chat.add("bubbleNote", m))
         b.apps_count.connect(self._on_apps_count)
+        b.route.connect(self._on_route)
         b.tool.connect(lambda m: self.chat.add("bubbleNote", "\u2699 " + m[:140]))
         self.vr_watcher = VrWatcher(b.vr.emit, cfg.vr_processes, cfg.vr_poll_s)
         if cfg.vr_autoswitch:
@@ -246,6 +256,7 @@ class MainWindow(QMainWindow):
         if cfg.always_on_top:
             self.pin.setChecked(True)
         self._restore_chat()
+        threading.Thread(target=self._check_routes, daemon=True).start()
         for w in self.warnings:
             self.chat.add("bubbleNote", w)
         if not cfg.approved_folders:
@@ -377,6 +388,16 @@ class MainWindow(QMainWindow):
         fwd.toggled.connect(self._set_forward)
         form.use("VR")
         form.addRow(fwd)
+        self.route_status = QLabel("", objectName="small")
+        self.route_status.setWordWrap(True)
+        sound_btn, recheck = QPushButton("Open Windows sound settings"), QPushButton("Check for double voice")
+        sound_btn.clicked.connect(self._open_sound_settings)
+        recheck.clicked.connect(lambda: threading.Thread(target=self._check_routes, daemon=True).start())
+        route_row = QHBoxLayout()
+        route_row.addWidget(sound_btn)
+        route_row.addWidget(recheck)
+        form.addRow(self.route_status)
+        form.addRow(route_row)
         vr_on = QCheckBox("Switch devices while SteamVR is running")
         vr_on.setChecked(cfg.vr_autoswitch)
         form.addRow(vr_on)
@@ -595,6 +616,7 @@ class MainWindow(QMainWindow):
             self.mute.setChecked(False)
         if self.session.recognizer:
             self.audio.start_input()  # reopens at the right sample rate
+        threading.Thread(target=self._check_routes, daemon=True).start()
         if on and not self.cfg.output_device_2:
             self._on_error("Pick a 2nd output (e.g. CABLE Input) for mic forwarding to work.")
 
@@ -613,24 +635,49 @@ class MainWindow(QMainWindow):
 
     def _on_vr(self, active: bool) -> None:
         self.audio.vr_active = active
-        threading.Thread(target=self._apply_vr, args=(active,), daemon=True).start()
+        self._vr_gen += 1
+        threading.Thread(target=self._apply_vr, args=(active, self._vr_gen), daemon=True).start()
 
-    def _apply_vr(self, active: bool) -> None:
-        """Runs off the UI thread: re-reads the device list, restarts the mic, then checks again once the headset settles."""
+    def _apply_vr(self, active: bool, gen: int) -> None:
+        """Runs off the UI thread. Only the newest switch is applied, and applies never overlap, so flapping VR
+        states cannot leave two microphone/forwarding pipelines open."""
         for attempt in (0, 1):
             if attempt:
-                time.sleep(6)  # the headset's audio devices can appear a few seconds after SteamVR starts
-                if self.audio.vr_active != active:
-                    return
-            self.audio.refresh_devices()
-            if self.session.recognizer and not self.audio.start_input():
-                self.bridge.error.emit("Microphone unavailable with that device.")
-            if not attempt:
-                mic = self.cfg.device("input_device", active) or "default"
-                spk = self.cfg.device("output_device", active) or "default"
-                self.bridge.vr_note.emit(f"{'1' if active else '0'}|{mic}|{spk}")
-                if self.cfg.vr_announce:
-                    self.session.announce("VR mode on." if active else "Desktop mode.")
+                time.sleep(VR_SETTLE_S)
+            with self._vr_apply_lock:
+                if gen != self._vr_gen:
+                    return  # a newer switch has taken over
+                self.audio.refresh_devices()
+                if self.session.recognizer and not self.audio.start_input():
+                    self.bridge.error.emit("Microphone unavailable with that device.")
+                if not attempt:
+                    mic = self.cfg.device("input_device", active) or "default"
+                    spk = self.cfg.device("output_device", active) or "default"
+                    self.bridge.vr_note.emit(f"{'1' if active else '0'}|{mic}|{spk}")
+                    if self.cfg.vr_announce:
+                        self.session.announce("VR mode on." if active else "Desktop mode.")
+        self._check_routes()
+
+    # ---- routing checks ---------------------------------------------------------------
+    def _check_routes(self) -> None:
+        """Tell the user when Windows itself is also sending a mic into the cable (they would be heard twice)."""
+        warnings = double_voice_warnings(self.cfg, listen_routes())
+        summary = self.audio.routing_summary()
+        if warnings:
+            self.bridge.route.emit("\u26a0 " + " ".join(warnings), True)
+            for w in warnings:
+                if w not in self._warned_routes:
+                    self._warned_routes.add(w)
+                    self.bridge.error.emit(w)
+        else:
+            self.bridge.route.emit(f"Right now \u2014 {summary}", False)
+
+    def _on_route(self, text: str, warn: bool) -> None:
+        self.route_status.setText(text)
+        self.route_status.setStyleSheet("color: #ffb86b;" if warn else "")
+
+    def _open_sound_settings(self) -> None:
+        subprocess.Popen(["control.exe", "mmsys.cpl,,1"])  # classic Sound panel, Recording tab
 
     def _on_vr_note(self, text: str) -> None:
         active, mic, spk = text.split("|", 2)

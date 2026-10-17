@@ -171,6 +171,23 @@ It can only start apps from that list or from your own list, never text the AI m
 Apps lets you add any `.exe`, `.lnk` or `.bat` under a spoken name; those take priority over the automatic list. *Rescan*
 refreshes the list after installing something.
 
+## Hearing yourself twice on the cable
+
+Cause found on the build PC: Windows' own *Listen to this device* was still switched on for the desktop mic and pointed at
+`CABLE Input`, so the audio service (svchost.exe) fed the desktop mic into the cable while this app forwarded the *active*
+mic (the headset mic in VR) into the same cable. Both reached the game. Windows' setting cannot follow the VR switch, so
+it must be off whenever *Send my mic to the 2nd output* is on.
+
+The app now checks this (Settings > VR > *Check for double voice*, also at start-up and after each VR switch). If Windows
+is feeding a mic into the cable you forward into, it says so and names the mic; *Open Windows sound settings* opens the
+Recording tab (mic > Properties > Listen > untick). The tab also shows what is routed right now, and only the active
+profile's mic and speaker are ever open: VR = headset mic and headset speakers, desktop = desktop mic and speakers.
+
+Also hardened: restarts of the microphone pipeline are serialised (before, overlapping restarts could leave a second
+copy running; with 12 simultaneous restarts the old code leaked 24 streams in a test and the new code keeps exactly 2),
+VR switches that arrive in quick succession are collapsed so only the newest is applied, the same mic is never opened
+twice, and forwarding the cable's own output back into the cable is refused.
+
 ## Safe task
 
 File tools (`list_directory`, `read_text_file`, `write_text_file`) work only inside folders added with

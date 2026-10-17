@@ -73,6 +73,7 @@ class AudioIO:
         self._fwd_buf = np.zeros(0, np.float32)
         self._fwd_lock = threading.Lock()
         self._lock = threading.RLock()  # playback and device refresh must not overlap
+        self._input_lock = threading.RLock()  # one microphone/forwarding pipeline at a time, never two
         self._outs: dict = {}  # (device name, rate) -> [stream, last_used]; kept open between sentences
 
     @property
@@ -92,9 +93,26 @@ class AudioIO:
 
     # ---- input -------------------------------------------------------------
     def start_input(self) -> bool:
+        """(Re)open the microphone for the active profile. Serialised: concurrent calls can never leave two pipelines
+        running, which would send your voice into the cable twice."""
+        with self._input_lock:
+            return self._start_input_locked()
+
+    def routing_summary(self) -> str:
+        mic = self.cfg.device("input_device", self.vr_active) or "default microphone"
+        speaker = self.cfg.device("output_device", self.vr_active) or "default speaker"
+        cable = self.cfg.output_device_2
+        parts = [f"mic: {mic}" + (f" -> {cable}" if self.forwarding else ""), "assistant voice: " + speaker + (f" + {cable}" if cable else "")]
+        return " | ".join(parts)
+
+    def _start_input_locked(self) -> bool:
         self.stop_input()
         sd = _sd()
+        mic_name = self.cfg.device("input_device", self.vr_active)
         want_forward = bool(self.cfg.mic_forward and self.cfg.output_device_2)
+        if want_forward and mic_name.lower().startswith("cable output") and "cable" in self.cfg.output_device_2.lower():
+            self.warn("The microphone is the cable's own output, so forwarding it back into the cable would loop; forwarding is off.")
+            want_forward = False
         self._rate = FORWARD_RATE if want_forward else ASR_RATE
         block = self._rate * 3 // 100  # 30 ms
         try:
@@ -107,6 +125,8 @@ class AudioIO:
         except DeviceNotFound as e:
             self.warn(f"{e}; second input ignored")
             secondary = None
+        if secondary is not None and secondary == primary:
+            secondary = None  # the same microphone twice would double it
         try:
             if secondary is not None:
                 s2 = sd.InputStream(
@@ -169,6 +189,10 @@ class AudioIO:
         self.on_audio(x.astype(np.float32, copy=False))
 
     def stop_input(self) -> None:
+        with self._input_lock:
+            self._stop_input_locked()
+
+    def _stop_input_locked(self) -> None:
         for s in self._streams:
             try:
                 s.stop()
@@ -210,7 +234,7 @@ class AudioIO:
     def refresh_devices(self) -> None:
         """Re-read the device list. PortAudio caches it at start-up, and Windows renumbers devices when a headset
         powers up or down, so old indices can point at a different device (e.g. the monitor instead of the headset)."""
-        with self._lock:
+        with self._input_lock, self._lock:
             self.stop_input()
             self.close_outputs()
             sd = _sd()
