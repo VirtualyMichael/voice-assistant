@@ -9,3 +9,5 @@ CLAUDE.md
 dist/
 build/
 *.spec.bak
+.graphify/
+graphify-out/
