@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+models/
+.graphify/cache/
+.claude/
+.pytest_cache/
+CLAUDE.md
