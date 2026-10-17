@@ -97,7 +97,7 @@ class ModelsPage(QWizardPage):
         for spec in MODEL_SPECS:
             installed = (Path(cfg.models_dir) / spec.slot / "tokens.txt").exists()
             cb = QCheckBox(f"{spec.name} — {spec.note} (~{spec.size_mb} MB)" + ("  [installed]" if installed else ""))
-            cb.setChecked(not installed and spec.slot in ("asr", "kokoro"))
+            cb.setChecked(not installed and spec.slot in ("asr", "kokoro", "asr2"))
             cb.setEnabled(not installed)
             self.boxes.append((spec, cb))
             col.addWidget(cb)

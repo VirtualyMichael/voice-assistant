@@ -21,7 +21,7 @@ from .config import INTERRUPT_MODES, LISTEN_MODES, Config, config_dir, load_conf
 from .mcp_client import McpHub
 from .memory import ConversationStore
 from .metrics import TurnMetrics
-from .models import ModelsMissing, SherpaRecognizer, SherpaWakeWord, load_synth
+from .models import AccurateRecognizer, ModelsMissing, SherpaRecognizer, SherpaWakeWord, load_synth
 from .permissions import FolderPolicy
 from .providers import PROVIDERS, make_llm, model_for, save_key, set_model, get_key
 from .session import Session, SessionEvents
@@ -248,6 +248,24 @@ class MainWindow(QMainWindow):
             box.currentIndexChanged.connect(lambda _i, k=key, b=box: self._set_device(k, b.currentData()))
             self.dev[key] = box
             form.addRow(label, box)
+        follow = QDoubleSpinBox(minimum=0, maximum=60, singleStep=1, value=cfg.follow_up_s, suffix=" s")
+        follow.setSpecialValueText("Off")
+        follow.setToolTip("After a spoken reply, keep the mic open this long for your next sentence. Off = push-to-talk each time.")
+        follow.valueChanged.connect(lambda v: self._set_field("follow_up_s", float(v)))
+        wait = QDoubleSpinBox(minimum=2, maximum=60, singleStep=1, value=cfg.listen_timeout_s, suffix=" s")
+        wait.setToolTip("After the hotkey or wake word, how long to wait for you to start speaking.")
+        wait.valueChanged.connect(lambda v: self._set_field("listen_timeout_s", float(v)))
+        endsil = QDoubleSpinBox(minimum=0.4, maximum=3, singleStep=0.1, value=cfg.end_of_speech_s, suffix=" s")
+        endsil.setToolTip("Silence that ends your sentence. Raise it if you get cut off mid-sentence (restart to apply).")
+        endsil.valueChanged.connect(lambda v: self._set_field("end_of_speech_s", float(v)))
+        acc = QCheckBox("Re-check sentences with the accurate recognizer")
+        acc.setChecked(cfg.accurate_asr)
+        acc.setToolTip("Needs the Parakeet model (setup guide > download). Restart to apply.")
+        acc.toggled.connect(lambda v: self._set_field("accurate_asr", v))
+        form.addRow("Keep listening after a reply", follow)
+        form.addRow("Wait for me to start speaking", wait)
+        form.addRow("End of sentence after silence", endsil)
+        form.addRow(acc)
         listen, mode = QComboBox(), QComboBox()
         listen.addItems(LISTEN_MODES)
         listen.setCurrentText(cfg.listen_mode)
@@ -373,6 +391,7 @@ class MainWindow(QMainWindow):
         parts = {}
         for name, factory in (
             ("recognizer", lambda: SherpaRecognizer(models / "asr", end_silence_s=cfg.end_of_speech_s)),
+            ("accurate", lambda: AccurateRecognizer(models / "asr2", cfg.tts_threads) if cfg.accurate_asr and (models / "asr2").is_dir() else None),
             ("synth", lambda: load_synth(models, cfg.tts_speed, cfg.tts_threads, cfg.tts_voice)),
             ("wake", lambda: SherpaWakeWord(models / "kws", cfg.wake_phrase, threshold=cfg.wake_threshold) if cfg.wake_word_enabled else None),
         ):
@@ -397,7 +416,7 @@ class MainWindow(QMainWindow):
         self.audio = AudioIO(cfg, lambda x: self.session.feed_audio(x), lambda m: self.bridge.error.emit(m))
         self.synth = parts["synth"]
         speaker = Speaker(parts["synth"], self.audio.player) if parts["synth"] else None
-        self.session = Session(cfg, agent, speaker, parts["recognizer"], parts["wake"], QtEvents(self.bridge))
+        self.session = Session(cfg, agent, speaker, parts["recognizer"], parts["wake"], QtEvents(self.bridge), accurate=parts["accurate"])
         self._add_voice_picker()
         self._registry, self.mcp = registry, None
         if cfg.mcp_servers:

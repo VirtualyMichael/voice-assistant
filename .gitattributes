@@ -1,0 +1,2 @@
+.graphify/graph.json merge=graphify-json
+graphify-out/graph.json merge=graphify-json

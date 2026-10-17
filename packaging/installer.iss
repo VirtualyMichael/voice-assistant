@@ -27,7 +27,7 @@ RestartApplications=no
 MinVersion=10.0.17763
 
 [Messages]
-WelcomeLabel2=This installs Voice Assistant, a hands-free voice assistant for Windows.%n%nNothing else is required. The first time you start it, a setup guide checks your PC and, only with your permission, downloads the speech models (about 430 MB) and helps you connect an AI model.%n%nYour conversations and settings stay on this PC.
+WelcomeLabel2=This installs Voice Assistant, a hands-free voice assistant for Windows.%n%nNothing else is required. The first time you start it, a setup guide checks your PC and, only with your permission, downloads the speech models (about 430 MB, or 900 MB with the optional accurate recognizer) and helps you connect an AI model.%n%nYour conversations and settings stay on this PC.
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; Flags: unchecked

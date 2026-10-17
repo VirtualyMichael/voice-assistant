@@ -7,6 +7,10 @@
 2. On first start a setup guide checks your mic, speakers, GPU, a local AI server (LM Studio etc.) and VB-Cable, downloads
    the speech models only after you tick them (recognizer 122 MB, natural voices 305 MB, optional basic voice 64 MB and
    wake word 17 MB), and lets you choose local, Claude or OpenAI. It can be rerun from Settings or the Start menu.
+   The **accurate recognizer** (Parakeet TDT 0.6B v2, 460 MB, tick it in the wizard or run `fetch-models asr2`) re-checks every
+   sentence after you finish speaking. On 10 spoken test sentences in 4 synthetic voices plus 2 real recordings it cut the word
+   error rate from 33% to 3% (the fast model drops or garbles the first words) and adds about 0.2 s per sentence on a Ryzen 7800X3D.
+   The fast streaming model still drives the live text preview and end-of-sentence detection.
 3. Your conversation is remembered between sessions (stored on this PC only, `%APPDATA%\\VoiceAssistant\\conversation.json`;
    only your messages and the assistant's replies, never tool output). *New chat* erases it.
 
@@ -124,6 +128,8 @@ VR switching now re-opens the speaker for the active profile, shows both mic and
 "VR mode on" / "Desktop mode" through the new speaker so you can hear which one is active (`vr_announce`).
 
 ## Listening cue and cut-offs
+
+Settings has three timing controls: *Keep listening after a reply* (0 = off), *Wait for me to start speaking* and *End of sentence after silence*.
 
 On hotkey, Talk button, wake word (and after a spoken reply when `follow_up` is on) the app plays a short two-note chime
 and keeps the mic closed until it and a short gap (`listen_delay_s`) have finished, so the start of your sentence is

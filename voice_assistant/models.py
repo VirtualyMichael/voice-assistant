@@ -30,6 +30,7 @@ class ModelSpec:
 MODEL_SPECS = [
     ModelSpec("asr", "streaming zipformer en 20M", f"{REL}/asr-models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17.tar.bz2", "speech recognition", size_mb=122),
     ModelSpec("tts", "piper en_US amy low", f"{REL}/tts-models/vits-piper-en_US-amy-low.tar.bz2", "basic voice (fallback)", size_mb=64),
+    ModelSpec("asr2", "Parakeet TDT 0.6B v2 (accurate recognizer)", f"{REL}/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2", "far fewer mis-heard words (recommended)", size_mb=460, core=False),
     ModelSpec("kws", "zipformer gigaspeech 3.3M", f"{REL}/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2", "wake word (optional)", size_mb=17, core=False),
     ModelSpec("kokoro", "Kokoro English v0.19 (11 natural voices)", f"{REL}/tts-models/kokoro-en-v0_19.tar.bz2", "natural-sounding voices (recommended)", size_mb=305, core=False),
 ]
@@ -110,6 +111,28 @@ def write_keywords(folder: Path, phrase: str, boost: float = 2.0, threshold: flo
     out = folder / "keywords_custom.txt"
     out.write_text(f"{pieces} :{boost} #{threshold} @{phrase.replace(' ', '_')}\n", encoding="utf-8")
     return out
+
+
+class AccurateRecognizer:
+    """Offline (whole-sentence) recognizer used to re-check what the fast streaming model heard."""
+
+    SAMPLE_RATE = 16000
+
+    def __init__(self, folder: Path, num_threads: int = 4, feature_dim: int = 128):
+        import sherpa_onnx
+
+        d = _need(folder, "asr2")
+        self._r = sherpa_onnx.OfflineRecognizer.from_transducer(
+            encoder=_pick(d, "encoder"), decoder=_pick(d, "decoder"), joiner=_pick(d, "joiner"), tokens=_tokens(d),
+            num_threads=num_threads, sample_rate=self.SAMPLE_RATE, feature_dim=feature_dim,
+            decoding_method="greedy_search", model_type="nemo_transducer",
+        )
+
+    def transcribe(self, samples: np.ndarray) -> str:
+        s = self._r.create_stream()
+        s.accept_waveform(self.SAMPLE_RATE, samples.astype(np.float32, copy=False))
+        self._r.decode_stream(s)
+        return s.result.text.strip()
 
 
 class SherpaWakeWord:

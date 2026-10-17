@@ -46,6 +46,23 @@ class SessionEvents:
     def error(self, message: str) -> None: ...
 
 
+def trim_leading_silence(x: np.ndarray, sr: int = 16000, pad_s: float = 0.5) -> np.ndarray:
+    """Cut the quiet lead-in off a recording but keep `pad_s` before the first loud frame.
+
+    The fast recognizer only shows text some time after you start talking, so onset is found from energy instead.
+    """
+    frame = int(0.02 * sr)
+    n = len(x) // frame
+    if n < 3:
+        return x
+    rms = np.sqrt((x[: n * frame].reshape(n, frame) ** 2).mean(axis=1))
+    threshold = max(float(np.percentile(rms, 10)) * 3.0, 0.006)
+    loud = np.nonzero(rms > threshold)[0]
+    if len(loud) == 0:
+        return x
+    return x[max(0, int(loud[0]) * frame - int(pad_s * sr)) :]
+
+
 class Session:
     def __init__(
         self,
@@ -57,11 +74,15 @@ class Session:
         events: SessionEvents | None = None,
         metrics: MetricsLog | None = None,
         clock: Callable[[], float] = time.monotonic,
+        accurate=None,
     ):
         self.cfg, self.agent, self.speaker, self.recognizer, self.wake = cfg, agent, speaker, recognizer, wake
         self.events = events or SessionEvents()
         self.metrics = metrics or MetricsLog()
         self.clock = clock
+        self.accurate = accurate  # optional second recognizer with a transcribe(samples) method
+        self._utt: list[np.ndarray] = []  # audio of the sentence being spoken, for the accurate recognizer
+        self._listen_window = cfg.listen_timeout_s
         self.state = State.IDLE
         self._lock = threading.RLock()
         self._turn_id = 0
@@ -159,8 +180,11 @@ class Session:
             self.state = state
             self.events.state(state)
 
-    def _enter_listening(self, keep_recognizer: bool = False) -> None:
+    def _enter_listening(self, keep_recognizer: bool = False, window: float | None = None) -> None:
         self._need_reset = not keep_recognizer
+        if not keep_recognizer:
+            self._utt = []
+        self._listen_window = self.cfg.listen_timeout_s if window is None else window
         self._listen_started, self._heard, self._last_partial = self.clock(), keep_recognizer, ""
         self._set_state(State.LISTENING)
 
@@ -214,9 +238,11 @@ class Session:
                 self._listen(samples)
         elif state is State.SPEAKING and self.cfg.interrupt_mode == "voice" and self.recognizer:
             self.recognizer.accept(samples)
+            self._utt_add(samples, 8.0)  # keep the words that triggered the interruption
             heard = self.recognizer.text().strip()
             if self.recognizer.is_endpoint():
                 self.recognizer.reset()
+                self._utt = []
             elif len(heard) >= self.cfg.barge_in_min_chars and not self._is_echo(heard):
                 with self._lock:
                     if self.state is State.SPEAKING:
@@ -229,9 +255,29 @@ class Session:
         spoken = set(re.findall(r"[a-z']+", self._spoken.lower()))
         return not words or sum(w in spoken for w in words) / len(words) >= 0.6
 
+    def _utt_add(self, samples: np.ndarray, max_s: float) -> None:
+        self._utt.append(samples)
+        limit, total = int(max_s * 16000), sum(len(x) for x in self._utt)
+        while len(self._utt) > 1 and total - len(self._utt[0]) >= limit:
+            total -= len(self._utt.pop(0))
+
+    def _refine(self, text: str, audio: list[np.ndarray]) -> str:
+        """Re-transcribe the finished sentence with the accurate recognizer; fall back to the streaming text."""
+        if self.accurate is None or not audio:
+            return text
+        x = trim_leading_silence(np.concatenate(audio))
+        if len(x) < 4800:  # under 0.3 s: not worth it
+            return text
+        try:
+            return self.accurate.transcribe(x).strip() or text
+        except Exception:
+            log.exception("accurate recognizer failed; using the streaming text")
+            return text
+
     def _listen(self, samples: np.ndarray) -> None:
         rec = self.recognizer
         rec.accept(samples)
+        self._utt_add(samples, 30.0 if self._heard else 20.0)  # silence is trimmed at the end of the sentence
         text = rec.text()
         if text != self._last_partial:
             self._last_partial = text
@@ -239,17 +285,20 @@ class Session:
         if text.strip():
             self._heard = True
         if rec.is_endpoint():
+            t_end = self.clock()  # taken before re-checking, so the extra time shows up in the latency numbers
             final = text.strip()
+            audio, self._utt = self._utt, []
             rec.reset()
             self._last_partial, self._heard = "", False
             if final:
+                final = self._refine(final, audio)
                 with self._lock:
                     if self.state is State.LISTENING:
-                        self._begin_turn(final, self.clock(), voice=True)
+                        self._begin_turn(final, t_end, voice=True)
         elif (
             not self._heard
             and self.cfg.listen_mode != "always"
-            and self.clock() - self._listen_started > self.cfg.listen_timeout_s
+            and self.clock() - self._listen_started > self._listen_window
         ):
             with self._lock:
                 if self.state is State.LISTENING:
@@ -319,8 +368,8 @@ class Session:
             self.metrics.record(m)
             self.events.assistant_done(m)
             self._ignore_until = self.clock() + self.cfg.post_speech_guard_s
-            if self.cfg.follow_up and self._voice_turn and self.recognizer is not None:
-                self._enter_listening()
+            if self.cfg.follow_up and self.cfg.follow_up_s > 0 and self._voice_turn and self.recognizer is not None:
+                self._enter_listening(window=self.cfg.follow_up_s)
                 self._play_chime()
             else:
                 self._rest()

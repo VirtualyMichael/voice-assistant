@@ -48,7 +48,9 @@ class Config:
     end_of_speech_s: float = 1.0  # silence that ends your turn; raise it if you get cut off mid-sentence
     post_speech_guard_s: float = 0.3  # ignore the mic briefly after the assistant stops talking
     listen_timeout_s: float = 8.0
-    follow_up: bool = True  # keep listening after a reply until listen_timeout_s of silence
+    follow_up: bool = True  # keep listening after a spoken reply
+    follow_up_s: float = 8.0  # ...for this many seconds; 0 turns follow-up off
+    accurate_asr: bool = True  # re-check each sentence with the larger recognizer when it is installed
     models_dir: str = field(default_factory=lambda: str(default_models_dir()))
     tts_speed: float = 1.0
     tts_voice: str = ""  # voice id, e.g. "am_michael"; empty = the model's first voice
