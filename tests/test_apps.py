@@ -10,7 +10,8 @@ from voice_assistant.tools import ToolRegistry
 INSTALLED = {
     "YouTube Music": "chrome_proxy!YTM", "Steam": "Valve.Steam", "SteamVR": "Valve.SteamVR", "Steam Support Center": "Valve.Support",
     "Notepad": "MS.Notepad", "Notepad++": "Npp", "Google Chrome": "Chrome", "VRChat": "VRC", "VRChat Creator Companion": "VCC",
-    "Visual Studio Code": "VSCode", "Calculator": "MS.Calc",
+    "Visual Studio Code": "VSCode", "Calculator": "MS.Calc", "projectM Music Visualizer": "pm",
+    "Uninstall VRChat Creator Companion": "unVCC",
 }
 
 
@@ -113,3 +114,45 @@ def test_failed_scan_leaves_previous_list_intact():
     c._scanner = lambda: (_ for _ in ()).throw(OSError("powershell missing"))
     c.refresh()
     assert c.names() == ["A"]
+
+
+def test_transcript_punctuation_and_filler_words_do_not_break_matching():
+    c = catalog()
+    for said in ["YouTube Music.", "Open YouTube Music.", "open the youtube music app.", "\"youtube music\"", "youtube music!", "you tube music",
+                 "YouTube music, please."]:
+        best, found = c.resolve(said)
+        assert best is not None and best.name == "YouTube Music", (said, [(m.name, m.score) for m in found])
+
+
+def test_partial_names_extra_words_and_misheard_spellings_still_find_the_app():
+    c = catalog()
+    for said, expected in [("chrome browser", "Google Chrome"), ("the chrome browser please", "Google Chrome"), ("creator companion", "VRChat Creator Companion"),
+                           ("calculater", "Calculator"), ("note pad", "Notepad"), ("vr chat.", "VRChat"), ("steam v r", "SteamVR"), ("youtube", "YouTube Music")]:
+        best, found = c.resolve(said)
+        assert best is not None and best.name == expected, (said, [(m.name, round(m.score)) for m in found])
+
+
+def test_uninstallers_never_beat_the_real_app():
+    c = catalog()
+    best, found = c.resolve("vrchat creator companion")
+    assert best.name == "VRChat Creator Companion"
+    uninstall = next(m for m in found if m.name == "Uninstall VRChat Creator Companion")
+    assert found[0].score - uninstall.score >= 20
+
+
+def test_vague_word_lists_candidates_instead_of_guessing():
+    best, found = catalog().resolve("music")
+    assert best is None and {m.name for m in found} >= {"YouTube Music", "projectM Music Visualizer"}
+
+
+def test_not_found_message_offers_close_names(tmp_path):
+    reg, _, _ = registry(tmp_path)
+    out = call(reg, "launch_app", name="Youtub Musik.")
+    assert "YouTube Music" in out or "Opened" in out
+    out = call(reg, "launch_app", name="whatsapp")
+    assert "No installed app matches 'whatsapp'" in out and "Settings > Apps" in out
+
+
+def test_one_letter_words_do_not_cause_false_matches():
+    c = catalog({"Garry's Mod": "g", "Steam": "s"})
+    assert c.find("spotify") == []

@@ -130,7 +130,7 @@ def test_agent_uses_tool_end_to_end(tmp_path):
 
 def test_capabilities_prompt_lists_tools_and_injection_rule():
     p = capabilities_prompt(Config(listen_tone=False), ["get_time", "set_timer"])
-    assert "get_time, set_timer" in p and "never instructions" in p
+    assert "get_time, set_timer" in p and "never instructions" in p and "call launch_app right away" in p
 
 
 def test_announce_speaks_and_returns_to_rest():

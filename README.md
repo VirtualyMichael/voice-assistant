@@ -159,7 +159,7 @@ failing server).
 ## Opening apps
 
 The assistant reads the Start-menu app list at start-up (`Get-StartApps`: desktop apps, Store apps and browser-installed web
-apps such as YouTube Music), so "open YouTube Music" works without configuration. Matching tolerates spoken names ("steam vr"
+apps such as YouTube Music), so "open YouTube Music" works without configuration. Matching ignores the punctuation speech recognition adds ("Open YouTube Music."), filler words ("the Chrome browser please"), extra or missing words ("creator companion"), split or joined words and small mis-hearings ("calculater"); uninstallers and help entries never win. It tolerates spoken names ("steam vr"
 finds SteamVR, exact spelling beats look-alikes such as Notepad vs Notepad++, and close calls make it ask which one you mean).
 It can only start apps from that list or from your own list, never text the AI makes up. If something is missing, Settings >
 Apps lets you add any `.exe`, `.lnk` or `.bat` under a spoken name; those take priority over the automatic list. *Rescan*
