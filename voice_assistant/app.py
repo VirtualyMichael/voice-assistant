@@ -12,7 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
+    QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
 from .agent import Agent
@@ -131,7 +131,9 @@ class Chat(QScrollArea):
         if kind == "bubbleUser":
             row.addStretch(1)
         row.addWidget(label)
-        if kind != "bubbleUser":
+        if kind in ("bubbleNote", "bubbleErr"):
+            label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)  # notes use the full width instead of a narrow column
+        elif kind != "bubbleUser":
             row.addStretch(1)
         self.col.insertLayout(self.col.count() - 1, row)
         self._labels.append(label)
@@ -145,6 +147,8 @@ class Chat(QScrollArea):
                 while item.layout().count():
                     w = item.layout().takeAt(0).widget()
                     if w:
+                        w.hide()  # vanish at once; deleteLater alone waits for the event loop
+                        w.setParent(None)
                         w.deleteLater()
         self._labels.clear()
         self._ai = None
