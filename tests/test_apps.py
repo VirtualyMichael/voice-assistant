@@ -145,7 +145,9 @@ def test_vague_word_lists_candidates_instead_of_guessing():
     assert best is None and {m.name for m in found} >= {"YouTube Music", "projectM Music Visualizer"}
 
 
-def test_not_found_message_offers_close_names(tmp_path):
+def test_not_found_message_offers_close_names(tmp_path, monkeypatch):
+    launched = []
+    monkeypatch.setattr(AT, "launch_start_app", launched.append)  # never start a real program from a test
     reg, _, _ = registry(tmp_path)
     out = call(reg, "launch_app", name="Youtub Musik.")
     assert "YouTube Music" in out or "Opened" in out
