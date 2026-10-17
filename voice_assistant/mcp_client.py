@@ -27,6 +27,20 @@ def _attr(obj, camel: str, snake: str, default=None):
     return getattr(obj, snake, None) if getattr(obj, snake, None) is not None else getattr(obj, camel, default)
 
 
+def read_mcp_json(path) -> tuple[dict[str, dict], list[str]]:
+    """Servers from an mcp.json ({"mcpServers": {name: {command, args, env}}}). Remote (url) servers are reported, not imported."""
+    data = json.loads(open(path, encoding="utf-8").read())
+    servers = data.get("mcpServers") or data.get("servers") or {}
+    ok: dict[str, dict] = {}
+    skipped: list[str] = []
+    for name, spec in servers.items():
+        if isinstance(spec, dict) and spec.get("command"):
+            ok[name] = {k: spec[k] for k in ("command", "args", "env") if k in spec}
+        else:
+            skipped.append(name)
+    return ok, skipped
+
+
 def _safe_name(server: str, tool: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", f"{server}__{tool}")[:64]
 

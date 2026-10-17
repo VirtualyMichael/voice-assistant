@@ -30,11 +30,10 @@ def tab_text(w):
 
 def test_settings_are_grouped_into_tabs(win):
     tabs, content = tab_text(win)
-    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Voice", "Audio", "VR", "AI", "Apps", "General"]
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Voice", "Audio", "VR", "AI", "Skills", "Apps", "General"]
     assert "Ask before opening an app" in content["Apps"]
     assert "Switch devices while SteamVR is running" in content["VR"]
     assert "Remember our conversation between sessions" in content["AI"]
-    assert not tabs.usesScrollButtons()  # all tab names fit without arrows
 
 
 class FakeHolder:
@@ -98,3 +97,55 @@ def test_folder_policy_remove_blocks_access_again(tmp_path):
     p.remove(tmp_path)
     with pytest.raises(Exception):
         p.resolve("a.txt")
+
+
+# ---- skills tab -------------------------------------------------------------------------
+def _make_skill(root, name, desc):
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {desc}\n---\nInstructions for {name}.", encoding="utf-8")
+    return d
+
+
+def test_skills_tab_lists_toggles_and_updates_the_prompt(win, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QFileDialog
+
+    _make_skill(tmp_path / "pack", "chem-helper", "Chemistry help")
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(tmp_path / "pack"))
+    win._add_skill_folder()
+    assert win.skills_list.count() == 1 and "chem-helper" in win.session.agent.messages[0]["content"]
+    assert win.cfg.skill_folders == [str(tmp_path / "pack")]
+    win.skills_list.item(0).setCheckState(Qt.Unchecked)  # untick = the assistant stops using it
+    assert "chem-helper" not in win.session.agent.messages[0]["content"] and win.cfg.disabled_skills == ["chem-helper"]
+    win.skills_list.item(0).setCheckState(Qt.Checked)
+    assert "chem-helper" in win.session.agent.messages[0]["content"] and win.cfg.disabled_skills == []
+    win.skill_folders_list.setCurrentRow(0)
+    win._remove_skill_folder()
+    assert win.skills_list.count() == 0 and "chem-helper" not in win.session.agent.messages[0]["content"]
+
+
+def test_skill_tools_are_always_registered(win):
+    assert {"use_skill", "read_skill_file", "search_skill_pdf", "read_skill_pdf"} <= set(win._registry.names())
+
+
+def test_mcp_import_dialog_adds_only_ticked_servers_with_optional_trust(win, tmp_path, monkeypatch):
+    import json
+
+    from PySide6.QtWidgets import QCheckBox, QDialog, QFileDialog
+
+    f = tmp_path / "mcp.json"
+    f.write_text(json.dumps({"mcpServers": {"a": {"command": "py", "args": ["a.py"]}, "b": {"command": "py"}, "c": {"command": "py"}}}))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(f), ""))
+
+    def fake_exec(self):
+        boxes = {c.text().split("  ")[0]: c for c in self.findChildren(QCheckBox) if "  —  " in c.text()}
+        trusts = [c for c in self.findChildren(QCheckBox) if c.text().startswith("run its tools")]
+        boxes["a"].setChecked(True)
+        boxes["c"].setChecked(True)
+        trusts[2].setChecked(True)  # trust only server c
+        return QDialog.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", fake_exec)
+    win._import_mcp()
+    assert win.cfg.mcp_servers == {"a": {"command": "py", "args": ["a.py"]}, "c": {"command": "py", "auto_approve": True}}

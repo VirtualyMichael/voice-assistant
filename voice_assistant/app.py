@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QInputDialog, QListWidget, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
@@ -19,8 +19,11 @@ from .agent import Agent
 from .audio_io import AudioIO, list_devices
 from .hardware import detect_gpus, recommend
 from .config import INTERRUPT_MODES, LISTEN_MODES, Config, config_dir, load_config, save_config
-from .mcp_client import McpHub
+from .mcp_client import McpHub, read_mcp_json
 from .memory import ConversationStore
+from .pdf_tools import PdfStore
+from .skill_tools import build_skill_tools
+from .skills import SkillLibrary
 from .metrics import TurnMetrics
 from .models import AccurateRecognizer, ModelsMissing, SherpaRecognizer, SherpaWakeWord, load_synth
 from .permissions import FolderPolicy
@@ -173,6 +176,7 @@ class MainWindow(QMainWindow):
         self.resize(*(cfg.window_size or [440, 700]))
         self.cfg, self.bridge, self.policy = cfg, Bridge(), FolderPolicy(cfg.approved_folders)
         self.warnings: list[str] = []
+        self.skills = SkillLibrary(cfg.skill_folders, cfg.disabled_skills)  # needed by the settings tabs built below
         self._vr_gen = 0
         self._vr_apply_lock = threading.Lock()
         self._warned_routes: set[str] = set()
@@ -268,10 +272,10 @@ class MainWindow(QMainWindow):
         panel = QFrame(objectName="panel")
         panel.setMaximumHeight(360)
         tabs = QTabWidget()
-        tabs.setUsesScrollButtons(False)
+        tabs.setElideMode(Qt.ElideNone)  # arrows appear only if the tab names do not fit
         QVBoxLayout(panel).addWidget(tabs)
         panel.layout().setContentsMargins(8, 6, 8, 6)
-        form = TabbedForm(tabs, ["Voice", "Audio", "VR", "AI", "Apps", "General"])
+        form = TabbedForm(tabs, ["Voice", "Audio", "VR", "AI", "Skills", "Apps", "General"])
         self._form = form
         form.use("Audio")
         self.dev = {}
@@ -428,6 +432,30 @@ class MainWindow(QMainWindow):
         self.vr_box.setVisible(cfg.vr_autoswitch)
         form.addRow(self.vr_box)
         vr_on.toggled.connect(self._set_vr_autoswitch)
+        form.use("Skills")
+        form.addRow(QLabel("Skills are folders with a SKILL.md (the Bionic/Claude format). Add a skill folder, or a folder of skills.", objectName="small", wordWrap=True))
+        self.skills_list = QListWidget()
+        self.skills_list.setMaximumHeight(110)
+        self.skills_list.itemChanged.connect(self._toggle_skill)
+        self.skill_folders_list = QListWidget()
+        self.skill_folders_list.setMaximumHeight(60)
+        self.skills_status = QLabel("", objectName="small", wordWrap=True)
+        add_sk, rem_sk, rescan_sk = QPushButton("Add folder\u2026"), QPushButton("Remove folder"), QPushButton("Rescan")
+        add_sk.clicked.connect(self._add_skill_folder)
+        rem_sk.clicked.connect(self._remove_skill_folder)
+        rescan_sk.clicked.connect(self._rescan_skills)
+        sk_row = QHBoxLayout()
+        for w in (add_sk, rem_sk, rescan_sk):
+            sk_row.addWidget(w)
+        mcp_btn = QPushButton("Import tool servers (MCP) from LM Studio\u2026")
+        mcp_btn.setToolTip("Skills such as a science tutor may need an MCP server; import it from LM Studio/Bionic's mcp.json")
+        mcp_btn.clicked.connect(self._import_mcp)
+        form.addRow(self.skills_list)
+        form.addRow(self.skill_folders_list)
+        form.addRow(sk_row)
+        form.addRow(self.skills_status)
+        form.addRow(mcp_btn)
+        self._fill_skills()
         form.use("Apps")
         self.apps_count = QLabel("Scanning installed apps\u2026", objectName="small")
         ask = self.ask_apps = QCheckBox("Ask before opening an app")
@@ -500,8 +528,11 @@ class MainWindow(QMainWindow):
         self.catalog = AppCatalog()
         threading.Thread(target=self._scan_apps, daemon=True).start()
         registry.add(build_agent_tools(cfg, self.policy, self._confirm, lambda t: self.session.announce(t), self.timers, self.catalog))
+        self.pdfs = PdfStore()
+        registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))
+        self._registry = registry
         agent = Agent(
-            llm, cfg.system_prompt + capabilities_prompt(cfg, registry.names()), registry, cfg.max_tool_rounds,
+            llm, self._system_prompt(), registry, cfg.max_tool_rounds,
             max_messages=cfg.history_messages,
             on_tool=lambda m: self.bridge.tool.emit(m),
         )
@@ -514,7 +545,8 @@ class MainWindow(QMainWindow):
         speaker = Speaker(parts["synth"], self.audio.player) if parts["synth"] else None
         self.session = Session(cfg, agent, speaker, parts["recognizer"], parts["wake"], QtEvents(self.bridge), accurate=parts["accurate"])
         self._add_voice_picker()
-        self._registry, self.mcp = registry, None
+        self.mcp = None
+        self._warm_pdfs()
         if cfg.mcp_servers:
             threading.Thread(target=self._start_mcp, daemon=True).start()
         if parts["recognizer"]:
@@ -523,12 +555,20 @@ class MainWindow(QMainWindow):
             self._start_hotkey()
             self.session.start()
 
+    def _system_prompt(self) -> str:
+        return self.cfg.system_prompt + capabilities_prompt(self.cfg, self._registry.names()) + self.skills.prompt()
+
+    def _warm_pdfs(self) -> None:
+        """Index the skills' PDFs in the background so the first question is quick (cached on disk afterwards)."""
+        pdfs = [p for s in self.skills.active for p in s.dir.rglob("*.pdf")]
+        threading.Thread(target=self.pdfs.warm, args=(pdfs,), daemon=True).start()
+
     def _start_mcp(self) -> None:
         """Connect configured MCP servers in the background and add their tools to the agent."""
         try:
             self.mcp = McpHub(self.cfg.mcp_servers, self._confirm)
             self._registry.add(self.mcp.start())
-            self.session.agent.messages[0]["content"] = self.cfg.system_prompt + capabilities_prompt(self.cfg, self._registry.names())
+            self.session.agent.messages[0]["content"] = self._system_prompt()
             self.bridge.note.emit("MCP: " + "; ".join(f"{n} {st}" for n, st in self.mcp.status.items()))
         except Exception as e:
             self.bridge.error.emit(f"MCP failed: {e}")
@@ -661,16 +701,19 @@ class MainWindow(QMainWindow):
     # ---- routing checks ---------------------------------------------------------------
     def _check_routes(self) -> None:
         """Tell the user when Windows itself is also sending a mic into the cable (they would be heard twice)."""
-        warnings = double_voice_warnings(self.cfg, listen_routes())
-        summary = self.audio.routing_summary()
-        if warnings:
-            self.bridge.route.emit("\u26a0 " + " ".join(warnings), True)
-            for w in warnings:
-                if w not in self._warned_routes:
-                    self._warned_routes.add(w)
-                    self.bridge.error.emit(w)
-        else:
-            self.bridge.route.emit(f"Right now \u2014 {summary}", False)
+        try:
+            warnings = double_voice_warnings(self.cfg, listen_routes())
+            summary = self.audio.routing_summary()
+            if warnings:
+                self.bridge.route.emit("⚠ " + " ".join(warnings), True)
+                for w in warnings:
+                    if w not in self._warned_routes:
+                        self._warned_routes.add(w)
+                        self.bridge.error.emit(w)
+            else:
+                self.bridge.route.emit(f"Right now — {summary}", False)
+        except RuntimeError:
+            pass  # the window was closed while this background check was running
 
     def _on_route(self, text: str, warn: bool) -> None:
         self.route_status.setText(text)
@@ -732,9 +775,107 @@ class MainWindow(QMainWindow):
                 return
             self._rebuild_llm()
 
+    # ---- skills ------------------------------------------------------------------------
+    def _fill_skills(self) -> None:
+        self.skills_list.blockSignals(True)
+        self.skills_list.clear()
+        for sk in self.skills.skills:
+            item = QListWidgetItem(f"{sk.display_name} \u2014 {sk.short_description[:90]}")
+            item.setData(Qt.UserRole, sk.name)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked if sk.name in self.skills.disabled else Qt.Checked)
+            item.setToolTip(sk.description)
+            self.skills_list.addItem(item)
+        self.skills_list.blockSignals(False)
+        self.skill_folders_list.clear()
+        for f in self.cfg.skill_folders:
+            self.skill_folders_list.addItem(f)
+        n = len(self.skills.active)
+        self.skills_status.setText(
+            (f"{n} skill{'s' if n != 1 else ''} active. " if self.skills.skills else "No skills yet. ") + " ".join(self.skills.problems)
+        )
+
+    def _apply_skills(self) -> None:
+        self.skills.folders, self.skills.disabled = list(self.cfg.skill_folders), set(self.cfg.disabled_skills)
+        self.skills.reload()
+        self._fill_skills()
+        self.session.agent.messages[0]["content"] = self._system_prompt()
+        self._warm_pdfs()
+
+    def _toggle_skill(self, item) -> None:
+        name, on = item.data(Qt.UserRole), item.checkState() == Qt.Checked
+        disabled = set(self.cfg.disabled_skills)
+        (disabled.discard if on else disabled.add)(name)
+        self.cfg.disabled_skills = sorted(disabled)
+        save_config(self.cfg)
+        self._apply_skills()
+
+    def _add_skill_folder(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Choose a skill folder (has SKILL.md) or a folder of skills")
+        if d and d not in self.cfg.skill_folders:
+            self.cfg.skill_folders.append(d)
+            save_config(self.cfg)
+            self._apply_skills()
+            if not self.skills.skills:
+                self.chat.add("bubbleNote", "No SKILL.md found in that folder.")
+
+    def _remove_skill_folder(self) -> None:
+        row = self.skill_folders_list.currentRow()
+        if row >= 0:
+            self.cfg.skill_folders.pop(row)
+            save_config(self.cfg)
+            self._apply_skills()
+
+    def _rescan_skills(self) -> None:
+        self._apply_skills()
+
+    def _import_mcp(self) -> None:
+        default = str(Path.home() / ".lmstudio" / "mcp.json")
+        path, _ = QFileDialog.getOpenFileName(self, "Choose an mcp.json", default if Path(default).exists() else "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            servers, skipped = read_mcp_json(path)
+        except (OSError, ValueError) as e:
+            self._on_error(f"Could not read that file: {e}")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Import tool servers")
+        col = QVBoxLayout(dlg)
+        col.addWidget(QLabel("Tick the servers to add. They start with the app and run programs on this PC; tools that change things still ask first. "
+                             "Environment values (keys) are copied into the settings file.", wordWrap=True))
+        boxes, trust = {}, {}
+        for name, spec in servers.items():
+            cb = QCheckBox(f"{name}  —  {spec.get('command')} {' '.join(map(str, spec.get('args', [])))}"[:110])
+            cb.setChecked(False)
+            cb.setEnabled(name not in self.cfg.mcp_servers)
+            tr = QCheckBox("run its tools without asking each time (only for servers you wrote or trust)")
+            tr.setEnabled(False)
+            cb.toggled.connect(tr.setEnabled)
+            tr.setStyleSheet("margin-left: 22px; font-size: 11px;")
+            boxes[name], trust[name] = cb, tr
+            col.addWidget(cb)
+            col.addWidget(tr)
+        if skipped:
+            col.addWidget(QLabel("Not importable (remote servers): " + ", ".join(skipped), objectName="small", wordWrap=True))
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        col.addWidget(bb)
+        if dlg.exec() == QDialog.Accepted:
+            added = [n for n, cb in boxes.items() if cb.isChecked() and cb.isEnabled()]
+            for n in added:
+                self.cfg.mcp_servers[n] = {**servers[n], **({"auto_approve": True} if trust[n].isChecked() else {})}
+            save_config(self.cfg)
+            self.chat.add("bubbleNote", f"Added {', '.join(added)}. Restart the assistant to connect." if added else "Nothing added.")
+
     # ---- apps ------------------------------------------------------------------------
     def _scan_apps(self) -> None:
-        self.bridge.apps_count.emit(self.catalog.refresh())
+        n = self.catalog.refresh()
+        try:
+            self.bridge.apps_count.emit(n)
+        except RuntimeError:
+            pass  # window closed during the scan
 
     def _on_apps_count(self, n: int) -> None:
         self.apps_count.setText(f"{n} installed apps found automatically" if n else "Could not read the installed app list; add apps below.")

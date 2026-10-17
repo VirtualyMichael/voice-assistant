@@ -78,6 +78,8 @@ class Config:
     )
     approved_folders: list[str] = field(default_factory=list)
     max_tool_rounds: int = 8
+    skill_folders: list[str] = field(default_factory=list)  # folders holding SKILL.md skills (one skill, or a parent of skills)
+    disabled_skills: list[str] = field(default_factory=list)
     remember_conversation: bool = True  # saved on this PC only (conversation.json); "New chat" or untick to erase
     history_messages: int = 40  # how many recent messages are kept and sent to the model
     allow_web: bool = False  # web_search / fetch_page send queries and URLs to the internet

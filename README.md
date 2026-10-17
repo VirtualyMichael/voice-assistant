@@ -190,6 +190,24 @@ copy running; with 12 simultaneous restarts the old code leaked 24 streams in a 
 VR switches that arrive in quick succession are collapsed so only the newest is applied, the same mic is never opened
 twice, and forwarding the cable's own output back into the cable is refused.
 
+## Skills (Bionic / Claude format)
+
+A skill is a folder with a `SKILL.md` (front matter `name` and `description`, then instructions) plus optional reference files,
+the same layout Bionic and Claude use, so skills made there work here unchanged. **Settings > Skills > Add folder** accepts a
+skill folder, a folder of skills, or a project with a `skills/` subfolder; untick a skill to switch it off. Only each skill's
+name and description go into the prompt; when a question fits, the assistant calls `use_skill` to load the full instructions,
+then `read_skill_file`, `search_skill_pdf` and `read_skill_pdf` to use its reference files (a skill's folder is read-only and
+cannot be escaped). PDFs are indexed in the background and cached in `%APPDATA%\VoiceAssistant\cache\pdf` (a 181-page
+manual takes about 6 s the first time, instantly after). `disable-model-invocation: true` skills are not advertised but can be
+named explicitly. PDF reading also works for any PDF in an approved folder (`search_pdf`, `read_pdf`).
+
+Skills that depend on an MCP server (for example a science tutor with its own local server) need that server too:
+**Settings > Skills > Import tool servers (MCP) from LM Studio** reads LM Studio/Bionic's `mcp.json`, lets you tick the servers to
+copy (and optionally let one run without asking each time), and connects them at the next start. Tested on this PC with the
+real `garage-mechanic` skill and its two owner's manuals (search found the specifications page) and with the real
+`science-teacher` server (4 tools, lists the Chemistry 2e textbook). Not tested: the local AI model choosing these tools by
+itself, because no model server was running at the time.
+
 ## Safe task
 
 File tools (`list_directory`, `read_text_file`, `write_text_file`) work only inside folders added with
