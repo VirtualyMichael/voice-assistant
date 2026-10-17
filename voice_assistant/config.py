@@ -82,6 +82,7 @@ class Config:
     history_messages: int = 40  # how many recent messages are kept and sent to the model
     allow_web: bool = False  # web_search / fetch_page send queries and URLs to the internet
     allow_shell: bool = False  # run_powershell (still asks before every command)
+    confirm_launch: bool = True  # ask before opening an app (turn off to open apps instantly)
     app_shortcuts: dict = field(default_factory=lambda: {
         "notepad": "notepad.exe", "calculator": "calc.exe", "file explorer": "explorer.exe", "task manager": "taskmgr.exe",
     })

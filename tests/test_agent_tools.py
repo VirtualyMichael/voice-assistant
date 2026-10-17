@@ -73,7 +73,7 @@ def test_open_url_and_launch_app_guards(tmp_path):
     assert "only http" in call(reg, "open_url", url="javascript:alert(1)")
     assert asked == []  # bad schemes are refused before asking
     assert "declined" in call(reg, "open_url", url="https://example.com")
-    assert "unknown app" in call(reg, "launch_app", name="format c:")
+    assert "No installed app matches" in call(reg, "launch_app", name="format c:")  # never runs arbitrary text
     assert "declined" in call(reg, "launch_app", name="notepad")
     assert "declined" in call(reg, "read_clipboard")
 

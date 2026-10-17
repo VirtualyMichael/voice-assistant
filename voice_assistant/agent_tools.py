@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import shutil
 import socket
 import subprocess
 import threading
@@ -17,6 +18,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from .apps import AppCatalog, launch_start_app, score
 from .permissions import FolderPolicy
 from .tools import Confirm, Tool
 
@@ -165,8 +167,10 @@ def _powershell(args: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", *args], capture_output=True, text=True, timeout=SHELL_TIMEOUT_S, **kw)
 
 
-def build_agent_tools(cfg, policy: FolderPolicy, confirm: Confirm, announce, timers: Timers | None = None) -> list[Tool]:
+def build_agent_tools(cfg, policy: FolderPolicy, confirm: Confirm, announce, timers: Timers | None = None,
+                      catalog: AppCatalog | None = None) -> list[Tool]:
     timers = timers or Timers(announce)
+    catalog = catalog or AppCatalog(lambda: {})
     declined = "The user declined this action."
 
     def get_time() -> str:
@@ -194,14 +198,35 @@ def build_agent_tools(cfg, policy: FolderPolicy, confirm: Confirm, announce, tim
         return "Opened."
 
     def launch_app(name: str) -> str:
-        apps = {k.lower(): v for k, v in cfg.app_shortcuts.items()}
-        path = apps.get(name.strip().lower())
-        if path is None:
-            return f"Error: unknown app. Known apps: {', '.join(sorted(apps)) or 'none'}."
-        if not confirm(f"Launch {name}?\n\n{path}"):
+        """Open an installed app by name: the user's own shortcuts first, then everything in the Start menu."""
+        custom = [(k, v, score(name, k)) for k, v in cfg.app_shortcuts.items()]
+        custom = sorted((c for c in custom if c[2] >= 80), key=lambda c: -c[2])
+        if custom:
+            label, path = custom[0][0], custom[0][1]
+            start_id = None
+        else:
+            best, found = catalog.resolve(name)
+            if best is None and found:
+                return "Several apps match: " + "; ".join(m.name for m in found) + ". Ask the user which one they mean."
+            if best is None:
+                return f"No installed app matches '{name}'. The user can add it in Settings > Apps."
+            label, path, start_id = best.name, "", best.app_id
+        if start_id is None and not (os.path.exists(path) or shutil.which(path)):
+            return f"Error: the saved path for '{label}' no longer exists ({path}). The user can fix it in Settings > Apps."
+        if cfg.confirm_launch and not confirm(f"Open {label}?"):
             return declined
-        os.startfile(path)  # noqa: S606 - path comes from the user's own config
-        return f"Launched {name}."
+        if start_id is not None:
+            launch_start_app(start_id)
+        else:
+            os.startfile(path)  # noqa: S606 - the path was chosen by the user in Settings
+        return f"Opened {label}."
+
+    def list_apps(query: str = "") -> str:
+        if query.strip():
+            found = catalog.find(query, limit=10)
+            return "\n".join(m.name for m in found) or f"No installed app matches '{query}'."
+        names = catalog.names()
+        return f"{len(names)} apps installed. Some: " + ", ".join(names[:40]) if names else "The app list is not available yet."
 
     def read_clipboard() -> str:
         if not confirm("Let the assistant read what is on your clipboard?"):
@@ -222,7 +247,8 @@ def build_agent_tools(cfg, policy: FolderPolicy, confirm: Confirm, announce, tim
         Tool("list_timers", "List active timers.", _obj({}), timers.listing),
         Tool("cancel_timer", "Cancel a timer by its number.", _obj({"timer_id": {"type": "integer"}}, ["timer_id"]), cancel_timer),
         Tool("open_url", "Open a web link in the browser (the user confirms).", _obj({"url": _str}, ["url"]), open_url),
-        Tool("launch_app", "Launch one of the user's configured apps (the user confirms).", _obj({"name": _str}, ["name"]), launch_app),
+        Tool("launch_app", "Open an installed app by name, e.g. YouTube Music or Steam (the user may be asked to confirm).", _obj({"name": _str}, ["name"]), launch_app),
+        Tool("list_apps", "Search the apps installed on this PC by name.", _obj({"query": _str}), list_apps),
         Tool("read_clipboard", "Read the clipboard text (the user confirms).", _obj({}), read_clipboard),
         Tool("write_clipboard", "Put text on the clipboard (the user confirms).", _obj({"text": _str}, ["text"]), write_clipboard),
     ]

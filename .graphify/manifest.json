@@ -1,0 +1,194 @@
+{
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/packaging/build.ps1": {
+    "mtime": 1792199384700.1462,
+    "hash": "3c0a86725d6951e1b6d039b107eb3a3d"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/packaging/make_icon.py": {
+    "mtime": 1792198928879.4858,
+    "hash": "ba6bbab01fffd3bd3b3cb80e975a7a87"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/packaging/run_app.py": {
+    "mtime": 1792198928863.1174,
+    "hash": "fdcc318e81feb949f67bce6c7903af96"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/conftest.py": {
+    "mtime": 1792192739283.5356,
+    "hash": "15f6010d0e7da5a44897bba0a1f9cf16"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/mcp_demo_server.py": {
+    "mtime": 1792198453487.6606,
+    "hash": "92d120e95a273efcb56bc8d5f04505af"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_agent_tools.py": {
+    "mtime": 1792198343306.7356,
+    "hash": "3403d001b2b3c5fe81b6c45815d24ca8"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_chime.py": {
+    "mtime": 1792198342912.3823,
+    "hash": "c6adb0091e250c499b7bba383afef72a"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_echo_and_modes.py": {
+    "mtime": 1792198343305.199,
+    "hash": "3c45e433075fe72928329dabd9b77d11"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_filler.py": {
+    "mtime": 1792198343306.7356,
+    "hash": "83779f01f3c4707126fe43b1e9f2693e"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_forward.py": {
+    "mtime": 1792195981003.09,
+    "hash": "9f5b633952ebb7425253b4c29d63863c"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_hardware_wake.py": {
+    "mtime": 1792194045349.461,
+    "hash": "315d03efeb94e61c51cef8f313b20e35"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_hybrid_asr.py": {
+    "mtime": 1792201920511.4495,
+    "hash": "ab9c1421abc53a772ba5181d83750012"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_memory.py": {
+    "mtime": 1792198788581.5542,
+    "hash": "2a0afcaff9a40a1c858cd2eb7aa2f9e2"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_playback_tts.py": {
+    "mtime": 1792196373515.7595,
+    "hash": "ca6500ea6c9635b8d06a29fd557114cf"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_providers_mcp.py": {
+    "mtime": 1792198433832.238,
+    "hash": "9269209d8febbf7dd045b1f951fc13ac"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_refresh.py": {
+    "mtime": 1792197901925.655,
+    "hash": "47e46be1c6c0d6e567008875955c908b"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_session.py": {
+    "mtime": 1792198343305.199,
+    "hash": "64f43e2f2367c40687096457de90d169"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_trim.py": {
+    "mtime": 1792201896125.2268,
+    "hash": "b4e9fde194f68324fbeaca6b82918cd7"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_units.py": {
+    "mtime": 1792192739311.5325,
+    "hash": "6f035d2b9f5e042845bcecdfc559cf0b"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_vr.py": {
+    "mtime": 1792195254613.684,
+    "hash": "7a8fdb9188f29b004720ec85a542ce24"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/tests/test_wizard.py": {
+    "mtime": 1792198919206.6846,
+    "hash": "c3ca40de48cb2773a476b6f987f18e3d"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/__init__.py": {
+    "mtime": 1792201943281.8184,
+    "hash": "bf80389f63522fcc7cbf5c258b38f4a9"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/__main__.py": {
+    "mtime": 1792198898542.3936,
+    "hash": "fa34b304a71336fffd26d3da95e09c5b"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/agent.py": {
+    "mtime": 1792198788993.5312,
+    "hash": "a5c386db8f927a00d9d484d84ace556d"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/agent_tools.py": {
+    "mtime": 1792197491238.695,
+    "hash": "f9d8203de9e624d605deb568e178ca89"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/app.py": {
+    "mtime": 1792200886874.1877,
+    "hash": "34d7594bd0d46f6d7b8f1f459d36afae"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/audio_io.py": {
+    "mtime": 1792197902314.208,
+    "hash": "de16fdc72fdd097f0f3083dffbfe51cf"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/chunker.py": {
+    "mtime": 1792196294703.5066,
+    "hash": "3140f13d417afc658adb45036eefd858"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/config.py": {
+    "mtime": 1792200886872.6814,
+    "hash": "7e1f76acc2944597ab0d6c4a20c2b204"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/hardware.py": {
+    "mtime": 1792193982858.7534,
+    "hash": "a60758bb26f545b3e20493e25f8871a9"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/llm.py": {
+    "mtime": 1792198408043.8179,
+    "hash": "7e5072463d3d4c075d110861b4a8f017"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/mcp_client.py": {
+    "mtime": 1792198485165.083,
+    "hash": "6d563e9ec1b1a5c3bae409c452fd18be"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/memory.py": {
+    "mtime": 1792198760519.614,
+    "hash": "6620d1a5f4ab896382cbfe0d1689bdb0"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/metrics.py": {
+    "mtime": 1792192622030.9556,
+    "hash": "b8fd9dd42e0fe2797bd4654e5a9a0887"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/models.py": {
+    "mtime": 1792200886874.1877,
+    "hash": "400247db9bd0c05cfcf0755e67fbc990"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/normalize.py": {
+    "mtime": 1792196383055.9417,
+    "hash": "576d292487c44b95d41fa2b0c9cbf30c"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/permissions.py": {
+    "mtime": 1792192622135.053,
+    "hash": "8f3c96e4382f5e495695e6f337b8c617"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/providers.py": {
+    "mtime": 1792198407612.2527,
+    "hash": "f5ee8b72532cb45f9bd24f115d8af058"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/selftest.py": {
+    "mtime": 1792198898069.6594,
+    "hash": "1f4a08aa37cfd7eecbd3550589fe80d0"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/session.py": {
+    "mtime": 1792201896533.9348,
+    "hash": "66194b6011c8418d51f508c55f6cc349"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/setup_wizard.py": {
+    "mtime": 1792200886875.709,
+    "hash": "127107ef8c0cb58519a6a376c809713a"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/speaker.py": {
+    "mtime": 1792198305915.2285,
+    "hash": "0731b0060b64bb958d468efeec7a79ce"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/theme.py": {
+    "mtime": 1792193922347.9473,
+    "hash": "6b1861cb8f88f331debea1a624bb673c"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/tones.py": {
+    "mtime": 1792198305483.9426,
+    "hash": "790785da7dca99b16c7d1a878628430d"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/tools.py": {
+    "mtime": 1792197491642.462,
+    "hash": "2dfe7483842b58d975ba9c789a900b63"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/voice_assistant/vr.py": {
+    "mtime": 1792195242962.557,
+    "hash": "91b4985bc13bfac84ee7667fd86848b9"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/README.md": {
+    "mtime": 1792201943594.2627,
+    "hash": "c45a8ab7d57bc8bc23c32114c423a3df"
+  },
+  "C:/Users/micha/Downloads/Ai Files/Ai Live convo system/packaging/icon.png": {
+    "mtime": 1792201944260.678,
+    "hash": "c84d763b9edc4862e15982abe7981ae4"
+  }
+}

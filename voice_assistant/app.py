@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QInputDialog, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QInputDialog, QListWidget, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
@@ -29,6 +29,7 @@ from .speaker import Speaker
 from .setup_wizard import run_wizard
 from .theme import STATE_COLORS, STYLE
 from .agent_tools import Timers, build_agent_tools, capabilities_prompt
+from .apps import AppCatalog
 from .tools import build_file_tools
 from .vr import VrWatcher
 
@@ -45,6 +46,7 @@ class Bridge(QObject):
     tool = Signal(str)
     vr_note = Signal(str)
     note = Signal(str)
+    apps_count = Signal(int)
 
 
 class _Holder:
@@ -205,6 +207,7 @@ class MainWindow(QMainWindow):
         b.vr.connect(self._on_vr)
         b.vr_note.connect(self._on_vr_note)
         b.note.connect(lambda m: self.chat.add("bubbleNote", m))
+        b.apps_count.connect(self._on_apps_count)
         b.tool.connect(lambda m: self.chat.add("bubbleNote", "\u2699 " + m[:140]))
         self.vr_watcher = VrWatcher(b.vr.emit, cfg.vr_processes, cfg.vr_poll_s)
         if cfg.vr_autoswitch:
@@ -364,6 +367,26 @@ class MainWindow(QMainWindow):
         self.vr_box.setVisible(cfg.vr_autoswitch)
         form.addRow(self.vr_box)
         vr_on.toggled.connect(self._set_vr_autoswitch)
+        form.addRow(QLabel("Apps the assistant can open:", objectName="small"))
+        self.apps_count = QLabel("Scanning installed apps\u2026", objectName="small")
+        ask = QCheckBox("Ask before opening an app")
+        ask.setChecked(cfg.confirm_launch)
+        ask.toggled.connect(lambda v: self._set_field("confirm_launch", v))
+        self.apps_list = QListWidget()
+        self.apps_list.setMaximumHeight(80)
+        self.apps_list.setToolTip("Your own shortcuts. Everything in the Start menu is found automatically.")
+        self._fill_apps()
+        add_app, rem_app, rescan = QPushButton("Add app\u2026"), QPushButton("Remove"), QPushButton("Rescan")
+        add_app.clicked.connect(self._add_app)
+        rem_app.clicked.connect(self._remove_app)
+        rescan.clicked.connect(lambda: threading.Thread(target=self._scan_apps, daemon=True).start())
+        app_row = QHBoxLayout()
+        for w in (add_app, rem_app, rescan):
+            app_row.addWidget(w)
+        form.addRow(self.apps_count)
+        form.addRow(ask)
+        form.addRow(self.apps_list)
+        form.addRow(app_row)
         test, folder = QPushButton("Test speaker"), QPushButton("Add approved folder…")
         cfg_btn = QPushButton("Open settings file")
         setup_btn = QPushButton("Run setup again")
@@ -403,7 +426,9 @@ class MainWindow(QMainWindow):
         llm = make_llm(cfg)
         registry = build_file_tools(self.policy, self._confirm)
         self.timers = Timers(lambda text: self.session.announce(text))
-        registry.add(build_agent_tools(cfg, self.policy, self._confirm, lambda t: self.session.announce(t), self.timers))
+        self.catalog = AppCatalog()
+        threading.Thread(target=self._scan_apps, daemon=True).start()
+        registry.add(build_agent_tools(cfg, self.policy, self._confirm, lambda t: self.session.announce(t), self.timers, self.catalog))
         agent = Agent(
             llm, cfg.system_prompt + capabilities_prompt(cfg, registry.names()), registry, cfg.max_tool_rounds,
             max_messages=cfg.history_messages,
@@ -598,6 +623,35 @@ class MainWindow(QMainWindow):
                 self._on_error(f"Could not save the key: {e}")
                 return
             self._rebuild_llm()
+
+    # ---- apps ------------------------------------------------------------------------
+    def _scan_apps(self) -> None:
+        self.bridge.apps_count.emit(self.catalog.refresh())
+
+    def _on_apps_count(self, n: int) -> None:
+        self.apps_count.setText(f"{n} installed apps found automatically" if n else "Could not read the installed app list; add apps below.")
+
+    def _fill_apps(self) -> None:
+        self.apps_list.clear()
+        for name, path in self.cfg.app_shortcuts.items():
+            self.apps_list.addItem(f"{name}  \u2192  {path}")
+
+    def _add_app(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Choose an app or shortcut", "", "Programs (*.exe *.lnk *.bat *.cmd *.url);;All files (*)")
+        if not path:
+            return
+        name, ok = QInputDialog.getText(self, "Name", "What should you call it when you ask?", text=Path(path).stem)
+        if ok and name.strip():
+            self.cfg.app_shortcuts[name.strip()] = path
+            save_config(self.cfg)
+            self._fill_apps()
+
+    def _remove_app(self) -> None:
+        row = self.apps_list.currentRow()
+        if row >= 0:
+            del self.cfg.app_shortcuts[list(self.cfg.app_shortcuts)[row]]
+            save_config(self.cfg)
+            self._fill_apps()
 
     def _rerun_setup(self) -> None:
         if run_wizard(self.cfg, self):

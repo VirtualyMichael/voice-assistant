@@ -109,7 +109,8 @@ and says "One moment." (`tool_filler`) when a task starts before any reply text.
 | `set_timer`, `list_timers`, `cancel_timer` | timers and reminders, spoken when they finish | none |
 | `list_directory`, `read_text_file` | files | approved folders only |
 | `write_text_file` | create/overwrite a file | approved folders + confirm dialog |
-| `open_url`, `launch_app` | open an http(s) link / a configured app (`app_shortcuts`) | confirm dialog |
+| `open_url` | open an http(s) link | confirm dialog |
+| `launch_app`, `list_apps` | open any installed app by name (the Start-menu list is read automatically, about 200 apps, so no setup), or one you added in Settings > Apps | confirm dialog (switch off with *Ask before opening an app*) |
 | `read_clipboard`, `write_clipboard` | clipboard | confirm dialog |
 | `web_search`, `fetch_page` | internet search and page text | off until "Let the agent search/read the web"; localhost/LAN blocked, redirects re-checked |
 | `run_powershell` | a command inside an approved folder, 30 s limit | off until enabled; shows the exact command and confirms every time |
@@ -154,6 +155,15 @@ Their tools join the agent's tool list. Each server runs with a minimal environm
 tools not marked read-only ask before every call unless the server has `"auto_approve": true`, and their output is labelled
 as untrusted data. Tested against a real stdio MCP server (discovery, confirm/read-only behaviour, secret isolation, a
 failing server).
+
+## Opening apps
+
+The assistant reads the Start-menu app list at start-up (`Get-StartApps`: desktop apps, Store apps and browser-installed web
+apps such as YouTube Music), so "open YouTube Music" works without configuration. Matching tolerates spoken names ("steam vr"
+finds SteamVR, exact spelling beats look-alikes such as Notepad vs Notepad++, and close calls make it ask which one you mean).
+It can only start apps from that list or from your own list, never text the AI makes up. If something is missing, Settings >
+Apps lets you add any `.exe`, `.lnk` or `.bat` under a spoken name; those take priority over the automatic list. *Rescan*
+refreshes the list after installing something.
 
 ## Safe task
 
