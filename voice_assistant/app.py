@@ -341,6 +341,10 @@ class MainWindow(QMainWindow):
         opacity.valueChanged.connect(self._set_opacity)
         form.use("General")
         form.addRow("Opacity", opacity)
+        lang = QLineEdit(cfg.main_language)
+        lang.setToolTip("Screen translations are given in this language")
+        lang.editingFinished.connect(lambda: self._set_field("main_language", lang.text().strip() or "English"))
+        form.addRow("My language", lang)
         self.prov = QComboBox()
         for pid, label in PROVIDERS.items():
             self.prov.addItem(label, pid)
