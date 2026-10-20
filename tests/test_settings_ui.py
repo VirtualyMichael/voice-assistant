@@ -174,3 +174,8 @@ def test_settings_page_replaces_the_chat(win):
     assert win.settings.isVisible() and not win.chat_page.isVisible()
     win._gear.setChecked(False)
     assert win.chat_page.isVisible() and not win.settings.isVisible()
+
+
+def test_jarvis_preset_sets_voice_persona_and_wake_phrase(win):
+    win._apply_jarvis_preset()
+    assert win.cfg.tts_voice == "bm_george" and win.cfg.persona_jarvis and win.cfg.wake_phrase == "Jarvis"

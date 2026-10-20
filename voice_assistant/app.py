@@ -449,7 +449,12 @@ class MainWindow(QMainWindow):
         persona.setToolTip("Calm, dry-witted British butler manner. Pair it with the George or Lewis (UK) voice.")
         persona.setChecked(cfg.persona_jarvis)
         persona.toggled.connect(self._set_persona)
+        self._persona_cb = persona
+        jarvis = QPushButton("Apply Jarvis-style preset")
+        jarvis.setToolTip("British male voice (George), butler personality, wake phrase \"Jarvis\". A stand-in, not the film voice.")
+        jarvis.clicked.connect(self._apply_jarvis_preset)
         form.use("Voice")
+        form.addRow(jarvis)
         form.addRow(persona)
         form.addRow(vapprove)
         form.addRow(own_voice)
@@ -778,6 +783,7 @@ class MainWindow(QMainWindow):
         box.setCurrentIndex(max(box.findData(cur.id), 0))
         box.setToolTip("Install the Kokoro model (fetch-models kokoro) for more natural voices" if self.synth.engine == "piper" else "")
         box.currentIndexChanged.connect(lambda _i: self._set_voice(box.currentData()))
+        self._voice_box = box
         self._form.use("Voice")
         self._form.insertRow(0, "Voice", box)
 
@@ -977,6 +983,16 @@ class MainWindow(QMainWindow):
         if d:
             self._set_field("custom_voice_dir", d)
             self.chat.add("bubbleNote", f"Custom voice set: {d}. Restart the app to use it.")
+
+    def _apply_jarvis_preset(self) -> None:
+        """One click: British male voice, butler manner, "Jarvis" wake phrase (the wake phrase applies after a restart)."""
+        self._set_field("tts_voice", "bm_george")
+        self._set_field("wake_phrase", "Jarvis")
+        self._persona_cb.setChecked(True)
+        box = getattr(self, "_voice_box", None)
+        if box is not None and box.findData("bm_george") >= 0:
+            box.setCurrentIndex(box.findData("bm_george"))  # also speaks a sample
+        self.chat.add("bubbleNote", "Jarvis-style preset applied: George (UK) voice and butler personality. Restart to use \"Jarvis\" as the wake phrase.")
 
     def _set_persona(self, on: bool) -> None:
         self._set_field("persona_jarvis", on)
