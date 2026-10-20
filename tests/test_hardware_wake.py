@@ -30,3 +30,9 @@ def test_write_keywords_with_real_model():
     out = write_keywords(bpe.parent, "Hey  Assistant")
     line = out.read_text(encoding="utf-8").strip()
     assert line.startswith("▁HE Y ▁AS") and line.endswith("@HEY_ASSISTANT")
+
+
+def test_one_word_wake_phrase_gets_hey_and_ok_variants():
+    from voice_assistant.models import wake_variants
+    assert wake_variants("Jarvis") == ["JARVIS", "HEY JARVIS", "OK JARVIS"]
+    assert wake_variants("hey  assistant") == ["HEY ASSISTANT"]

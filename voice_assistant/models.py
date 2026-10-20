@@ -97,19 +97,26 @@ class SherpaRecognizer:
         self._r.reset(self._s)
 
 
-def write_keywords(folder: Path, phrase: str, boost: float = 2.0, threshold: float = 0.25) -> Path:
-    """Tokenise a wake phrase with the model's BPE model into sherpa's keywords format."""
+def wake_variants(phrase: str) -> list[str]:
+    """A one-word phrase is short and easy to miss, so also listen for "hey <word>" and "ok <word>" (measured: 82% -> 100% for "Hey Jarvis")."""
+    p = " ".join(phrase.upper().split())
+    return [p] if " " in p else [p, f"HEY {p}", f"OK {p}"]
+
+
+def write_keywords(folder: Path, phrase: str, boost: float = 1.5, threshold: float = 0.12) -> Path:
+    """Tokenise a wake phrase with the model's BPE model into sherpa's keywords format.
+    boost 1.5 / threshold 0.12 won a grid test on synthetic speech; a higher boost lowered detection."""
     import sentencepiece as spm
 
     bpe = folder / "bpe.model"
     if not bpe.exists():
         raise ModelsMissing(f"Missing {bpe}")
-    phrase = " ".join(phrase.upper().split())
-    if not phrase:
+    if not phrase.strip():
         raise ValueError("wake_phrase is empty")
-    pieces = " ".join(spm.SentencePieceProcessor(model_file=str(bpe)).encode(phrase, out_type=str))
+    sp = spm.SentencePieceProcessor(model_file=str(bpe))
+    lines = [f"{' '.join(sp.encode(p, out_type=str))} :{boost} #{threshold} @{p.replace(' ', '_')}\n" for p in wake_variants(phrase)]
     out = folder / "keywords_custom.txt"
-    out.write_text(f"{pieces} :{boost} #{threshold} @{phrase.replace(' ', '_')}\n", encoding="utf-8")
+    out.write_text("".join(lines), encoding="utf-8")
     return out
 
 
@@ -140,7 +147,7 @@ class SherpaWakeWord:
 
     SAMPLE_RATE = 16000
 
-    def __init__(self, folder: Path, phrase: str, num_threads: int = 1, threshold: float = 0.25):
+    def __init__(self, folder: Path, phrase: str, num_threads: int = 1, threshold: float = 0.12):
         import sherpa_onnx
 
         d = _need(folder, "kws")

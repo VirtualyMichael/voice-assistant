@@ -42,6 +42,12 @@ from .tools import build_file_tools
 from .vr import VrWatcher
 
 
+JARVIS_PERSONA = (
+    " Personality: a calm, composed, dry-witted British butler AI in the spirit of a classic fictional assistant. Polite and precise, "
+    "with understated humour, never gushing. Keep replies short and spoken."
+)
+
+
 class Bridge(QObject):
     state = Signal(str)
     partial = Signal(str)
@@ -384,7 +390,12 @@ class MainWindow(QMainWindow):
         wake.setChecked(cfg.wake_word_enabled)
         wake.toggled.connect(lambda v: self._set_field("wake_word_enabled", v))
         phrase.editingFinished.connect(lambda: self._set_field("wake_phrase", phrase.text().strip() or "hey assistant"))
+        persona = QCheckBox("Jarvis-style butler personality")
+        persona.setToolTip("Calm, dry-witted British butler manner. Pair it with the George or Lewis (UK) voice.")
+        persona.setChecked(cfg.persona_jarvis)
+        persona.toggled.connect(self._set_persona)
         form.use("Voice")
+        form.addRow(persona)
         form.addRow("Wake word", wake)
         form.addRow("Wake phrase", phrase)
         reserve = QDoubleSpinBox(minimum=0, maximum=64, singleStep=0.5, value=cfg.vram_reserve_gb, suffix=" GB")
@@ -601,7 +612,7 @@ class MainWindow(QMainWindow):
             self.session.start()
 
     def _system_prompt(self) -> str:
-        return self.cfg.system_prompt + capabilities_prompt(self.cfg, self._registry.names()) + self.skills.prompt()
+        return self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + capabilities_prompt(self.cfg, self._registry.names()) + self.skills.prompt()
 
     def _warm_pdfs(self) -> None:
         """Index the skills' PDFs in the background so the first question is quick (cached on disk afterwards)."""
@@ -774,6 +785,10 @@ class MainWindow(QMainWindow):
         self.chat.add("bubbleNote", f"SteamVR {'detected' if on else 'closed'}: mic = {mic}; speaker = {spk}")
 
     # ---- smart home --------------------------------------------------------------
+    def _set_persona(self, on: bool) -> None:
+        self._set_field("persona_jarvis", on)
+        self.session.agent.messages[0]["content"] = self._system_prompt()
+
     def _set_home(self, name: str, value) -> None:
         self._set_field(name, value)
         self._refresh_home_tools()

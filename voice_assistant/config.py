@@ -36,7 +36,8 @@ class Config:
     mic_forward: bool = False
     wake_word_enabled: bool = False
     wake_phrase: str = "hey assistant"
-    wake_threshold: float = 0.25  # lower = more sensitive, more false triggers
+    wake_threshold: float = 0.12  # lower = more sensitive, more false triggers
+    persona_jarvis: bool = False  # calm, dry-witted British butler-style personality (pair with the George or Lewis UK voice)
     # VR auto-switch: while a VR runtime process is running, use the VR mic/speaker instead (empty = keep normal)
     vr_autoswitch: bool = False
     vr_input_device: str = ""
