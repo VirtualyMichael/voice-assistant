@@ -28,7 +28,7 @@ from .metrics import TurnMetrics
 from .models import AccurateRecognizer, ModelsMissing, SherpaRecognizer, SherpaWakeWord, load_synth
 from .permissions import FolderPolicy
 from .routing import double_voice_warnings, listen_routes
-from .smart_home import GoveeLan, build_home_tools
+from .smart_home import build_home_tools, make_govee
 from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_for, needs_key, save_key, set_model
 from .session import Session, SessionEvents
 from .speaker import Speaker
@@ -518,6 +518,9 @@ class MainWindow(QMainWindow):
         ha_key.clicked.connect(self._ask_ha_token)
         ha_test.clicked.connect(lambda: threading.Thread(target=self._test_ha, daemon=True).start())
         form.addRow(govee)
+        gkey = QPushButton("Set Govee API key\u2026 (optional: uses Govee's cloud instead of LAN)")
+        gkey.clicked.connect(lambda: self._ask_secret("govee", "Govee API key", "Paste your Govee developer API key (Govee Home app > Profile > Settings > Apply for API Key):"))
+        form.addRow(gkey)
         form.addRow(find)
         form.addRow(blink)
         form.addRow(self.home_status)
@@ -560,7 +563,7 @@ class MainWindow(QMainWindow):
         self.catalog = AppCatalog()
         threading.Thread(target=self._scan_apps, daemon=True).start()
         registry.add(build_agent_tools(cfg, self.policy, self._confirm, lambda t: self.session.announce(t), self.timers, self.catalog))
-        self.govee = GoveeLan(cfg.light_names)
+        self.govee = make_govee(cfg)
         registry.add(build_home_tools(cfg, self._confirm, self.govee))
         self.pdfs = PdfStore()
         registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))
@@ -764,13 +767,22 @@ class MainWindow(QMainWindow):
 
     # ---- smart home --------------------------------------------------------------
     def _find_lights(self) -> None:
-        found = self.govee.discover(2.5)
+        self.govee = make_govee(self.cfg)  # picks up a newly saved key
+        try:
+            found = self.govee.discover(2.5)
+        except Exception as e:
+            self.bridge.tool.emit(f"Govee: {e}")
+            return
         msg = ("Found: " + ", ".join(self.govee.label(i) for i in found)) if found else (
             "No Govee lights answered. Turn on LAN Control for each light in the Govee Home app (not every model has it) and make sure this PC is on the same network.")
         self.bridge.tool.emit(msg)
 
     def _blink_lights(self) -> None:
-        ips = list(self.govee.devices) or list(self.govee.discover(2.5))
+        try:
+            ips = list(self.govee.devices) or list(self.govee.discover(2.5))
+        except Exception as e:
+            self.bridge.tool.emit(f"Govee: {e}")
+            return
         if not ips:
             self.bridge.tool.emit("No Govee lights to test; click Find lights first.")
             return
@@ -781,13 +793,16 @@ class MainWindow(QMainWindow):
             time.sleep(0.7)
         self.bridge.tool.emit(f"Blinked {len(ips)} light(s).")
 
-    def _ask_ha_token(self) -> None:
-        key, ok = QInputDialog.getText(self, "Home Assistant", "Paste a long-lived access token (Profile > Security in Home Assistant):", QLineEdit.Password)
+    def _ask_secret(self, name: str, title: str, text: str) -> None:
+        key, ok = QInputDialog.getText(self, title, text, QLineEdit.Password)
         if ok and key.strip():
             try:
-                save_key("homeassistant", key)
+                save_key(name, key)
             except Exception as e:
-                self._on_error(f"Could not save the token: {e}")
+                self._on_error(f"Could not save it: {e}")
+
+    def _ask_ha_token(self) -> None:
+        self._ask_secret("homeassistant", "Home Assistant", "Paste a long-lived access token (Profile > Security in Home Assistant):")
 
     def _test_ha(self) -> None:
         from .smart_home import HomeAssistant

@@ -112,6 +112,64 @@ class GoveeLan:
         return "Done: " + ", ".join(self.label(i) for i in ips) + "."
 
 
+class GoveeCloud(GoveeLan):
+    """Govee's official cloud API (needs the user's own free developer key; Govee limits it to non-commercial use and about 10 requests a minute per light).
+    Same interface as GoveeLan, so the tools do not care which one is active. Works for any light linked to the Govee Home app, with no LAN Control needed."""
+
+    BASE = "https://openapi.api.govee.com/router/api/v1"
+
+    def __init__(self, key: str, names: dict[str, str] | None = None, client: httpx.Client | None = None):
+        super().__init__(names)
+        self.http = client or httpx.Client(timeout=10, headers={"Govee-API-Key": key})
+
+    def discover(self, wait: float = 0) -> dict[str, dict]:
+        r = self.http.get(f"{self.BASE}/user/devices")
+        r.raise_for_status()
+        self.devices = {d["device"]: d for d in r.json().get("data", [])}
+        return self.devices
+
+    def label(self, ip: str) -> str:
+        d = self.devices.get(ip, {})
+        return self.names.get(ip) or d.get("deviceName") or d.get("sku", ip)
+
+    def send(self, device: str, cmd: str, data: dict) -> None:
+        """cmd is a capability instance (powerSwitch, brightness, colorRgb, colorTemperatureK); data["value"] is its value."""
+        kind = {"powerSwitch": "on_off", "brightness": "range", "colorRgb": "color_setting", "colorTemperatureK": "color_setting"}[cmd]
+        d = self.devices[device]
+        r = self.http.post(f"{self.BASE}/device/control", json={
+            "requestId": "va", "payload": {"sku": d["sku"], "device": device,
+                                           "capability": {"type": f"devices.capabilities.{kind}", "instance": cmd, "value": data["value"]}}})
+        r.raise_for_status()
+
+    def apply(self, ips: list[str], on: bool | None, brightness: int | None, color: str | None) -> str:
+        rgb, kelvin = parse_color(color) if color else (None, None)
+        if color and rgb is None and kelvin is None:
+            return f"Error: I don't know the colour '{color}'. Use a basic colour name, a hex code like #ff8800, 'warm white' or '3000K'."
+        ok, failed = [], []
+        for dev in ips:
+            try:
+                if on is not None or rgb or kelvin:
+                    self.send(dev, "powerSwitch", {"value": 0 if on is False else 1})
+                if rgb:
+                    self.send(dev, "colorRgb", {"value": (rgb[0] << 16) + (rgb[1] << 8) + rgb[2]})
+                elif kelvin:
+                    self.send(dev, "colorTemperatureK", {"value": kelvin})
+                if brightness is not None:
+                    self.send(dev, "brightness", {"value": max(1, min(100, int(brightness)))})
+                ok.append(self.label(dev))
+            except httpx.HTTPError as e:
+                failed.append(f"{self.label(dev)} ({e})")
+        return ("Done: " + ", ".join(ok) + "." if ok else "") + ((" " if ok else "") + "Failed: " + "; ".join(failed) if failed else "")
+
+
+def make_govee(cfg):
+    """Cloud API when the user saved a Govee key, otherwise the local network."""
+    from .providers import get_key
+
+    key = get_key("govee")
+    return GoveeCloud(key, cfg.light_names) if key else GoveeLan(cfg.light_names)
+
+
 class HomeAssistant:
     def __init__(self, url: str, token: str, client: httpx.Client | None = None):
         self.base = url.rstrip("/")
@@ -152,18 +210,24 @@ def build_home_tools(cfg, confirm, govee: GoveeLan | None = None, ha: HomeAssist
     tools: list[Tool] = []
     declined = "The user declined this action."
     if cfg.govee_enabled:
-        govee = govee or GoveeLan(cfg.light_names)
+        govee = govee or make_govee(cfg)
 
         def list_lights() -> str:
             if not govee.devices:
-                govee.discover()
+                try:
+                    govee.discover()
+                except httpx.HTTPError as e:
+                    return f"Could not reach Govee: {e}"
             return "\n".join(f"{govee.label(ip)} ({d.get('sku', '?')})" for ip, d in govee.devices.items()) or (
                 "No Govee lights answered. In the Govee Home app open each light > settings and turn on LAN Control; "
                 "the PC must be on the same Wi-Fi/network.")
 
         def set_lights(target: str = "all", on: bool | None = None, brightness: int | None = None, color: str | None = None) -> str:
             if not govee.devices:
-                govee.discover()
+                try:
+                    govee.discover()
+                except httpx.HTTPError as e:
+                    return f"Could not reach Govee: {e}"
             ips = govee.pick(target)
             if not ips:
                 return f"No light matches '{target}'. Known lights: " + (", ".join(govee.label(i) for i in govee.devices) or "none found.")

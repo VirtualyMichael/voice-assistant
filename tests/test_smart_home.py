@@ -62,3 +62,22 @@ def test_ha_locks_ask_first():
     tools = {t.name: t for t in build_home_tools(cfg, lambda p: asked.append(p) or False, None, ha)}
     assert "declined" in tools["ha_call"].handler("lock", "unlock", "lock.front")
     assert asked
+
+
+def test_govee_cloud_requests():
+    from voice_assistant.smart_home import GoveeCloud
+
+    sent = []
+
+    def handler(req):
+        if req.method == "GET":
+            return httpx.Response(200, json={"data": [{"device": "AB:CD", "sku": "H6008", "deviceName": "Desk lamp"}]})
+        sent.append(json.loads(req.content)["payload"]["capability"])
+        return httpx.Response(200, json={"code": 200})
+
+    g = GoveeCloud("k", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    g.discover()
+    assert g.pick("desk") == ["AB:CD"]
+    assert g.apply(["AB:CD"], None, 40, "blue") == "Done: Desk lamp."
+    assert {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "value": 255} in sent
+    assert {"type": "devices.capabilities.range", "instance": "brightness", "value": 40} in sent
