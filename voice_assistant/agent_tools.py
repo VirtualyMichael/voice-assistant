@@ -295,6 +295,8 @@ def capabilities_prompt(cfg, names: list[str]) -> str:
         "(punctuation does not matter, partial names are fine); a confirmation dialog appears by itself, so do not ask in words first. "
         "For lights and other home devices, act immediately without asking 'should I': if the user did not name a light, use target 'all'. "
         "To play a song or artist, call play_music with the title and artist (never launch_app + web_search + open_url). "
+        "If control_* tools exist you can operate app windows: take one small step at a time, call look_at_screen to verify after each action, never type passwords or payment details, "
+        "and prefer a dedicated tool (play_music, set_volume, media_control) when one fits. "
         "launch_app switches to an app that is already open instead of starting a second copy. To look at or translate what is in an app or game, call look_at_screen with its window name; "
         "if no window matches, ask the user whether to open it, and open it only if they agree."
     )

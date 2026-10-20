@@ -30,6 +30,7 @@ from .models import AccurateRecognizer, ModelsMissing, SherpaRecognizer, SherpaW
 from .permissions import FolderPolicy
 from .routing import double_voice_warnings, listen_routes
 from .delegate import UsageLog, build_delegate_tools
+from .computer import build_computer_tools
 from .extras import build_extra_tools
 from .music import build_music_tools
 from .screen import list_windows
@@ -572,7 +573,12 @@ class MainWindow(QMainWindow):
         app_row = QHBoxLayout()
         for w in (add_app, rem_app, rescan):
             app_row.addWidget(w)
+        ctl = QCheckBox("Let the assistant click, type and press keys in app windows (experimental)")
+        ctl.setToolTip("Asks before it first touches each window; never terminals, password managers or security prompts. Works best with a strong vision model.")
+        ctl.setChecked(cfg.computer_control)
+        ctl.toggled.connect(lambda v: self._set_home("computer_control", v))
         form.addRow(ask)
+        form.addRow(ctl)
         form.addRow(self.apps_count)
         form.addRow(self.apps_list)
         form.addRow(app_row)
@@ -736,12 +742,14 @@ class MainWindow(QMainWindow):
             registry.add(build_delegate_tools(cfg, self.policy, self._confirm, self.usage))
         registry.add(build_extra_tools(cfg, self._confirm, lambda name, args: registry.call(name, args)))
         registry.add(build_music_tools(cfg, self._confirm, list_windows))
+        if cfg.computer_control:
+            registry.add(self._computer_tools())
         registry.add(build_screen_tools(cfg, self._confirm, lambda: self.session.agent.llm))
         self.pdfs = PdfStore()
         registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))
         self._registry = registry
         agent = Agent(
-            llm, self._system_prompt(), registry, cfg.max_tool_rounds,
+            llm, self._system_prompt(), registry, max(cfg.max_tool_rounds, 16 if cfg.computer_control else 0),
             max_messages=cfg.history_messages,
             on_tool=lambda m: self.bridge.tool.emit(m),
         )
@@ -1056,6 +1064,9 @@ class MainWindow(QMainWindow):
             box.setCurrentIndex(box.findData("bm_george"))  # also speaks a sample
         self.chat.add("bubbleNote", "Jarvis-style preset applied: George (UK) voice and butler personality. Restart to use \"Jarvis\" as the wake phrase.")
 
+    def _computer_tools(self):
+        return build_computer_tools(self.cfg, self._confirm, lambda: self.session.agent.llm, cancelled=lambda: self.session._cancel.is_set())
+
     def _set_persona(self, on: bool) -> None:
         self._set_field("persona_jarvis", on)
         self.session.agent.messages[0]["content"] = self._system_prompt()
@@ -1067,7 +1078,9 @@ class MainWindow(QMainWindow):
     def _refresh_home_tools(self) -> None:
         """Apply smart-home settings now: swap the home tools in the live agent and tell it about them."""
         self.govee = make_govee(self.cfg)
-        self._registry.remove(HOME_TOOL_NAMES + ("delegate_task", "usage_report", "learn_about_user"))
+        self._registry.remove(HOME_TOOL_NAMES + ("delegate_task", "usage_report", "learn_about_user", "control_click", "control_type", "control_keys", "control_scroll", "control_focus"))
+        if self.cfg.computer_control:
+            self._registry.add(self._computer_tools())
         self._registry.add(build_profile_tools(self.cfg, self.profile, self._confirm))
         self._registry.add(build_home_tools(self.cfg, self._confirm, self.govee))
         if self.cfg.delegate_enabled:
