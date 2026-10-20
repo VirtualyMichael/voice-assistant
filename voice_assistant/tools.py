@@ -29,6 +29,10 @@ class ToolRegistry:
     def add(self, tools: list[Tool]) -> None:
         self._tools.update({t.name: t for t in tools})
 
+    def remove(self, names) -> None:
+        for n in names:
+            self._tools.pop(n, None)
+
     def names(self) -> list[str]:
         return list(self._tools)
 

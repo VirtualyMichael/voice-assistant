@@ -81,3 +81,18 @@ def test_govee_cloud_requests():
     assert g.apply(["AB:CD"], None, 40, "blue") == "Done: Desk lamp."
     assert {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "value": 255} in sent
     assert {"type": "devices.capabilities.range", "instance": "brightness", "value": 40} in sent
+
+
+def test_target_tolerates_copied_label_and_single_light():
+    g = GoveeLan()
+    g.devices = {"10.0.0.5": {"sku": "H6008", "device": "AA:BB"}}
+    g.names = {"10.0.0.5": "Michael's Light"}
+    assert g.pick("Michael's Light (H6008)") == ["10.0.0.5"] and g.pick("the light") == ["10.0.0.5"] and g.pick("fan") == []
+
+
+def test_registry_remove_lets_home_tools_be_swapped():
+    from voice_assistant.tools import ToolRegistry
+
+    reg = ToolRegistry(build_home_tools(Config(govee_enabled=True), lambda p: True, fake_govee()))
+    reg.remove(["list_lights", "set_lights"])
+    assert reg.names() == []

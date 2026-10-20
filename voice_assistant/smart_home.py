@@ -94,7 +94,10 @@ class GoveeLan:
         t = target.strip().lower()
         if t in ("", "all", "everything", "lights", "all lights"):
             return list(self.devices)
-        hits = [ip for ip in self.devices if t in self.label(ip).lower() or t == ip]
+        bare = re.sub(r"\s*\(.*?\)", "", t).strip()  # the model often copies "Name (H6008)" from the list
+        hits = [ip for ip in self.devices if t == ip or bare in self.label(ip).lower() or self.label(ip).lower() in bare]
+        if not hits and len(self.devices) == 1 and re.search(r"light|lamp|led|strip", t):
+            hits = list(self.devices)  # one light and the user said "the light"
         return hits
 
     def apply(self, ips: list[str], on: bool | None, brightness: int | None, color: str | None) -> str:
@@ -203,6 +206,9 @@ class HomeAssistant:
         return f"Called {domain}.{service} on {entity_id}."
 
 
+HOME_TOOL_NAMES = ("list_lights", "set_lights", "ha_list", "ha_call")
+
+
 def build_home_tools(cfg, confirm, govee: GoveeLan | None = None, ha: HomeAssistant | None = None) -> list[Tool]:
     from .agent_tools import _obj, _str  # same schema helpers as the other agent tools
     from .providers import get_key
@@ -234,8 +240,8 @@ def build_home_tools(cfg, confirm, govee: GoveeLan | None = None, ha: HomeAssist
             return govee.apply(ips, on, brightness, color)
 
         tools += [
-            Tool("list_lights", "List the Govee lights found on the home network.", _obj({}), list_lights),
-            Tool("set_lights", "Turn Govee lights on/off, set brightness (1-100) and/or colour (name, #hex, 'warm white', '3000K'). target = a light name or 'all'.",
+            Tool("list_lights", "List the Govee lights found (names the user can say).", _obj({}), list_lights),
+            Tool("set_lights", "Turn Govee lights on/off, set brightness (1-100) and/or colour (name, #hex, 'warm white', '3000K'). target = a light name, or 'all' when the user does not name one. Call it straight away.",
                  _obj({"target": _str, "on": {"type": "boolean"}, "brightness": {"type": "integer"}, "color": _str}), set_lights),
         ]
     if cfg.ha_url:

@@ -30,7 +30,7 @@ from .permissions import FolderPolicy
 from .routing import double_voice_warnings, listen_routes
 from .extras import build_extra_tools
 from .screen import build_screen_tools
-from .smart_home import build_home_tools, make_govee
+from .smart_home import HOME_TOOL_NAMES, build_home_tools, make_govee
 from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_for, needs_key, save_key, set_model
 from .session import Session, SessionEvents
 from .speaker import Speaker
@@ -510,16 +510,16 @@ class MainWindow(QMainWindow):
         form.addRow(self.folders_list)
         form.addRow(folder_row)
         form.use("Home")
-        govee = QCheckBox("Control Govee lights on my network (restart to apply)")
+        govee = QCheckBox("Control my Govee lights by voice")
         govee.setChecked(cfg.govee_enabled)
-        govee.toggled.connect(lambda v: self._set_field("govee_enabled", v))
+        govee.toggled.connect(lambda v: self._set_home("govee_enabled", v))
         find, blink = QPushButton("Find lights"), QPushButton("Test: blink lights")
         find.clicked.connect(lambda: threading.Thread(target=self._find_lights, daemon=True).start())
         blink.clicked.connect(lambda: threading.Thread(target=self._blink_lights, daemon=True).start())
         self.home_status = QLabel("In the Govee Home app, open each light > settings and turn on LAN Control.", objectName="small", wordWrap=True)
         ha_url = QLineEdit(cfg.ha_url)
         ha_url.setPlaceholderText("http://homeassistant.local:8123")
-        ha_url.editingFinished.connect(lambda: self._set_field("ha_url", ha_url.text().strip()))
+        ha_url.editingFinished.connect(lambda: self._set_home("ha_url", ha_url.text().strip()))
         ha_key, ha_test = QPushButton("Set Home Assistant token…"), QPushButton("Test connection")
         ha_key.clicked.connect(self._ask_ha_token)
         ha_test.clicked.connect(lambda: threading.Thread(target=self._test_ha, daemon=True).start())
@@ -530,7 +530,7 @@ class MainWindow(QMainWindow):
         form.addRow(find)
         form.addRow(blink)
         form.addRow(self.home_status)
-        form.addRow(QLabel("Home Assistant (brings in Google Home, Alexa devices, Matter, Hue and more; restart to apply):", objectName="small", wordWrap=True))
+        form.addRow(QLabel("Home Assistant (brings in Google Home, Alexa devices, Matter, Hue and more):", objectName="small", wordWrap=True))
         form.addRow("Address", ha_url)
         form.addRow(ha_key)
         form.addRow(ha_test)
@@ -774,6 +774,19 @@ class MainWindow(QMainWindow):
         self.chat.add("bubbleNote", f"SteamVR {'detected' if on else 'closed'}: mic = {mic}; speaker = {spk}")
 
     # ---- smart home --------------------------------------------------------------
+    def _set_home(self, name: str, value) -> None:
+        self._set_field(name, value)
+        self._refresh_home_tools()
+
+    def _refresh_home_tools(self) -> None:
+        """Apply smart-home settings now: swap the home tools in the live agent and tell it about them."""
+        self.govee = make_govee(self.cfg)
+        self._registry.remove(HOME_TOOL_NAMES)
+        self._registry.add(build_home_tools(self.cfg, self._confirm, self.govee))
+        self.session.agent.messages[0]["content"] = self._system_prompt()
+        have = [n for n in HOME_TOOL_NAMES if n in self._registry.names()]
+        self.chat.add("bubbleNote", "Home tools ready: " + ", ".join(have) if have else "Home tools off.")
+
     def _find_lights(self) -> None:
         self.govee = make_govee(self.cfg)  # picks up a newly saved key
         try:
@@ -808,6 +821,8 @@ class MainWindow(QMainWindow):
                 save_key(name, key)
             except Exception as e:
                 self._on_error(f"Could not save it: {e}")
+                return
+            self._refresh_home_tools()
 
     def _ask_ha_token(self) -> None:
         self._ask_secret("homeassistant", "Home Assistant", "Paste a long-lived access token (Profile > Security in Home Assistant):")
