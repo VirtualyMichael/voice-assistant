@@ -6,21 +6,43 @@ from voice_assistant.config import Config
 from voice_assistant.extras import Notes, build_extra_tools, weather
 
 
-def tools(cfg=None, keys=None, calls=None, notes=None):
+def tools(cfg=None, keys=None, calls=None, notes=None, session=lambda a: None):
     cfg = cfg or Config()
     ts = build_extra_tools(cfg, lambda p: True, (lambda n, a: calls.append((n, a)) or "ok") if calls is not None else (lambda n, a: "ok"),
-                           notes, keys or (lambda k, n=1: None))
+                           notes, keys or (lambda k, n=1: None), session)
     return {t.name: t.handler for t in ts}
 
 
-def test_media_and_volume_keys():
+def test_volume_keys_and_media_fallback_key():
     pressed = []
-    t = tools(keys=lambda k, n=1: pressed.append((k, n)))
-    t["media_control"]("play_pause")
+    t = tools(keys=lambda k, n=1: pressed.append((k, n)), session=lambda a: None)
+    out = t["media_control"]("play_pause")
     t["set_volume"]("up")
     t["set_volume"]("", 40)
     assert pressed == [("play_pause", 1), ("volume_up", 5), ("volume_down", 50), ("volume_up", 20)]
-    assert t["media_control"]("explode").startswith("Error")
+    assert "No music app" in out and t["media_control"]("explode").startswith("Error")
+
+
+def test_media_words_and_real_result_reported():
+    seen = []
+    t = tools(session=lambda a: seen.append(a) or "Spotify is now playing: Song by Band.")
+    assert t["media_control"]("Play") == "Spotify is now playing: Song by Band."
+    for word in ("pause", "resume", "skip", "back", "next track"):
+        t["media_control"](word)
+    assert seen == ["play", "pause", "play", "next", "previous", "next"]
+
+
+def test_media_session_parses_powershell_output():
+    from voice_assistant.extras import media_session
+
+    class P:
+        stdout, returncode = "True|Paused|Playing|Spotify.exe|Song|Band\n", 0
+
+    assert media_session("play", run=lambda *a, **k: P()) == "Spotify is now playing: Song by Band."
+    P.stdout = "NONE\n"
+    assert media_session("play", run=lambda *a, **k: P()) is None
+    P.stdout = "False|Playing|Playing|Chrome|T|\n"
+    assert "did not accept" in media_session("next", run=lambda *a, **k: P())
 
 
 def test_notes_roundtrip(tmp_path):

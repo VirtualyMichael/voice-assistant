@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from datetime import datetime
 
@@ -24,6 +25,57 @@ def press(key: str, times: int = 1) -> None:
         ctypes.windll.user32.keybd_event(VK[key], 0, 0, 0)
         ctypes.windll.user32.keybd_event(VK[key], 0, KEYEVENTF_KEYUP, 0)
         time.sleep(0.01)
+
+
+SMTC_SCRIPT = r"""
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType=WindowsRuntime]
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }
+$mgr = Await ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
+$all = @($mgr.GetSessions())
+if ($all.Count -eq 0) { 'NONE'; exit }
+$s = $mgr.GetCurrentSession()
+if ($null -eq $s) { $s = $all[0] }
+$status = [string]$s.GetPlaybackInfo().PlaybackStatus
+$act = $env:VA_MEDIA
+$ok = $true
+if ($act -eq 'play') { if ($status -ne 'Playing') { $ok = Await ($s.TryPlayAsync()) ([bool]) } }
+elseif ($act -eq 'pause') { if ($status -eq 'Playing') { $ok = Await ($s.TryPauseAsync()) ([bool]) } }
+elseif ($act -eq 'toggle') { $ok = Await ($s.TryTogglePlayPauseAsync()) ([bool]) }
+elseif ($act -eq 'next') { $ok = Await ($s.TrySkipNextAsync()) ([bool]) }
+elseif ($act -eq 'previous') { $ok = Await ($s.TrySkipPreviousAsync()) ([bool]) }
+elseif ($act -eq 'stop') { $ok = Await ($s.TryStopAsync()) ([bool]) }
+Start-Sleep -Milliseconds 400
+$now = [string]$s.GetPlaybackInfo().PlaybackStatus
+$p = Await ($s.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties])
+"{0}|{1}|{2}|{3}|{4}|{5}" -f $ok, $status, $now, $s.SourceAppUserModelId, $p.Title, $p.Artist
+"""
+
+PLAY_ALIASES = {"play": "play", "resume": "play", "start": "play", "unpause": "play", "pause": "pause", "hold": "pause",
+                "play_pause": "toggle", "toggle": "toggle", "playpause": "toggle", "stop": "stop",
+                "next": "next", "skip": "next", "forward": "next", "next_track": "next",
+                "previous": "previous", "prev": "previous", "back": "previous", "last": "previous", "previous_track": "previous"}
+KEY_FOR = {"play": "play_pause", "pause": "play_pause", "toggle": "play_pause", "stop": "stop", "next": "next", "previous": "previous"}
+
+
+def media_session(action: str, run=subprocess.run) -> str | None:
+    """Control the music app through Windows' media session (the same thing the keyboard media keys talk to) and report what really happened.
+    None when no app is playing/paused media, or the lookup failed."""
+    try:
+        p = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", SMTC_SCRIPT], capture_output=True, text=True, timeout=15,
+                env={**__import__("os").environ, "VA_MEDIA": action})
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    out = (p.stdout or "").strip().splitlines()
+    if not out or out[-1].strip() == "NONE" or out[-1].count("|") < 5:
+        return None
+    ok, before, after, app, title, artist = (out[-1].split("|") + [""] * 6)[:6]
+    app = app.split("!")[0].split("_")[0].replace(".exe", "")
+    what = f"{title} by {artist}" if title and artist else title or "something"
+    if ok.lower() != "true":
+        return f"{app} did not accept that command (it is {after.lower()})."
+    return f"{app} is now {after.lower()}: {what}."
 
 
 def weather(place: str, client: httpx.Client | None = None) -> str:
@@ -74,7 +126,7 @@ class Notes:
         return f"Deleted: {gone['text']}"
 
 
-def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=press) -> list[Tool]:
+def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=press, session=media_session) -> list[Tool]:
     """call_tool(name, json_args) runs another registered tool (used by routines)."""
     from .agent_tools import _obj, _str
 
@@ -82,10 +134,15 @@ def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=
     declined = "The user declined this action."
 
     def media(action: str) -> str:
-        if action not in ("play_pause", "next", "previous", "stop"):
-            return "Error: action must be play_pause, next, previous or stop."
-        keys(action)
-        return f"Sent {action.replace('_', '/')}."
+        act = PLAY_ALIASES.get(action.strip().lower().replace(" ", "_"))
+        if act is None:
+            return "Error: action must be play, pause, play_pause, next, previous or stop."
+        result = session(act)
+        if result:
+            return result
+        keys(KEY_FOR[act])  # no app reports a media session: fall back to the keyboard media key
+        return ("No music app is reporting playback to Windows, so I sent the media key, which may do nothing. "
+                "Tell the user to open their player and start a song once, then try again.")
 
     def volume(action: str, percent: int | None = None) -> str:
         if percent is not None:  # each key press moves Windows volume by 2%
@@ -111,7 +168,7 @@ def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=
         return "\n".join(out) or "The routine has no steps."
 
     tools = [
-        Tool("media_control", "Control music/video playback on this PC: play_pause, next, previous, stop.", _obj({"action": _str}, ["action"]), media),
+        Tool("media_control", "Control music/video playback on this PC: play, pause, play_pause, next, previous, stop. Reports what the player actually did.", _obj({"action": _str}, ["action"]), media),
         Tool("set_volume", "Change PC volume: action up/down/mute, or give percent (0-100) to set it.", _obj({"action": _str, "percent": {"type": "integer"}}), volume),
         Tool("remember_note", "Save something the user wants remembered (stored on this PC).", _obj({"text": _str}, ["text"]), notes.add),
         Tool("list_notes", "Search or list the user's saved notes.", _obj({"query": _str}), notes.listing),
