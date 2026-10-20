@@ -28,7 +28,8 @@ from .metrics import TurnMetrics
 from .models import AccurateRecognizer, ModelsMissing, SherpaRecognizer, SherpaWakeWord, load_synth
 from .permissions import FolderPolicy
 from .routing import double_voice_warnings, listen_routes
-from .providers import PROVIDERS, make_llm, model_for, save_key, set_model, get_key
+from .smart_home import GoveeLan, build_home_tools
+from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_for, needs_key, save_key, set_model
 from .session import Session, SessionEvents
 from .speaker import Speaker
 from .setup_wizard import run_wizard
@@ -279,7 +280,7 @@ class MainWindow(QMainWindow):
         tabs.setElideMode(Qt.ElideNone)  # arrows appear only if the tab names do not fit
         QVBoxLayout(panel).addWidget(tabs)
         panel.layout().setContentsMargins(8, 6, 8, 6)
-        form = TabbedForm(tabs, ["Voice", "Audio", "VR", "AI", "Skills", "Apps", "General"])
+        form = TabbedForm(tabs, ["Voice", "Audio", "VR", "AI", "Skills", "Apps", "Home", "General"])
         self._form = form
         form.use("Audio")
         self.dev = {}
@@ -353,6 +354,11 @@ class MainWindow(QMainWindow):
         form.use("AI")
         form.addRow("AI model", self.prov)
         form.addRow("Model name", self.model_edit)
+        self.url_edit = QLineEdit()
+        self.url_edit.setPlaceholderText("server address, e.g. http://localhost:11434/v1")
+        self.url_edit.editingFinished.connect(self._set_url)
+        form.addRow("Server address", self.url_edit)
+        self._show_url()
         form.addRow(key_btn)
         form.addRow(self.prov_status)
         remember = QCheckBox("Remember our conversation between sessions")
@@ -497,6 +503,28 @@ class MainWindow(QMainWindow):
         folder_row.addWidget(rem_f)
         form.addRow(self.folders_list)
         form.addRow(folder_row)
+        form.use("Home")
+        govee = QCheckBox("Control Govee lights on my network (restart to apply)")
+        govee.setChecked(cfg.govee_enabled)
+        govee.toggled.connect(lambda v: self._set_field("govee_enabled", v))
+        find, blink = QPushButton("Find lights"), QPushButton("Test: blink lights")
+        find.clicked.connect(lambda: threading.Thread(target=self._find_lights, daemon=True).start())
+        blink.clicked.connect(lambda: threading.Thread(target=self._blink_lights, daemon=True).start())
+        self.home_status = QLabel("In the Govee Home app, open each light > settings and turn on LAN Control.", objectName="small", wordWrap=True)
+        ha_url = QLineEdit(cfg.ha_url)
+        ha_url.setPlaceholderText("http://homeassistant.local:8123")
+        ha_url.editingFinished.connect(lambda: self._set_field("ha_url", ha_url.text().strip()))
+        ha_key, ha_test = QPushButton("Set Home Assistant token…"), QPushButton("Test connection")
+        ha_key.clicked.connect(self._ask_ha_token)
+        ha_test.clicked.connect(lambda: threading.Thread(target=self._test_ha, daemon=True).start())
+        form.addRow(govee)
+        form.addRow(find)
+        form.addRow(blink)
+        form.addRow(self.home_status)
+        form.addRow(QLabel("Home Assistant (brings in Google Home, Alexa devices, Matter, Hue and more; restart to apply):", objectName="small", wordWrap=True))
+        form.addRow("Address", ha_url)
+        form.addRow(ha_key)
+        form.addRow(ha_test)
         cfg_btn, setup_btn = QPushButton("Open settings file"), QPushButton("Run setup again")
         cfg_btn.clicked.connect(self._open_config)
         setup_btn.clicked.connect(self._rerun_setup)
@@ -532,6 +560,8 @@ class MainWindow(QMainWindow):
         self.catalog = AppCatalog()
         threading.Thread(target=self._scan_apps, daemon=True).start()
         registry.add(build_agent_tools(cfg, self.policy, self._confirm, lambda t: self.session.announce(t), self.timers, self.catalog))
+        self.govee = GoveeLan(cfg.light_names)
+        registry.add(build_home_tools(cfg, self._confirm, self.govee))
         self.pdfs = PdfStore()
         registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))
         self._registry = registry
@@ -732,24 +762,62 @@ class MainWindow(QMainWindow):
         self.vr_status.setText(f"VR {'active' if on else 'not running'}: mic = {mic} | speaker = {spk}")
         self.chat.add("bubbleNote", f"SteamVR {'detected' if on else 'closed'}: mic = {mic}; speaker = {spk}")
 
+    # ---- smart home --------------------------------------------------------------
+    def _find_lights(self) -> None:
+        found = self.govee.discover(2.5)
+        msg = ("Found: " + ", ".join(self.govee.label(i) for i in found)) if found else (
+            "No Govee lights answered. Turn on LAN Control for each light in the Govee Home app (not every model has it) and make sure this PC is on the same network.")
+        self.bridge.tool.emit(msg)
+
+    def _blink_lights(self) -> None:
+        ips = list(self.govee.devices) or list(self.govee.discover(2.5))
+        if not ips:
+            self.bridge.tool.emit("No Govee lights to test; click Find lights first.")
+            return
+        for _ in range(2):
+            self.govee.apply(ips, False, None, None)
+            time.sleep(0.7)
+            self.govee.apply(ips, True, None, None)
+            time.sleep(0.7)
+        self.bridge.tool.emit(f"Blinked {len(ips)} light(s).")
+
+    def _ask_ha_token(self) -> None:
+        key, ok = QInputDialog.getText(self, "Home Assistant", "Paste a long-lived access token (Profile > Security in Home Assistant):", QLineEdit.Password)
+        if ok and key.strip():
+            try:
+                save_key("homeassistant", key)
+            except Exception as e:
+                self._on_error(f"Could not save the token: {e}")
+
+    def _test_ha(self) -> None:
+        from .smart_home import HomeAssistant
+        try:
+            n = len(HomeAssistant(self.cfg.ha_url, get_key("homeassistant")).states())
+            self.bridge.tool.emit(f"Home Assistant connected: {n} entities.")
+        except Exception as e:
+            self.bridge.tool.emit(f"Home Assistant test failed: {e}")
+
     # ---- model provider ----------------------------------------------------------
     def _rebuild_llm(self) -> None:
         self.session.agent.llm = make_llm(self.cfg)
         p = self.cfg.llm_provider
-        has_key = p == "local" or bool(get_key(p, self.cfg.openai_key_env if p == "openai" else self.cfg.anthropic_key_env))
+        has_key = not needs_key(p) or bool(get_key(p, key_env(self.cfg, p)))
         self.prov_status.setText(
             f"Using {PROVIDERS[p]}: {model_for(self.cfg) or '(no model set)'}" + ("" if has_key else " | no API key saved yet")
         )
         self.chat.add("bubbleNote", self.prov_status.text())
 
     def _set_provider(self, pid: str) -> None:
-        if pid != "local" and not self.cfg.cloud_ack:
+        self._prev_provider = self.cfg.llm_provider
+        self.cfg.llm_provider = pid  # so is_cloud reflects the choice (custom/ollama on this PC need no consent)
+        if self.cfg.is_cloud and not self.cfg.cloud_ack:
             ok = QMessageBox.question(
                 self, "Send conversations to the cloud?",
                 f"With {PROVIDERS[pid]} your messages, and any file, web or clipboard text the agent reads, are sent to that company's servers "
                 "and may incur charges on your account.\n\nContinue?",
             ) == QMessageBox.Yes
             if not ok:
+                self.cfg.llm_provider = self._prev_provider
                 self.prov.blockSignals(True)
                 self.prov.setCurrentIndex(max(self.prov.findData(self.cfg.llm_provider), 0))
                 self.prov.blockSignals(False)
@@ -758,7 +826,20 @@ class MainWindow(QMainWindow):
         self.cfg.llm_provider = pid
         save_config(self.cfg)
         self.model_edit.setText(model_for(self.cfg))
+        self._show_url()
         self._rebuild_llm()
+
+    def _show_url(self) -> None:
+        f = URL_FIELD.get(self.cfg.llm_provider)
+        self.url_edit.setEnabled(bool(f))
+        self.url_edit.setText(getattr(self.cfg, f) if f else "(fixed by the provider)")
+
+    def _set_url(self) -> None:
+        f = URL_FIELD.get(self.cfg.llm_provider)
+        if f:
+            setattr(self.cfg, f, self.url_edit.text().strip())
+            save_config(self.cfg)
+            self._rebuild_llm()
 
     def _set_model_name(self) -> None:
         set_model(self.cfg, self.cfg.llm_provider, self.model_edit.text())
@@ -767,8 +848,8 @@ class MainWindow(QMainWindow):
 
     def _ask_key(self) -> None:
         p = self.cfg.llm_provider
-        if p == "local":
-            self.chat.add("bubbleNote", "The local server needs no API key.")
+        if p in ("local", "ollama"):
+            self.chat.add("bubbleNote", "This local server needs no API key.")
             return
         key, ok = QInputDialog.getText(self, "API key", f"Paste your {PROVIDERS[p]} API key:", QLineEdit.Password)
         if ok and key.strip():

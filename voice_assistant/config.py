@@ -63,7 +63,12 @@ class Config:
     llm_base_url: str = "http://localhost:1234/v1"  # LM Studio default
     llm_model: str = "local-model"
     llm_extra_body: dict = field(default_factory=dict)  # e.g. {"reasoning_effort": "none"} to skip thinking
-    llm_provider: str = "local"  # local | openai | anthropic
+    llm_provider: str = "local"  # local | ollama | openai | anthropic | custom
+    ollama_base_url: str = "http://localhost:11434/v1"  # Ollama's OpenAI-compatible endpoint
+    ollama_model: str = ""  # e.g. "llama3.2"
+    custom_base_url: str = ""  # any OpenAI-compatible server (vLLM, OpenRouter, Groq, Together, a LAN box...)
+    custom_model: str = ""
+    custom_key_env: str = "CUSTOM_API_KEY"
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = ""  # e.g. a current GPT model id
     openai_key_env: str = "OPENAI_API_KEY"
@@ -88,6 +93,9 @@ class Config:
     app_shortcuts: dict = field(default_factory=lambda: {
         "notepad": "notepad.exe", "calculator": "calc.exe", "file explorer": "explorer.exe", "task manager": "taskmgr.exe",
     })
+    govee_enabled: bool = False  # Govee lights over the local network (LAN Control must be on in the Govee Home app)
+    light_names: dict = field(default_factory=dict)  # light ip -> friendly name, e.g. {"10.0.0.21": "desk lamp"}
+    ha_url: str = ""  # Home Assistant address, e.g. http://homeassistant.local:8123 (token is in Credential Manager)
     tool_filler: str = "One moment."  # spoken when a task starts before the reply; empty = silent
     vr_announce: bool = True  # speak a short confirmation when the VR profile switches
 
@@ -108,9 +116,10 @@ class Config:
     def is_cloud(self) -> bool:
         from urllib.parse import urlparse
 
-        if self.llm_provider != "local":
+        if self.llm_provider in ("openai", "anthropic"):
             return True
-        host = (urlparse(self.llm_base_url).hostname or "").lower()
+        url = {"ollama": self.ollama_base_url, "custom": self.custom_base_url}.get(self.llm_provider, self.llm_base_url)
+        host = (urlparse(url).hostname or "").lower()
         return host not in ("localhost", "127.0.0.1", "::1")
 
 
