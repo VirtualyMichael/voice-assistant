@@ -4,6 +4,7 @@ Layout under models_dir:  asr/  tts/  kws/   (each holds one extracted model's f
 """
 from __future__ import annotations
 
+import re
 import shutil
 import tarfile
 import tempfile
@@ -102,8 +103,14 @@ class SherpaRecognizer:
 
 def wake_variants(phrase: str) -> list[str]:
     """A one-word phrase is short and easy to miss, so also listen for "hey <word>" and "ok <word>" (measured: 82% -> 100% for "Hey Jarvis")."""
-    p = " ".join(phrase.upper().split())
+    p = clean_phrase(phrase)
     return [p] if " " in p else [p, f"HEY {p}", f"OK {p}"]
+
+
+def clean_phrase(phrase: str) -> str:
+    """Letters, digits, apostrophes and single spaces only, upper case. A comma in "Hey, assistant" is not a token the model knows,
+    and sherpa-onnx then aborts the whole program instead of raising an error."""
+    return " ".join(re.sub(r"[^A-Za-z0-9' ]+", " ", phrase).upper().split())
 
 
 def write_keywords(folder: Path, phrase: str, boost: float = 1.5, threshold: float = 0.12) -> Path:
@@ -117,7 +124,14 @@ def write_keywords(folder: Path, phrase: str, boost: float = 1.5, threshold: flo
     if not phrase.strip():
         raise ValueError("wake_phrase is empty")
     sp = spm.SentencePieceProcessor(model_file=str(bpe))
-    lines = [f"{' '.join(sp.encode(p, out_type=str))} :{boost} #{threshold} @{p.replace(' ', '_')}\n" for p in wake_variants(phrase)]
+    tok = folder / "tokens.txt"
+    known = {ln.split()[0] for ln in tok.read_text(encoding="utf-8").splitlines() if ln.strip()} if tok.exists() else None
+    lines = []
+    for p in wake_variants(phrase):
+        pieces = sp.encode(p, out_type=str)
+        if known is not None and any(t not in known for t in pieces):
+            raise ValueError(f"The wake phrase '{p}' contains sounds the wake model has no token for; use plain words")
+        lines.append(f"{' '.join(pieces)} :{boost} #{threshold} @{p.replace(' ', '_')}\n")
     out = folder / "keywords_custom.txt"
     out.write_text("".join(lines), encoding="utf-8")
     return out

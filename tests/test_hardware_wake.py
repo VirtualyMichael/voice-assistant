@@ -36,3 +36,10 @@ def test_one_word_wake_phrase_gets_hey_and_ok_variants():
     from voice_assistant.models import wake_variants
     assert wake_variants("Jarvis") == ["JARVIS", "HEY JARVIS", "OK JARVIS"]
     assert wake_variants("hey  assistant") == ["HEY ASSISTANT"]
+
+
+def test_wake_phrase_punctuation_is_removed_not_passed_to_sherpa():
+    from voice_assistant.models import clean_phrase, wake_variants
+    assert clean_phrase("Hey, Assistant!") == "HEY ASSISTANT" and clean_phrase("  o'clock  buddy ") == "O'CLOCK BUDDY"
+    assert wake_variants("Hey, Assistant") == ["HEY ASSISTANT"]
+    assert wake_variants("Jarvis.") == ["JARVIS", "HEY JARVIS", "OK JARVIS"]
