@@ -21,3 +21,5 @@ def no_real_launches(monkeypatch):
     monkeypatch.setattr("voice_assistant.apps.launch_start_app", refuse)
     monkeypatch.setattr(os, "startfile", refuse, raising=False)
     monkeypatch.setattr("webbrowser.open", refuse)
+    monkeypatch.setattr("voice_assistant.agent_tools.list_windows", lambda: [])  # no real windows: results must not depend on what is open
+    monkeypatch.setattr("voice_assistant.agent_tools.focus_window", refuse)

@@ -19,6 +19,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from .apps import AppCatalog, clean_query, launch_start_app, score
+from .screen import focus_window, list_windows, match_window
 from .permissions import FolderPolicy
 from .tools import Confirm, Tool
 
@@ -216,6 +217,13 @@ def build_agent_tools(cfg, policy: FolderPolicy, confirm: Confirm, announce, tim
             label, path, start_id = best.name, "", best.app_id
         if start_id is None and not (os.path.exists(path) or shutil.which(path)):
             return f"Error: the saved path for '{label}' no longer exists ({path}). The user can fix it in Settings > Apps."
+        try:  # already running? Switch to it instead of starting a second copy (games and many apps would open twice)
+            running = match_window(list_windows(), label, loose=False)
+        except Exception:
+            running = None
+        if running is not None:
+            focus_window(running[0])
+            return f"{label} is already open (window '{running[1]}'); I brought it to the front instead of starting another copy."
         if cfg.confirm_launch and not confirm(f"Open {label}?"):
             return declined
         if start_id is not None:
@@ -285,5 +293,7 @@ def capabilities_prompt(cfg, names: list[str]) -> str:
         "commands inside it. Actions that change things ask the user to confirm, so just call the tool; if it says the "
         "user declined, accept that and do not retry. When asked to open an app, call launch_app right away with the name as the user said it "
         "(punctuation does not matter, partial names are fine); a confirmation dialog appears by itself, so do not ask in words first. "
-        "For lights and other home devices, act immediately without asking 'should I': if the user did not name a light, use target 'all'."
+        "For lights and other home devices, act immediately without asking 'should I': if the user did not name a light, use target 'all'. "
+        "launch_app switches to an app that is already open instead of starting a second copy. To look at or translate what is in an app or game, call look_at_screen with its window name; "
+        "if no window matches, ask the user whether to open it, and open it only if they agree."
     )

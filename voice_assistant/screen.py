@@ -40,17 +40,31 @@ def list_windows() -> list[tuple[int, str, str]]:
     return out
 
 
-def match_window(windows, name: str):
-    """Best window for what the user said ('vrchat', 'chrome', 'discord'): exact process/title first, then substring. Ignores spaces and case."""
+def match_window(windows, name: str, loose: bool = True):
+    """Best window for what the user said ('vrchat', 'chrome', 'discord'): exact process/title first, then substring. Ignores spaces and case.
+    loose=False skips "the name appears somewhere in a window title" (a browser tab called 'Steam Community' is not Steam)."""
     key = "".join(name.lower().split())
     if not key:
         return None
     norm = lambda s: "".join(s.lower().split())  # noqa: E731
-    for test in (lambda t, e: norm(e) == key, lambda t, e: norm(t) == key, lambda t, e: key in norm(e), lambda t, e: key in norm(t)):
+    tests = (lambda t, e: norm(e) == key, lambda t, e: norm(t) == key, lambda t, e: key in norm(e), lambda t, e: key in norm(t))
+    for test in tests if loose else tests[:3]:
         hits = [w for w in windows if test(w[1], w[2])]
         if hits:
             return hits[0]
     return None
+
+
+def focus_window(hwnd: int) -> None:
+    """Bring a window to the front (restoring it if minimized)."""
+    import ctypes
+
+    u = ctypes.windll.user32
+    if u.IsIconic(hwnd):
+        u.ShowWindow(hwnd, 9)  # SW_RESTORE
+    u.keybd_event(0x12, 0, 0, 0)  # a tap of Alt lets this background program take focus
+    u.keybd_event(0x12, 0, 2, 0)
+    u.SetForegroundWindow(hwnd)
 
 
 def window_rect(hwnd: int) -> tuple[int, int, int, int]:
@@ -117,7 +131,8 @@ def build_screen_tools(cfg, confirm, get_llm, capture=capture_png, windows=list_
             found = match_window(all_w, window)
             if found is None:
                 names = sorted({w[2] or w[1] for w in all_w if w[1]})[:25]
-                return f"No open window matches '{window}'. Open windows: {', '.join(names)}."
+                return (f"No open window matches '{window}', so it is probably not open. Do NOT open it yourself: ask the user whether to open it first, "
+                    f"then call launch_app only if they say yes. Open windows: {', '.join(names)}.")
             target = f"the window '{found[1]}'"
         where = "the cloud AI provider" if cfg.is_cloud else "your AI model"
         if cfg.confirm_screen and not confirm(f"Take a screenshot of {target} and send it to {where}?" + (" It will be brought to the front first." if region is None and window.strip() else "")):

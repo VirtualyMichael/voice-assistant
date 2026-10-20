@@ -158,3 +158,28 @@ def test_not_found_message_offers_close_names(tmp_path, monkeypatch):
 def test_one_letter_words_do_not_cause_false_matches():
     c = catalog({"Garry's Mod": "g", "Steam": "s"})
     assert c.find("spotify") == []
+
+
+def test_launch_focuses_an_app_that_is_already_open_instead_of_starting_another(monkeypatch, tmp_path):
+    import voice_assistant.agent_tools as AT
+
+    focused, launched = [], []
+    monkeypatch.setattr(AT, "list_windows", lambda: [(7, "VRChat", "VRChat"), (8, "Steam Community - Chrome", "chrome")])
+    monkeypatch.setattr(AT, "focus_window", focused.append)
+    monkeypatch.setattr(AT, "launch_start_app", launched.append)
+    tools = {t.name: t for t in build_agent_tools(Config(), FolderPolicy([tmp_path]), lambda q: True, lambda t: None,
+                                                  catalog=catalog({"VRChat": "VRC"}))}
+    out = tools["launch_app"].handler("VRChat")
+    assert "already open" in out and focused == [7] and not launched
+    # a browser tab that merely mentions the name does not count as the app being open
+    tools2 = {t.name: t for t in build_agent_tools(Config(), FolderPolicy([tmp_path]), lambda q: True, lambda t: None,
+                                                   catalog=catalog({"Steam": "Valve.Steam"}))}
+    assert "Opened Steam" in tools2["launch_app"].handler("Steam") and launched == ["Valve.Steam"]
+
+
+def test_look_at_missing_window_tells_the_model_to_ask_before_opening():
+    from voice_assistant.screen import build_screen_tools
+
+    t = build_screen_tools(Config(), lambda p: True, lambda: None, lambda *a, **k: b"", lambda: [(1, "Discord", "Discord")], lambda h: (0, 0, 1, 1))[0].handler
+    out = t("translate", "VRChat")
+    assert "ask the user whether to open it" in out and "Discord" in out
