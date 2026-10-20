@@ -8,7 +8,7 @@ from pathlib import Path
 
 MODULES = [
     "PySide6.QtWidgets", "sherpa_onnx", "sounddevice", "numpy", "keyboard", "httpx", "sentencepiece", "psutil", "ddgs",
-    "keyring", "num2words", "pypdf", "mcp", "mcp.client.stdio",
+    "keyring", "num2words", "pypdf", "mcp", "mcp.client.stdio", "mss",
     "voice_assistant.app", "voice_assistant.session", "voice_assistant.agent_tools", "voice_assistant.mcp_client",
     "voice_assistant.setup_wizard", "voice_assistant.providers", "voice_assistant.memory",
 ]

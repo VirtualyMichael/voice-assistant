@@ -82,6 +82,20 @@ class OpenAICompatClient:
             )
 
 
+def _anthropic_parts(content) -> list[dict]:
+    """User content is a string, or OpenAI-style parts (text / image_url with a data: URL)."""
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    out = []
+    for p in content:
+        if p.get("type") == "image_url":
+            header, _, data = p["image_url"]["url"].partition(",")
+            out.append({"type": "image", "source": {"type": "base64", "media_type": header[5:].split(";")[0], "data": data}})
+        else:
+            out.append({"type": "text", "text": p.get("text", "")})
+    return out
+
+
 def to_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
     """OpenAI-style history (system / user / assistant+tool_calls / tool) -> Anthropic system string and messages."""
     system = "\n".join(m["content"] for m in messages if m["role"] == "system")
@@ -96,7 +110,7 @@ def to_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
     for m in messages:
         r = m["role"]
         if r == "user":
-            push("user", [{"type": "text", "text": m["content"]}])
+            push("user", _anthropic_parts(m["content"]))
         elif r == "assistant":
             blocks = [{"type": "text", "text": m["content"]}] if m.get("content") else []
             for tc in m.get("tool_calls") or []:

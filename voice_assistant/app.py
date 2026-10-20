@@ -29,6 +29,7 @@ from .models import AccurateRecognizer, ModelsMissing, SherpaRecognizer, SherpaW
 from .permissions import FolderPolicy
 from .routing import double_voice_warnings, listen_routes
 from .extras import build_extra_tools
+from .screen import build_screen_tools
 from .smart_home import build_home_tools, make_govee
 from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_for, needs_key, save_key, set_model
 from .session import Session, SessionEvents
@@ -567,6 +568,7 @@ class MainWindow(QMainWindow):
         self.govee = make_govee(cfg)
         registry.add(build_home_tools(cfg, self._confirm, self.govee))
         registry.add(build_extra_tools(cfg, self._confirm, lambda name, args: registry.call(name, args)))
+        registry.add(build_screen_tools(cfg, self._confirm, lambda: self.session.agent.llm))
         self.pdfs = PdfStore()
         registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))
         self._registry = registry

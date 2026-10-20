@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Windows voice assistant prototype: local streaming speech, streamed text, chunked TTS, permissioned tasks"
 requires-python = ">=3.10"
 dependencies = [
-  "PySide6", "sherpa-onnx", "sounddevice", "numpy", "keyboard", "httpx", "sentencepiece", "psutil", "ddgs", "keyring", "mcp>=2", "pypdf",
+  "PySide6", "sherpa-onnx", "sounddevice", "numpy", "keyboard", "httpx", "sentencepiece", "psutil", "ddgs", "keyring", "mcp>=2", "pypdf", "mss",
 ]
 
 [project.optional-dependencies]
