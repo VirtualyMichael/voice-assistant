@@ -11,3 +11,4 @@ build/
 *.spec.bak
 .graphify/
 graphify-out/
+voice-samples/

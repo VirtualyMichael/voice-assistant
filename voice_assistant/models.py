@@ -33,6 +33,7 @@ MODEL_SPECS = [
     ModelSpec("asr2", "Parakeet TDT 0.6B v2 (accurate recognizer)", f"{REL}/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2", "far fewer mis-heard words (recommended)", size_mb=460, core=False),
     ModelSpec("kws", "zipformer gigaspeech 3.3M", f"{REL}/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2", "wake word (optional)", size_mb=17, core=False),
     ModelSpec("kokoro", "Kokoro English v0.19 (11 natural voices)", f"{REL}/tts-models/kokoro-en-v0_19.tar.bz2", "natural-sounding voices (recommended)", size_mb=305, core=False),
+    ModelSpec("kokoro2", "Kokoro v1.0 (53 voices, better male voices)", f"{REL}/tts-models/kokoro-multi-lang-v1_0.tar.bz2", "newer Kokoro: more and better male voices", size_mb=340, core=False),
 ]
 
 
@@ -185,6 +186,17 @@ KOKORO_EN_V019 = [
     Voice("am_adam", "Adam (US)", "male", 5), Voice("am_michael", "Michael (US)", "male", 6),
     Voice("bm_george", "George (UK)", "male", 9), Voice("bm_lewis", "Lewis (UK)", "male", 10),
 ]
+_V10 = [  # kokoro-multi-lang-v1_0 speaker table (English voices; ids from the sherpa-onnx docs)
+    ("af_alloy", "Alloy (US)", "female"), ("af_aoede", "Aoede (US)", "female"), ("af_bella", "Bella (US)", "female"), ("af_heart", "Heart (US)", "female"),
+    ("af_jessica", "Jessica (US)", "female"), ("af_kore", "Kore (US)", "female"), ("af_nicole", "Nicole (US)", "female"), ("af_nova", "Nova (US)", "female"),
+    ("af_river", "River (US)", "female"), ("af_sarah", "Sarah (US)", "female"), ("af_sky", "Sky (US)", "female"),
+    ("am_adam", "Adam (US)", "male"), ("am_echo", "Echo (US)", "male"), ("am_eric", "Eric (US)", "male"), ("am_fenrir", "Fenrir (US)", "male"),
+    ("am_liam", "Liam (US)", "male"), ("am_michael", "Michael (US)", "male"), ("am_onyx", "Onyx (US)", "male"), ("am_puck", "Puck (US)", "male"),
+    ("am_santa", "Santa (US)", "male"), ("bf_alice", "Alice (UK)", "female"), ("bf_emma", "Emma (UK)", "female"), ("bf_isabella", "Isabella (UK)", "female"),
+    ("bf_lily", "Lily (UK)", "female"), ("bm_daniel", "Daniel (UK)", "male"), ("bm_fable", "Fable (UK)", "male"), ("bm_george", "George (UK)", "male"),
+    ("bm_lewis", "Lewis (UK)", "male"),
+]
+KOKORO_V10 = [Voice(i, label, g, n) for n, (i, label, g) in enumerate(_V10)]
 PIPER_AMY = [Voice("amy", "Amy (US)", "female", 0)]
 
 
@@ -197,11 +209,13 @@ class SherpaSynth:
         d = _need(folder, "tts")
         espeak = str(d / "espeak-ng-data") if (d / "espeak-ng-data").exists() else ""
         if (d / "voices.bin").exists():
+            v10 = (d / "lexicon-us-en.txt").exists()  # the newer multi-language Kokoro needs its English lexicon
             kokoro = sherpa_onnx.OfflineTtsKokoroModelConfig(
                 model=_pick(d, "model"), voices=str(d / "voices.bin"), tokens=_tokens(d), data_dir=espeak,
+                **({"lexicon": str(d / "lexicon-us-en.txt")} if v10 else {}),
             )
             mc = sherpa_onnx.OfflineTtsModelConfig(kokoro=kokoro, num_threads=num_threads, provider="cpu")
-            self.voices, self.engine = KOKORO_EN_V019, "kokoro"
+            self.voices, self.engine = (KOKORO_V10 if v10 else KOKORO_EN_V019), "kokoro"
         else:
             model = sorted(d.glob("*.onnx"))
             if not model:
@@ -231,7 +245,7 @@ def load_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_
     """The user's own voice folder if set, else the Kokoro model (models_dir/kokoro), else the Piper voice (models_dir/tts)."""
     if custom_dir and Path(custom_dir).is_dir():
         return SherpaSynth(Path(custom_dir), speed, threads, voice, custom=True)
-    slot = "kokoro" if (models_dir / "kokoro").is_dir() else "tts"
+    slot = next((s for s in ("kokoro2", "kokoro") if (models_dir / s).is_dir()), "tts")  # newest Kokoro first
     return SherpaSynth(models_dir / slot, speed, threads, voice)
 
 
