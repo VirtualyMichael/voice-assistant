@@ -9,7 +9,8 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QPlainTextEdit, QSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
@@ -37,7 +38,8 @@ from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_f
 from .session import Session, SessionEvents
 from .speaker import Speaker
 from .setup_wizard import run_wizard
-from .theme import STATE_COLORS, STYLE
+from . import glass
+from .theme import ACCENTS, ICON_FONT, STATE_COLORS, STYLE, build_style, window_tint
 from .agent_tools import Timers, build_agent_tools, capabilities_prompt
 from .apps import AppCatalog
 from .tools import build_file_tools
@@ -67,6 +69,24 @@ class Bridge(QObject):
     route = Signal(str, bool)
 
 
+def icon_button(glyph: str, tip: str, checkable: bool = False) -> QPushButton:
+    """Round icon-only button (Segoe Fluent Icons glyph) with the name in its tooltip and accessible name."""
+    b = QPushButton(glyph, objectName="icon", checkable=checkable)
+    b.setToolTip(tip)
+    b.setAccessibleName(tip.split(":")[0])
+    return b
+
+
+class _OpaqueDialogs(QObject):
+    """Dialogs keep the solid theme even when the main window is frosted glass (otherwise they would be see-through)."""
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Show and isinstance(obj, QDialog) and not obj.property("opaque_done"):
+            obj.setProperty("opaque_done", True)
+            obj.setStyleSheet(STYLE)
+        return False
+
+
 class _Holder:
     def __init__(self):
         self.event, self.result = threading.Event(), False
@@ -94,7 +114,9 @@ class TabbedForm:
             page = QWidget()
             form = QFormLayout(page)
             form.setContentsMargins(10, 12, 10, 10)
-            form.setVerticalSpacing(10)
+            form.setVerticalSpacing(8)
+            form.setRowWrapPolicy(QFormLayout.WrapAllRows)  # label above its field: nothing is cut off in a narrow window
+            form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -189,6 +211,7 @@ VR_SETTLE_S = 6.0  # the headset's audio devices can appear a few seconds after 
 class MainWindow(QMainWindow):
     def __init__(self, cfg: Config):
         super().__init__()
+        self.setAttribute(Qt.WA_TranslucentBackground)  # lets the frosted backdrop show through
         self.setWindowTitle("Voice Assistant")
         self.resize(*(cfg.window_size or [440, 700]))
         self.cfg, self.bridge, self.policy = cfg, Bridge(), FolderPolicy(cfg.approved_folders)
@@ -199,15 +222,14 @@ class MainWindow(QMainWindow):
         self._vr_apply_lock = threading.Lock()
         self._warned_routes: set[str] = set()
 
-        self.status = QLabel()
+        self.status = QLabel(objectName="status")
         self.meter = QProgressBar(textVisible=False, maximumHeight=4)
-        self.pin = QPushButton("Pin on top", objectName="icon", checkable=True)
-        self.pin.setToolTip("Keep this window above other apps")
-        self.mute = QPushButton("Mute game mic", objectName="icon", checkable=True)
-        new_chat = QPushButton("New chat", objectName="icon")
-        new_chat.setToolTip("Forget the conversation so far and start fresh")
+        self.pin = icon_button("\uE718", "Pin on top: keep this window above other apps", checkable=True)
+        self.mute = icon_button("\uE720", "Mute game mic: stop your voice going to the game", checkable=True)
+        self.mute.toggled.connect(lambda m: self.mute.setText("\uE74F" if m else "\uE720"))
+        new_chat = icon_button("\uE8F2", "New chat: forget the conversation so far and start fresh")
         self.mute.setVisible(cfg.mic_forward)
-        gear = QPushButton("Settings", objectName="icon", checkable=True)
+        gear = self._gear = icon_button("\uE713", "Settings", checkable=True)
         head = QHBoxLayout()
         head.addWidget(self.status)
         head.addStretch(1)
@@ -221,7 +243,7 @@ class MainWindow(QMainWindow):
         self.partial.setWordWrap(True)
         self.latency = QLabel("", objectName="small")
         self.entry = QLineEdit(placeholderText="Message the assistant…")
-        talk, stop = QPushButton("Talk", objectName="talk"), QPushButton("Stop")
+        talk, stop = QPushButton("Talk", objectName="talk"), icon_button("\uE71A", "Stop: stop listening or speaking")
         inp = QHBoxLayout()
         inp.addWidget(self.entry, 1)
         inp.addWidget(talk)
@@ -235,11 +257,16 @@ class MainWindow(QMainWindow):
         col.setSpacing(8)
         col.addLayout(head)
         col.addWidget(self.meter)
-        col.addWidget(self.settings)
-        col.addWidget(self.chat, 1)
-        col.addWidget(self.partial)
-        col.addLayout(inp)
-        col.addWidget(self.latency)
+        self.chat_page = QWidget()  # hidden while the settings page is open
+        page = QVBoxLayout(self.chat_page)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(8)
+        page.addWidget(self.chat, 1)
+        page.addWidget(self.partial)
+        page.addLayout(inp)
+        page.addWidget(self.latency)
+        col.addWidget(self.settings, 1)
+        col.addWidget(self.chat_page, 1)
         root = QWidget()
         root.setLayout(col)
         self.setCentralWidget(root)
@@ -256,7 +283,7 @@ class MainWindow(QMainWindow):
         b.confirm_close.connect(self._close_confirm)
         talk.clicked.connect(self.session.activate)
         stop.clicked.connect(self.session.stop)
-        gear.toggled.connect(self.settings.setVisible)
+        gear.toggled.connect(self._show_settings)
         self.pin.toggled.connect(self._set_pin)
         new_chat.clicked.connect(self._new_chat)
         self.mute.toggled.connect(lambda m: setattr(self.audio, "forward_muted", m))
@@ -278,6 +305,7 @@ class MainWindow(QMainWindow):
         self.setWindowOpacity(cfg.opacity)
         if cfg.always_on_top:
             self.pin.setChecked(True)
+        self._apply_look()
         self._restore_chat()
         threading.Thread(target=self._check_routes, daemon=True).start()
         for w in self.warnings:
@@ -289,12 +317,21 @@ class MainWindow(QMainWindow):
     def _build_settings(self) -> QFrame:
         cfg = self.cfg
         panel = QFrame(objectName="panel")
-        panel.setMaximumHeight(360)
         tabs = QTabWidget()
-        tabs.setElideMode(Qt.ElideNone)  # arrows appear only if the tab names do not fit
-        QVBoxLayout(panel).addWidget(tabs)
-        panel.layout().setContentsMargins(8, 6, 8, 6)
-        form = TabbedForm(tabs, ["Voice", "Audio", "VR", "AI", "Skills", "Apps", "Home", "Memory", "Delegate", "General"])
+        tabs.tabBar().hide()  # the sidebar list below drives the pages
+        names = ["Voice", "Audio", "VR", "AI", "Skills", "Apps", "Home", "Memory", "Delegate", "Look", "General"]
+        nav = QListWidget(objectName="nav")
+        nav.setFixedWidth(96)
+        nav.addItems(names)
+        nav.setFocusPolicy(Qt.NoFocus)
+        nav.currentRowChanged.connect(tabs.setCurrentIndex)
+        nav.setCurrentRow(0)
+        side = QHBoxLayout(panel)
+        side.setContentsMargins(8, 8, 8, 8)
+        side.setSpacing(6)
+        side.addWidget(nav)
+        side.addWidget(tabs, 1)
+        form = TabbedForm(tabs, names)
         self._form = form
         form.use("Audio")
         self.dev = {}
@@ -351,8 +388,12 @@ class MainWindow(QMainWindow):
         form.addRow("Interrupt", mode)
         opacity = QSlider(Qt.Horizontal, minimum=40, maximum=100, value=int(cfg.opacity * 100))
         opacity.valueChanged.connect(self._set_opacity)
+        opacity_row = QWidget()
+        orow = QHBoxLayout(opacity_row)
+        orow.setContentsMargins(0, 0, 0, 0)
+        orow.addWidget(QLabel("Whole window opacity"))
+        orow.addWidget(opacity, 1)
         form.use("General")
-        form.addRow("Opacity", opacity)
         lang = QLineEdit(cfg.main_language)
         lang.setToolTip("Screen translations are given in this language")
         lang.editingFinished.connect(lambda: self._set_field("main_language", lang.text().strip() or "English"))
@@ -598,6 +639,34 @@ class MainWindow(QMainWindow):
         form.addRow(self.usage_label)
         form.addRow(refresh)
         form.addRow(QLabel("Runs inside the folders you approved (Apps tab). Commands are set in config.json (delegate_cmd_claude / delegate_cmd_codex).", objectName="small", wordWrap=True))
+        form.use("Look")
+        form.addRow(QLabel("Make the window your own.", objectName="small"))
+        gmode = QComboBox()
+        for gid, label in glass.MODES.items():
+            gmode.addItem(label, gid)
+        gmode.setCurrentIndex(max(gmode.findData(cfg.glass), 0))
+        gmode.setEnabled(glass.supported())
+        gmode.setToolTip("Frosted glass needs Windows 11 22H2 or newer" if not glass.supported() else "Blurs what is behind the window")
+        gmode.currentIndexChanged.connect(lambda _i: self._set_look("glass", gmode.currentData()))
+        tint = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=cfg.glass_tint)
+        tint.setToolTip("Left: clear glass. Right: more solid panels (easier to read)")
+        tint.valueChanged.connect(lambda v: self._set_look("glass_tint", v))
+        swatches = QHBoxLayout()
+        for name, hexcol in ACCENTS.items():
+            sw = QPushButton(objectName="swatch", checkable=True)
+            sw.setToolTip(name)
+            sw.setStyleSheet(f"background: {hexcol};")
+            sw.setChecked(hexcol.lower() == cfg.accent.lower())
+            sw.clicked.connect(lambda _c=False, h=hexcol: self._set_look("accent", h))
+            swatches.addWidget(sw)
+        custom = QPushButton("Custom\u2026")
+        custom.clicked.connect(self._pick_accent)
+        swatches.addWidget(custom)
+        swatches.addStretch(1)
+        form.addRow("Window effect", gmode)
+        form.addRow("Glass see-through \u2194 solid", tint)
+        form.addRow("Accent colour", swatches)
+        form.addRow(opacity_row)
         cfg_btn, setup_btn = QPushButton("Open settings file"), QPushButton("Run setup again")
         cfg_btn.clicked.connect(self._open_config)
         setup_btn.clicked.connect(self._rerun_setup)
@@ -856,6 +925,47 @@ class MainWindow(QMainWindow):
         self.chat.add("bubbleNote", f"SteamVR {'detected' if on else 'closed'}: mic = {mic}; speaker = {spk}")
 
     # ---- smart home --------------------------------------------------------------
+    # ---- look ------------------------------------------------------------------------------
+    def _show_settings(self, on: bool) -> None:
+        self.settings.setVisible(on)
+        self.chat_page.setVisible(not on)
+        self._gear.setText("\uE72B" if on else "\uE713")  # back arrow while settings are open
+        self._gear.setToolTip("Back to chat" if on else "Settings")
+
+    def _apply_look(self) -> None:
+        on = self.cfg.glass != "off" and glass.supported() and QApplication.platformName() == "windows"
+        self.setStyleSheet(build_style(self.cfg.accent, on, self.cfg.glass_tint))
+        self._veil = window_tint(self.cfg.glass_tint) if on else 0.0
+        self.update()
+        if on or self.isVisible():
+            self._apply_backdrop()
+
+    def _apply_backdrop(self) -> None:
+        if QApplication.platformName() == "windows":
+            glass.apply(int(self.winId()), self.cfg.glass if glass.supported() else "off")
+
+    def paintEvent(self, e) -> None:
+        veil = getattr(self, "_veil", 0.0)
+        if veil:
+            p = QPainter(self)
+            p.fillRect(self.rect(), QColor(20, 22, 27, int(255 * veil)))  # the tint over the blur; the slider sets how strong
+            p.end()
+
+    def showEvent(self, e) -> None:  # also runs after the pin button re-creates the native window
+        super().showEvent(e)
+        self._apply_backdrop()
+
+    def _set_look(self, name: str, value) -> None:
+        self._set_field(name, value)
+        self._apply_look()
+
+    def _pick_accent(self) -> None:
+        from PySide6.QtWidgets import QColorDialog
+
+        c = QColorDialog.getColor(QColor(self.cfg.accent), self, "Accent colour")
+        if c.isValid():
+            self._set_look("accent", c.name())
+
     def _save_profile(self) -> None:
         saved = self.profile.save(self.profile_edit.toPlainText())
         self.profile_edit.setPlainText(saved)
@@ -1227,6 +1337,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLE)
+    app._opaque_dialogs = _OpaqueDialogs()
+    app.installEventFilter(app._opaque_dialogs)
     config_dir().mkdir(parents=True, exist_ok=True)
     lock = QLockFile(str(config_dir() / "app.lock"))
     if not lock.tryLock(200):  # a second copy would fight over the mic and hotkey

@@ -30,7 +30,7 @@ def tab_text(w):
 
 def test_settings_are_grouped_into_tabs(win):
     tabs, content = tab_text(win)
-    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Voice", "Audio", "VR", "AI", "Skills", "Apps", "Home", "Memory", "Delegate", "General"]
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Voice", "Audio", "VR", "AI", "Skills", "Apps", "Home", "Memory", "Delegate", "Look", "General"]
     assert "Ask before opening an app" in content["Apps"]
     assert "Switch devices while SteamVR is running" in content["VR"]
     assert "Remember our conversation between sessions" in content["AI"]
@@ -149,3 +149,28 @@ def test_mcp_import_dialog_adds_only_ticked_servers_with_optional_trust(win, tmp
     monkeypatch.setattr(QDialog, "exec", fake_exec)
     win._import_mcp()
     assert win.cfg.mcp_servers == {"a": {"command": "py", "args": ["a.py"]}, "c": {"command": "py", "auto_approve": True}}
+
+
+def test_glass_style_is_see_through_and_solid_style_is_not():
+    from voice_assistant.theme import build_style, on_accent, window_tint
+
+    solid, glass = build_style(glass=False), build_style(glass=True, tint=40)
+    assert "QWidget { background: #14161b;" in solid and "QWidget { background: transparent;" in glass
+    assert "rgba(" in glass.split("#panel")[1][:60]
+    assert on_accent("#fbbf24") == "#0b0d12" and on_accent("#1e3a8a") == "#ffffff"
+    assert window_tint(0) < window_tint(100) <= 0.75
+
+
+def test_look_settings_change_the_config(win):
+    win._set_look("accent", "#2dd4bf")
+    win._set_look("glass_tint", 80)
+    assert win.cfg.accent == "#2dd4bf" and win.cfg.glass_tint == 80
+    assert "#2dd4bf" in win.styleSheet() or "45, 212, 191" in win.styleSheet()
+
+
+def test_settings_page_replaces_the_chat(win):
+    win.show()
+    win._gear.setChecked(True)
+    assert win.settings.isVisible() and not win.chat_page.isVisible()
+    win._gear.setChecked(False)
+    assert win.chat_page.isVisible() and not win.settings.isVisible()

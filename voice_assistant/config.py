@@ -48,6 +48,9 @@ class Config:
     delegate_daily_usd: float = 2.0  # 0 = no dollar limit (Codex reports no cost, so only requests are limited there)
     delegate_cooldown_s: int = 30
     delegate_timeout_s: int = 600
+    glass: str = "frosted"  # window backdrop: off | frosted | mica (Windows 11 only; solid elsewhere)
+    glass_tint: int = 55  # 0-100: how solid the cards are over the glass
+    accent: str = "#6c8cff"
     persona_jarvis: bool = False  # calm, dry-witted British butler-style personality (pair with the George or Lewis UK voice)
     # VR auto-switch: while a VR runtime process is running, use the VR mic/speaker instead (empty = keep normal)
     vr_autoswitch: bool = False

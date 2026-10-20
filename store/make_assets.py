@@ -11,14 +11,14 @@ import voice_assistant.app as A
 A.save_config = lambda *a, **k: None
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPixmap
-from PySide6.QtWidgets import QApplication, QPushButton, QTabWidget
+from PySide6.QtWidgets import QApplication, QListWidget, QTabWidget
 from voice_assistant.config import Config
 from voice_assistant.theme import STYLE
 
 out = root / "store" / "screenshots"
 app = QApplication([])
 app.setStyleSheet(STYLE)
-cfg = Config(setup_done=True, vr_autoswitch=True, mic_forward=True, output_device_2="CABLE Input (VB-Audio Virtual C",
+cfg = Config(setup_done=True, glass="off", vr_autoswitch=True, mic_forward=True, output_device_2="CABLE Input (VB-Audio Virtual C",
              models_dir=str(Path.home() / "AppData/Roaming/VoiceAssistant/models"))
 # two sample skills so the Skills tab is not empty in the screenshot
 skills_dir = Path(profile) / "sample-skills"
@@ -49,11 +49,11 @@ w.latency.setText("[local] first text 0.4 s | first audio 0.9 s")
 w._on_state("listening")
 pump(1)
 w.grab().save(str(out / "1-main.png"))
-gear = [b for b in w.findChildren(QPushButton) if b.text() == "Settings"][0]
-gear.setChecked(True)
+w._gear.setChecked(True)
 tabs = w.settings.findChild(QTabWidget)
+nav = w.settings.findChild(QListWidget)
 for i in range(tabs.count()):
-    tabs.setCurrentIndex(i); pump(0.4)
+    nav.setCurrentRow(i); pump(0.4)
     w.grab().save(str(out / f"2-settings-{i}-{tabs.tabText(i).lower()}.png"))
 
 # cover images drawn with Qt (itch.io cover 630x500, wide banner 1280x720)
