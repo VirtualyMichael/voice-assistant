@@ -459,8 +459,16 @@ class MainWindow(QMainWindow):
         form.addRow(vapprove)
         form.addRow(own_voice)
         form.addRow(clear_voice)
+        sens = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=self._sens_from_threshold(cfg.wake_threshold))
+        sens.setToolTip("Right: reacts more easily (but may wake on other sounds)")
+        sens.valueChanged.connect(self._set_wake_sensitivity)
+        test_wake = QPushButton("Test wake word (10 seconds)")
+        test_wake.setToolTip("Say your wake phrase a few times; it reports your mic level, how often it caught you and what it heard")
+        test_wake.clicked.connect(self._test_wake)
         form.addRow("Wake word", wake)
         form.addRow("Wake phrase", phrase)
+        form.addRow("Wake sensitivity", sens)
+        form.addRow(test_wake)
         reserve = QDoubleSpinBox(minimum=0, maximum=64, singleStep=0.5, value=cfg.vram_reserve_gb, suffix=" GB")
         info = QLabel(wordWrap=True)
         gpus = detect_gpus()
@@ -931,6 +939,57 @@ class MainWindow(QMainWindow):
         self.chat.add("bubbleNote", f"SteamVR {'detected' if on else 'closed'}: mic = {mic}; speaker = {spk}")
 
     # ---- smart home --------------------------------------------------------------
+    # ---- wake word tuning ------------------------------------------------------------------
+    @staticmethod
+    def _sens_from_threshold(thr: float) -> int:
+        return max(0, min(100, round((0.32 - thr) / 0.30 * 100)))
+
+    def _set_wake_sensitivity(self, v: int) -> None:
+        thr = round(0.32 - 0.30 * v / 100, 3)
+        self._set_field("wake_threshold", thr)
+        if self.cfg.wake_word_enabled:
+            try:
+                self.session.wake = SherpaWakeWord(Path(self.cfg.models_dir) / "kws", self.cfg.wake_phrase, threshold=thr)
+            except Exception as e:
+                self.chat.add("bubbleNote", f"Could not apply the wake sensitivity: {e}")
+
+    def _test_wake(self) -> None:
+        s = self.session
+        if s.wake is None:
+            self.chat.add("bubbleNote", "The wake word is off or its model is missing. Tick Enabled (and restart), then test.")
+            return
+        from .session import State
+
+        if s.state is not State.IDLE:
+            self.chat.add("bubbleNote", "Wait until the assistant is idle, then test.")
+            return
+        stats = {"peak": 0.0, "hits": 0, "heard": []}
+        rec = s.recognizer
+
+        def probe(samples, hit):
+            stats["peak"] = max(stats["peak"], float(abs(samples).max()) if len(samples) else 0.0)
+            stats["hits"] += int(hit)
+            if rec is not None:
+                rec.accept(samples)
+                if rec.is_endpoint():
+                    text = rec.text().strip()
+                    if text:
+                        stats["heard"].append(text)
+                    rec.reset()
+
+        s.wake_probe = probe
+        self.chat.add("bubbleNote", f"Wake test: say \"{self.cfg.wake_phrase}\" a few times over the next 10 seconds, with pauses.")
+        QTimer.singleShot(10000, lambda: self._finish_wake_test(stats))
+
+    def _finish_wake_test(self, stats: dict) -> None:
+        self.session.wake_probe = None
+        self.session._need_reset = True
+        peak = stats["peak"]
+        level = "very quiet: raise the microphone level in Windows Sound settings" if peak < 0.08 else "low: a louder mic helps" if peak < 0.2 else "too loud, it may be clipping: lower the mic level" if peak > 0.97 else "good"
+        heard = "; ".join(f"\"{t}\"" for t in stats["heard"][:6]) or "nothing clear"
+        advice = "" if stats["hits"] else " It did not trigger: raise Wake sensitivity, speak a little louder, or compare what it heard with your phrase."
+        self.chat.add("bubbleNote", f"Wake test: caught {stats['hits']} time(s). Mic level {round(peak * 100)}% ({level}). It heard: {heard}.{advice}")
+
     # ---- look ------------------------------------------------------------------------------
     def _show_settings(self, on: bool) -> None:
         self.settings.setVisible(on)

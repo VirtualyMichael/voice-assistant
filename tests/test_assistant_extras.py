@@ -149,3 +149,28 @@ def test_voice_approval_unclear_then_silence_is_none():
     s.feed_audio(AUDIO)
     t.join(5)
     assert out == [None]
+
+
+def test_wake_probe_receives_audio_instead_of_waking():
+    import time
+    import numpy as np
+    from tests.test_session import AUDIO, FakeRec, SlowLLM, make_speaker
+    from voice_assistant.agent import Agent
+    from voice_assistant.session import Session
+    from voice_assistant.tools import ToolRegistry
+
+    class Wake:
+        def accept(self, samples):
+            return True
+
+    sp, _ = make_speaker(0.01)
+    s = Session(Config(), Agent(SlowLLM(["x"]), "sys", ToolRegistry([]), 2), sp, FakeRec(), Wake())
+    seen = []
+    s.wake_probe = lambda samples, hit: seen.append(hit)
+    s.feed_audio(AUDIO)
+    time.sleep(0.3)
+    assert seen == [True] and s.state.name == "IDLE"  # detection was reported, not acted on
+    s.wake_probe = None
+    s.feed_audio(AUDIO)
+    time.sleep(0.3)
+    assert s.state.name == "LISTENING"

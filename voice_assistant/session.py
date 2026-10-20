@@ -98,6 +98,7 @@ class Session:
         self._voice_turn = False
         self._filler_said = False
         self._approval: Approval | None = None
+        self.wake_probe = None  # set by the 'Test wake word' button: called with (samples, hit) instead of waking
         self._chime = listening_chime()
         orig_on_tool = agent.on_tool
         agent.on_tool = lambda msg: (orig_on_tool(msg), self._tool_filler())
@@ -273,8 +274,13 @@ class Session:
             self._approve_audio(a, samples)
             return
         if state is State.IDLE:
-            if self.wake is not None and self.wake.accept(samples):
-                self.activate()
+            if self.wake is not None:
+                hit = self.wake.accept(samples)
+                probe = self.wake_probe
+                if probe is not None:
+                    probe(samples, hit)
+                elif hit:
+                    self.activate()
         elif state is State.LISTENING and self.recognizer:
             if self.clock() >= self._ignore_until:  # skip the tail of our own speech
                 self._listen(samples)
