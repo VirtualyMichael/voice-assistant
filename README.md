@@ -1,4 +1,4 @@
-# Voice Assistant — milestone 1 prototype
+# Voice Assistant
 
 ## Install (Windows 10/11)
 
@@ -23,6 +23,48 @@ PC without Python or Visual C++ runtimes (the package bundles what it found on t
 Windows 11 voice assistant: hotkey (or optional wake word) → local streaming speech recognition →
 streamed text in the window → reply spoken sentence by sentence. Local LM Studio endpoint by default;
 any OpenAI-compatible cloud endpoint works with your own key. Audio and transcripts stay in memory only.
+
+## Features
+
+Everything below is built in. Items marked *(off by default)* need switching on in Settings, and anything that changes something on your PC asks first.
+
+**Talking and listening**
+- Hands-free by hotkey, a **Talk** button or a **wake word** (default "hey assistant"; a one-word phrase such as "Jarvis" also answers to "Hey Jarvis" and "OK Jarvis"). A *Test wake word* button and a live *Wake sensitivity* slider help you tune it.
+- Streaming speech recognition with an optional **accurate recognizer** (Parakeet) that re-checks each sentence, so words like "into" are not heard as "in two".
+- Replies stream as text and are spoken sentence by sentence, with a listening chime, a configurable follow-up listening time, and three interrupt modes (voice, hotkey only, ignore).
+- Optional **spoken approval** *(off by default)*: confirmations are read aloud and you answer "yes" or "no".
+- Conversation memory between sessions (stored only on your PC; *New chat* erases it).
+
+**Voices**
+- Natural local voices: **Kokoro** (v0.19 and v1.0, 28 English voices), **Supertonic v3**, **Piper Kusal** and a basic Piper voice, all in one voice list, male and female.
+- A one-click **Jarvis-style preset** (British voice, calm butler manner, "Jarvis" wake phrase), and a *use my own voice model* option for a sherpa-onnx VITS/Piper voice you have the right to use.
+
+**AI models**
+- **Local**: LM Studio, llama.cpp, **Ollama** or any **custom OpenAI-compatible server** (your own address, model and key).
+- **Cloud**: OpenAI and Claude with your own key (stored in Windows Credential Manager, never in the settings file).
+- Skills in the Bionic / Claude `SKILL.md` format, with PDF reference search; MCP tool servers (including importing them from LM Studio).
+- **Memory profile**: tell it who you are and how you like things; it can also propose facts to remember (you confirm each one).
+- Optional **Jarvis-style butler personality**.
+
+**Things it can do for you** (it asks before actions that change things)
+- Open apps by name (it switches to a window that is already open instead of starting a second copy), set timers, read or write the clipboard, search and read the web *(off by default)*, work with files and PDFs in folders you approve, run PowerShell *(off by default)*.
+- **Music and volume**: play, pause, next and previous through Windows media sessions; exact volume; one app's volume ("set YouTube Music to 40"); "play Maps by Maroon 5" in YouTube Music.
+- **Smart home**: **Govee** lights (colour, brightness, on/off) over your network or Govee's cloud with your own key, and **Home Assistant** (which brings in Google Home / Nest, Alexa-connected devices, Matter, Hue and more; locks and alarms always ask).
+- **Screen help**: "what's on my screen?", or "look at VRChat and translate the text", using the vision model you already run; answers come in your own language.
+- **Computer use** *(experimental, off by default)*: a step-by-step loop that looks at an app window, clicks buttons by reading their text (Windows' built-in OCR), types, presses keys and checks the result. It asks before touching each window and refuses terminals, password managers and security prompts.
+- **Hand coding tasks to Claude Code or Codex** *(off by default)*: you approve the exact text first, with daily request and dollar limits and a usage readout.
+- Notes, weather, routines (named multi-step actions such as "good night").
+
+**Games and VR**
+- Pin the window on top of other apps; use two microphones and two speakers; send your voice and the assistant's voice into a virtual cable (VB-Cable) so friends in VRChat hear both; mute the game mic from the window.
+- **SteamVR auto-switch**: moves the microphone and headset to your VR devices when SteamVR starts and back when it closes, and warns about Windows "Listen to this device" double voices.
+
+**Look and feel**
+- A modern dark window with optional **frosted glass** (Windows 11 acrylic or Mica), tint and accent colours, whole-window opacity, and settings on a clean sidebar page.
+
+**Installing and trust**
+- A guided first-run setup, an installer with a self-test gate, models downloaded only after you tick them, no analytics or tracking, and your audio never saved. Actions that change things ask first.
+- Windows 10/11 (frosted glass needs Windows 11). The installer is not code-signed yet.
 
 ## Run
 
@@ -60,7 +102,7 @@ assistant is currently saying are treated as echo, but headphones or a cable out
 
 ## Settings tabs
 
-Settings is split into **Voice** (voice picker, listening timings, wake word, interrupt mode), **Audio** (microphone and speaker devices), **VR** (game voice, mic forwarding, SteamVR switching), **AI** (model provider, key, memory, web/shell abilities, VRAM guidance), **Apps** (app list, folders the assistant may use) and **General** (opacity, setup guide, settings file).
+Settings opens as a full page with a sidebar: **Voice** (voice picker, wake word, listening, approvals), **Audio** (microphone and speaker devices), **VR** (game voice, mic forwarding, SteamVR switching), **AI** (model provider, key, memory, web/shell abilities), **Skills**, **Apps** (app list, folders, computer control), **Home** (Govee, Home Assistant), **Memory** (your profile), **Delegate** (Claude Code / Codex with limits), **Look** (glass, colours, opacity) and **General** (setup guide, settings file).
 
 ## Window, wake word, hardware profile
 
