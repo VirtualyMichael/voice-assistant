@@ -102,6 +102,12 @@ Windows' *default* devices to the headset when it starts; this app uses named de
 - Confirmed by the user: Kokoro voices sound natural and words are no longer cut off.
 - Known weak point: the small 20M recognizer often drops the first word of an utterance ("Hello" heard as "O").
 
+## Using your own voice model
+
+Settings > Voice > **Use my own voice model...** loads a voice from a folder you choose (restart to apply; **Back to built-in voices** undoes it). The folder must hold a sherpa-onnx **VITS/Piper** voice: the model `.onnx`, `tokens.txt` and an `espeak-ng-data` folder (plus `lexicon.txt` if the voice has one). Voices in other formats (RVC, XTTS and similar cloning tools) are not supported.
+
+Only use voices you have the right to use: ones you recorded or trained yourself, or ones whose licence allows it. This project does not provide, host or link to voices that imitate real people.
+
 ## Agent tasks
 
 The assistant can call tools in a loop (up to `max_tool_rounds`, default 8), shows each call as a small note in the chat,
