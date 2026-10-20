@@ -11,6 +11,7 @@ from typing import Callable, Protocol
 
 import numpy as np
 
+from .approval import Approval, parse_yes_no, speakable
 from .agent import Agent
 from .chunker import SentenceChunker, clean_for_speech
 from .config import Config
@@ -96,6 +97,7 @@ class Session:
         self._ignore_until = 0.0
         self._voice_turn = False
         self._filler_said = False
+        self._approval: Approval | None = None
         self._chime = listening_chime()
         orig_on_tool = agent.on_tool
         agent.on_tool = lambda msg: (orig_on_tool(msg), self._tool_filler())
@@ -143,6 +145,42 @@ class Session:
                 if self.state in (State.THINKING, State.SPEAKING):
                     self._interrupt(State.IDLE)
                 self._begin_turn(text, self.clock())
+
+    def ask_voice(self, prompt: str, stop: threading.Event | None = None, timeout: float = 25.0) -> bool | None:
+        """Read a confirmation prompt aloud, then listen for yes/no. True/False when answered, None on silence, unclear speech or stop."""
+        if not (self.speaker and self.recognizer):
+            return None
+        a = Approval()
+        text = speakable(prompt)
+        with self._lock:
+            self._approval, self._spoken = a, text
+            self.speaker.say(clean_for_speech(text, self.cfg.tts_pronunciations))
+        start = self.clock()
+        while not self.speaker.wait_idle(0.1) and self.clock() - start < 30:
+            if stop is not None and stop.is_set():
+                break
+        with self._lock:
+            self._ignore_until = self.clock() + self.cfg.post_speech_guard_s
+            self._need_reset, a.listening = True, True
+        end = self.clock() + timeout
+        while self.clock() < end and not a.done.is_set() and not (stop is not None and stop.is_set()):
+            a.done.wait(0.1)
+        with self._lock:
+            a.listening, self._approval = False, None
+        return a.result
+
+    def _approve_audio(self, a: Approval, samples: np.ndarray) -> None:
+        if self.clock() < self._ignore_until:
+            return
+        rec = self.recognizer
+        rec.accept(samples)
+        if rec.is_endpoint():
+            heard = rec.text().strip()
+            rec.reset()
+            answer = parse_yes_no(heard)
+            if answer is not None:  # no echo check: the prompt itself says "yes" and "no", the post-speech guard covers our own voice
+                a.result = answer
+                a.done.set()
 
     def announce(self, text: str) -> None:
         """Speak text outside a normal turn (timers, mode changes). Waits for any reply in progress to finish."""
@@ -230,6 +268,10 @@ class Session:
             self._need_reset = False
         if reset and self.recognizer:
             self.recognizer.reset()
+        a = self._approval
+        if a is not None and a.listening and self.recognizer:
+            self._approve_audio(a, samples)
+            return
         if state is State.IDLE:
             if self.wake is not None and self.wake.accept(samples):
                 self.activate()

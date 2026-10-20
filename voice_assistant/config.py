@@ -37,6 +37,17 @@ class Config:
     wake_word_enabled: bool = False
     wake_phrase: str = "hey assistant"
     wake_threshold: float = 0.12  # lower = more sensitive, more false triggers
+    voice_approval: bool = False  # confirmations are also read aloud and can be answered by saying yes or no
+    profile_learning: bool = True  # the assistant may propose facts about you for the profile (you confirm each)
+    custom_voice_dir: str = ""  # folder with your own sherpa-onnx VITS/Piper voice (model .onnx, tokens.txt, espeak-ng-data); empty = built-in voices
+    delegate_enabled: bool = False  # hand coding tasks to Claude Code / Codex (their CLIs, your logins)
+    delegate_cmd_claude: str = "claude"
+    delegate_cmd_codex: str = "codex"
+    delegate_allow_edits: bool = False  # false = read-only runs
+    delegate_daily_requests: int = 10
+    delegate_daily_usd: float = 2.0  # 0 = no dollar limit (Codex reports no cost, so only requests are limited there)
+    delegate_cooldown_s: int = 30
+    delegate_timeout_s: int = 600
     persona_jarvis: bool = False  # calm, dry-witted British butler-style personality (pair with the George or Lewis UK voice)
     # VR auto-switch: while a VR runtime process is running, use the VR mic/speaker instead (empty = keep normal)
     vr_autoswitch: bool = False

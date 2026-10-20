@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QPlainTextEdit, QSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
@@ -28,7 +28,9 @@ from .metrics import TurnMetrics
 from .models import AccurateRecognizer, ModelsMissing, SherpaRecognizer, SherpaWakeWord, load_synth
 from .permissions import FolderPolicy
 from .routing import double_voice_warnings, listen_routes
+from .delegate import UsageLog, build_delegate_tools
 from .extras import build_extra_tools
+from .profile import Profile, build_profile_tools
 from .screen import build_screen_tools
 from .smart_home import HOME_TOOL_NAMES, build_home_tools, make_govee
 from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_for, needs_key, save_key, set_model
@@ -56,6 +58,7 @@ class Bridge(QObject):
     done = Signal(str)
     error = Signal(str)
     confirm = Signal(str, object)
+    confirm_close = Signal(object)
     vr = Signal(bool)
     tool = Signal(str)
     vr_note = Signal(str)
@@ -67,6 +70,7 @@ class Bridge(QObject):
 class _Holder:
     def __init__(self):
         self.event, self.result = threading.Event(), False
+        self.box, self.voice = None, None
 
 
 class QtEvents(SessionEvents):
@@ -190,6 +194,7 @@ class MainWindow(QMainWindow):
         self.cfg, self.bridge, self.policy = cfg, Bridge(), FolderPolicy(cfg.approved_folders)
         self.warnings: list[str] = []
         self.skills = SkillLibrary(cfg.skill_folders, cfg.disabled_skills)  # needed by the settings tabs built below
+        self.profile, self.usage = Profile(), UsageLog()
         self._vr_gen = 0
         self._vr_apply_lock = threading.Lock()
         self._warned_routes: set[str] = set()
@@ -248,6 +253,7 @@ class MainWindow(QMainWindow):
         b.done.connect(self._on_done)
         b.error.connect(self._on_error)
         b.confirm.connect(self._on_confirm)
+        b.confirm_close.connect(self._close_confirm)
         talk.clicked.connect(self.session.activate)
         stop.clicked.connect(self.session.stop)
         gear.toggled.connect(self.settings.setVisible)
@@ -288,7 +294,7 @@ class MainWindow(QMainWindow):
         tabs.setElideMode(Qt.ElideNone)  # arrows appear only if the tab names do not fit
         QVBoxLayout(panel).addWidget(tabs)
         panel.layout().setContentsMargins(8, 6, 8, 6)
-        form = TabbedForm(tabs, ["Voice", "Audio", "VR", "AI", "Skills", "Apps", "Home", "General"])
+        form = TabbedForm(tabs, ["Voice", "Audio", "VR", "AI", "Skills", "Apps", "Home", "Memory", "Delegate", "General"])
         self._form = form
         form.use("Audio")
         self.dev = {}
@@ -390,12 +396,23 @@ class MainWindow(QMainWindow):
         wake.setChecked(cfg.wake_word_enabled)
         wake.toggled.connect(lambda v: self._set_field("wake_word_enabled", v))
         phrase.editingFinished.connect(lambda: self._set_field("wake_phrase", phrase.text().strip() or "hey assistant"))
+        vapprove = QCheckBox("Read confirmations aloud; answer by saying yes or no")
+        vapprove.setToolTip("The on-screen Yes/No still works; whichever answers first wins. Unclear or no answer counts as no.")
+        vapprove.setChecked(cfg.voice_approval)
+        vapprove.toggled.connect(lambda v: self._set_field("voice_approval", v))
+        own_voice, clear_voice = QPushButton("Use my own voice model\u2026"), QPushButton("Back to built-in voices")
+        own_voice.setToolTip("A folder with a sherpa-onnx VITS/Piper voice: model .onnx, tokens.txt and espeak-ng-data. Restart to apply.")
+        own_voice.clicked.connect(self._pick_voice_folder)
+        clear_voice.clicked.connect(lambda: self._set_field("custom_voice_dir", ""))
         persona = QCheckBox("Jarvis-style butler personality")
         persona.setToolTip("Calm, dry-witted British butler manner. Pair it with the George or Lewis (UK) voice.")
         persona.setChecked(cfg.persona_jarvis)
         persona.toggled.connect(self._set_persona)
         form.use("Voice")
         form.addRow(persona)
+        form.addRow(vapprove)
+        form.addRow(own_voice)
+        form.addRow(clear_voice)
         form.addRow("Wake word", wake)
         form.addRow("Wake phrase", phrase)
         reserve = QDoubleSpinBox(minimum=0, maximum=64, singleStep=0.5, value=cfg.vram_reserve_gb, suffix=" GB")
@@ -545,6 +562,42 @@ class MainWindow(QMainWindow):
         form.addRow("Address", ha_url)
         form.addRow(ha_key)
         form.addRow(ha_test)
+        form.use("Memory")
+        form.addRow(QLabel("Tell the assistant about yourself: name, job, interests, how you like answers, your personality. It uses this to personalise replies and choices. Stays on this PC; sent to your AI model (the cloud one, if you chose one).", objectName="small", wordWrap=True))
+        self.profile_edit = QPlainTextEdit(self.profile.load())
+        self.profile_edit.setPlaceholderText("Example: I'm Alex. I like short answers, dry humour, and I drive a Mazda CX-5.")
+        self.profile_edit.setMinimumHeight(180)
+        save_profile = QPushButton("Save profile")
+        save_profile.clicked.connect(self._save_profile)
+        learn = QCheckBox("Let the assistant suggest facts to add (asks before each)")
+        learn.setChecked(cfg.profile_learning)
+        learn.toggled.connect(lambda v: self._set_home("profile_learning", v))
+        form.addRow(self.profile_edit)
+        form.addRow(save_profile)
+        form.addRow(learn)
+        form.use("Delegate")
+        form.addRow(QLabel("Let the assistant hand coding tasks to Claude Code or Codex (their own command-line programs, with your logins). You approve the exact text before anything is sent.", objectName="small", wordWrap=True))
+        dele = QCheckBox("Enable delegating to Claude Code / Codex")
+        dele.setChecked(cfg.delegate_enabled)
+        dele.toggled.connect(lambda v: self._set_home("delegate_enabled", v))
+        edits = QCheckBox("Allow them to edit files (off = read-only)")
+        edits.setChecked(cfg.delegate_allow_edits)
+        edits.toggled.connect(lambda v: self._set_field("delegate_allow_edits", v))
+        reqs = QSpinBox(minimum=1, maximum=200, value=cfg.delegate_daily_requests)
+        reqs.valueChanged.connect(lambda v: self._set_field("delegate_daily_requests", v))
+        usd = QDoubleSpinBox(minimum=0, maximum=500, singleStep=0.5, value=cfg.delegate_daily_usd, prefix="$")
+        usd.setToolTip("Claude reports its cost; Codex does not, so only the request limit applies to it. 0 = no dollar limit.")
+        usd.valueChanged.connect(lambda v: self._set_field("delegate_daily_usd", v))
+        self.usage_label = QLabel(self.usage.summary(), objectName="small", wordWrap=True)
+        refresh = QPushButton("Refresh usage")
+        refresh.clicked.connect(lambda: self.usage_label.setText(self.usage.summary()))
+        form.addRow(dele)
+        form.addRow(edits)
+        form.addRow("Max requests per day", reqs)
+        form.addRow("Max spend per day", usd)
+        form.addRow(self.usage_label)
+        form.addRow(refresh)
+        form.addRow(QLabel("Runs inside the folders you approved (Apps tab). Commands are set in config.json (delegate_cmd_claude / delegate_cmd_codex).", objectName="small", wordWrap=True))
         cfg_btn, setup_btn = QPushButton("Open settings file"), QPushButton("Run setup again")
         cfg_btn.clicked.connect(self._open_config)
         setup_btn.clicked.connect(self._rerun_setup)
@@ -557,7 +610,19 @@ class MainWindow(QMainWindow):
     def _confirm(self, prompt: str) -> bool:
         h = _Holder()
         self.bridge.confirm.emit(prompt, h)
+        if self.cfg.voice_approval and getattr(self, "session", None) is not None:
+            threading.Thread(target=self._voice_answer, args=(prompt, h), daemon=True).start()
         return h.event.wait(60) and h.result
+
+    def _voice_answer(self, prompt: str, h: "_Holder") -> None:
+        answer = self.session.ask_voice(prompt, stop=h.event)
+        if answer is not None and not h.event.is_set():
+            h.voice = answer
+            self.bridge.confirm_close.emit(h)
+
+    def _close_confirm(self, h: "_Holder") -> None:
+        if h.box is not None and h.voice is not None:
+            h.box.done(QMessageBox.Yes if h.voice else QMessageBox.No)
 
     def _build_session(self) -> None:
         cfg = self.cfg
@@ -566,7 +631,7 @@ class MainWindow(QMainWindow):
         for name, factory in (
             ("recognizer", lambda: SherpaRecognizer(models / "asr", end_silence_s=cfg.end_of_speech_s)),
             ("accurate", lambda: AccurateRecognizer(models / "asr2", cfg.tts_threads) if cfg.accurate_asr and (models / "asr2").is_dir() else None),
-            ("synth", lambda: load_synth(models, cfg.tts_speed, cfg.tts_threads, cfg.tts_voice)),
+            ("synth", lambda: load_synth(models, cfg.tts_speed, cfg.tts_threads, cfg.tts_voice, cfg.custom_voice_dir)),
             ("wake", lambda: SherpaWakeWord(models / "kws", cfg.wake_phrase, threshold=cfg.wake_threshold) if cfg.wake_word_enabled else None),
         ):
             try:
@@ -582,6 +647,9 @@ class MainWindow(QMainWindow):
         registry.add(build_agent_tools(cfg, self.policy, self._confirm, lambda t: self.session.announce(t), self.timers, self.catalog))
         self.govee = make_govee(cfg)
         registry.add(build_home_tools(cfg, self._confirm, self.govee))
+        registry.add(build_profile_tools(cfg, self.profile, self._confirm))
+        if cfg.delegate_enabled:
+            registry.add(build_delegate_tools(cfg, self.policy, self._confirm, self.usage))
         registry.add(build_extra_tools(cfg, self._confirm, lambda name, args: registry.call(name, args)))
         registry.add(build_screen_tools(cfg, self._confirm, lambda: self.session.agent.llm))
         self.pdfs = PdfStore()
@@ -612,7 +680,7 @@ class MainWindow(QMainWindow):
             self.session.start()
 
     def _system_prompt(self) -> str:
-        return self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + capabilities_prompt(self.cfg, self._registry.names()) + self.skills.prompt()
+        return self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + self.profile.prompt() + capabilities_prompt(self.cfg, self._registry.names()) + self.skills.prompt()
 
     def _warm_pdfs(self) -> None:
         """Index the skills' PDFs in the background so the first question is quick (cached on disk afterwards)."""
@@ -678,7 +746,10 @@ class MainWindow(QMainWindow):
         never = QCheckBox("Don't ask again when opening apps") if is_app else None
         if never:
             box.setCheckBox(never)
-        holder.result = box.exec() == QMessageBox.Yes
+        holder.box = box
+        shown = box.exec() == QMessageBox.Yes
+        voice = getattr(holder, "voice", None)
+        holder.result = voice if voice is not None else shown
         if never and never.isChecked() and holder.result:
             self.cfg.confirm_launch = False
             save_config(self.cfg)
@@ -785,6 +856,18 @@ class MainWindow(QMainWindow):
         self.chat.add("bubbleNote", f"SteamVR {'detected' if on else 'closed'}: mic = {mic}; speaker = {spk}")
 
     # ---- smart home --------------------------------------------------------------
+    def _save_profile(self) -> None:
+        saved = self.profile.save(self.profile_edit.toPlainText())
+        self.profile_edit.setPlainText(saved)
+        self.session.agent.messages[0]["content"] = self._system_prompt()
+        self.chat.add("bubbleNote", f"Profile saved ({len(saved)} characters).")
+
+    def _pick_voice_folder(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Folder with your voice model (.onnx, tokens.txt, espeak-ng-data)")
+        if d:
+            self._set_field("custom_voice_dir", d)
+            self.chat.add("bubbleNote", f"Custom voice set: {d}. Restart the app to use it.")
+
     def _set_persona(self, on: bool) -> None:
         self._set_field("persona_jarvis", on)
         self.session.agent.messages[0]["content"] = self._system_prompt()
@@ -796,11 +879,14 @@ class MainWindow(QMainWindow):
     def _refresh_home_tools(self) -> None:
         """Apply smart-home settings now: swap the home tools in the live agent and tell it about them."""
         self.govee = make_govee(self.cfg)
-        self._registry.remove(HOME_TOOL_NAMES)
+        self._registry.remove(HOME_TOOL_NAMES + ("delegate_task", "usage_report", "learn_about_user"))
+        self._registry.add(build_profile_tools(self.cfg, self.profile, self._confirm))
         self._registry.add(build_home_tools(self.cfg, self._confirm, self.govee))
+        if self.cfg.delegate_enabled:
+            self._registry.add(build_delegate_tools(self.cfg, self.policy, self._confirm, self.usage))
         self.session.agent.messages[0]["content"] = self._system_prompt()
-        have = [n for n in HOME_TOOL_NAMES if n in self._registry.names()]
-        self.chat.add("bubbleNote", "Home tools ready: " + ", ".join(have) if have else "Home tools off.")
+        have = [n for n in HOME_TOOL_NAMES + ("delegate_task",) if n in self._registry.names()]
+        self.chat.add("bubbleNote", "Tools ready: " + ", ".join(have) if have else "Home and delegation tools off.")
 
     def _find_lights(self) -> None:
         self.govee = make_govee(self.cfg)  # picks up a newly saved key

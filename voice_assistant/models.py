@@ -191,7 +191,7 @@ PIPER_AMY = [Voice("amy", "Amy (US)", "female", 0)]
 class SherpaSynth:
     """Kokoro (natural, many voices) when <dir>/voices.bin exists, otherwise a Piper VITS voice."""
 
-    def __init__(self, folder: Path, speed: float = 1.0, num_threads: int = 4, voice: str = ""):
+    def __init__(self, folder: Path, speed: float = 1.0, num_threads: int = 4, voice: str = "", custom: bool = False):
         import sherpa_onnx
 
         d = _need(folder, "tts")
@@ -211,7 +211,7 @@ class SherpaSynth:
                 model=str(model[0]), tokens=_tokens(d), data_dir=espeak, lexicon=str(lexicon) if lexicon.exists() else "",
             )
             mc = sherpa_onnx.OfflineTtsModelConfig(vits=vits, num_threads=num_threads, provider="cpu")
-            self.voices, self.engine = PIPER_AMY, "piper"
+            self.voices, self.engine = ([Voice("custom", "Your voice", "male", 0)] if custom else PIPER_AMY), "piper"
         self._tts = sherpa_onnx.OfflineTts(sherpa_onnx.OfflineTtsConfig(model=mc, max_num_sentences=1))
         self.speed, self.sid = speed, 0
         self.set_voice(voice)
@@ -227,8 +227,10 @@ class SherpaSynth:
         return np.asarray(audio.samples, dtype=np.float32), audio.sample_rate
 
 
-def load_synth(models_dir: Path, speed: float, threads: int, voice: str) -> SherpaSynth:
-    """Prefer the Kokoro model (models_dir/kokoro) and fall back to the Piper voice (models_dir/tts)."""
+def load_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_dir: str = "") -> SherpaSynth:
+    """The user's own voice folder if set, else the Kokoro model (models_dir/kokoro), else the Piper voice (models_dir/tts)."""
+    if custom_dir and Path(custom_dir).is_dir():
+        return SherpaSynth(Path(custom_dir), speed, threads, voice, custom=True)
     slot = "kokoro" if (models_dir / "kokoro").is_dir() else "tts"
     return SherpaSynth(models_dir / slot, speed, threads, voice)
 
