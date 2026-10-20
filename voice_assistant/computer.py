@@ -23,6 +23,9 @@ BLOCKED_PROCESSES = {"powershell", "pwsh", "cmd", "conhost", "windowsterminal", 
 BLOCKED_TITLES = ("windows security", "user account control", "voice assistant", "windows powershell", "command prompt")
 SENSITIVE_TITLE = re.compile(r"password|sign in|log in|login|bank|payment|checkout|credit|paypal|wallet", re.I)
 APPROVAL_S = 600
+RISKY_WORDS = re.compile(r"\b(delete|remove|uninstall|erase|format|wipe|empty|clear all|reset|send|post|publish|submit|buy|purchase|pay|place order|checkout|subscribe|confirm|sign out|log out|logout|unfollow|block|report|close all|quit|exit|shut ?down|restart)\b", re.I)
+RISKY_KEYS = ("delete", "alt+f4", "ctrl+w", "ctrl+q", "ctrl+shift+w", "ctrl+shift+delete", "ctrl+shift+del", "shift+delete")
+TASK_SECONDS = 240  # one computer_task never runs longer than this
 MEDIA_GOAL = re.compile(r"\b(play|song|music|listen|track|album|playlist|video|pause)\b", re.I)
 MAX_ACTIONS = 40
 ARROW_KEYS = {"up": 0x26, "down": 0x28}
@@ -73,6 +76,24 @@ def _grid(img, cols: int, rows: int, width: int):
             p.drawText(int(c * cw) + 3, int(r * ch) + 13, f"{chr(65 + c)}{r + 1}")
     p.end()
     return img
+
+
+def _foreground():
+    try:
+        return int(ctypes.windll.user32.GetForegroundWindow())
+    except Exception:
+        return None
+
+
+def _verify_done(llm, goal: str, png: bytes) -> bool:
+    """A second, independent look: does this screenshot clearly show the goal achieved? (A small model says 'done' too early.)"""
+    q = (f"The user's goal was: {goal}\nDoes this screenshot CLEARLY show that the goal is already achieved? "
+         "Answer YES only if you can see the evidence; otherwise NO. Begin your answer with YES or NO and give one short reason.")
+    try:
+        ans = ask_about_image(llm, q, png).strip().upper()
+    except Exception:
+        return True  # if the check itself fails, trust the first answer rather than loop forever
+    return ans.startswith("YES")
 
 
 def _media_status() -> str:
@@ -255,6 +276,16 @@ def song_playing(status: str, goal: str) -> bool:
     return bool(title) and title[:25] in goal.lower()
 
 
+def risky_click(target: str, ocr_text: str = "") -> bool:
+    """A click whose label sounds destructive, irreversible or like sending / paying (Delete, Send, Buy, Confirm...) always needs a yes."""
+    return bool(RISKY_WORDS.search(f"{target} {ocr_text}"))
+
+
+def risky_keys(keys: str) -> bool:
+    k = keys.lower().replace(" ", "")
+    return any(k == r or k.endswith("+" + r) or k.startswith(r + "+") for r in RISKY_KEYS)
+
+
 def screen_changed(prev: bytes | None, now: bytes) -> bool:
     """Did the window look different (a coarse comparison, so a blinking cursor or clock does not count)?"""
     if prev is None:
@@ -279,8 +310,9 @@ DECIDE_SYSTEM = (
     "You control one app window on a Windows PC, one step at a time, to reach the user's goal. You see a screenshot of that window with a yellow grid: "
     "8 columns (A-H) by 6 rows (1-6), each cell labelled in its top-left corner. Reply with ONE JSON object and nothing else:\n"
     '{"action":"click","target":"what to click","id":14}  (also "double_click", "right_click"): id is a number from the list of text visible on screen; '
-    'use it whenever the target has a text label or title. To click the picture or icon that belongs to a text (a cover image above a title, an icon left of a label) add '
-    '"where":"above" (or "left", "right", "below"), for example {"action":"click","target":"cover image of the song","id":14,"where":"above"}. '
+    'use it whenever the target has a text label or title. To click the picture or icon that belongs to a text add '
+    '"where": use "above" ONLY in a grid of cards where the cover sits directly over its own title, and "left" in a list of rows where the small cover is at the left end of the row '
+    '("right" and "below" are rare); never use "above" in a list, it would hit the row above. Example: {"action":"click","target":"cover image of the song","id":14,"where":"above"}. '
     'For things without any text nearby use {"action":"click","target":"what and where","cell":"E1"}\n'
     '{"action":"type","text":"text to type","enter":true,"replace":true}  (types into the field that has focus, so click the field first; set replace true when the field may already '
     'contain text, such as a search box, so the old text is selected and overwritten; leave it out in documents)\n'
@@ -327,13 +359,15 @@ class Hands:
 
 def build_computer_tools(cfg, confirm, get_llm, windows=list_windows, capture=capture_png, rect=window_rect, focus=focus_window, hands=None,
                          cancelled=lambda: False, clock=time.time, ask=ask_about_image, progress=lambda m: None, sleep=time.sleep,
-                         decide=None, ocr=None, media_status=None) -> list[Tool]:
+                         decide=None, ocr=None, media_status=None, foreground=None, verify=None) -> list[Tool]:
     from .agent_tools import _obj, _str
 
     hands = hands or Hands()
     decide = decide or _decide_with_model
     ocr = ocr or ocr_lines
     media_status = media_status or _media_status
+    foreground = foreground or _foreground
+    verify = verify or _verify_done
     approved: dict[int, float] = {}  # hwnd -> when approval ends
     used = {"n": 0}
 
@@ -363,6 +397,9 @@ def build_computer_tools(cfg, confirm, get_llm, windows=list_windows, capture=ca
         used["n"] += 1
         focus(hwnd)
         time.sleep(0.4)
+        front = foreground()
+        if front not in (None, hwnd):  # something else (a pop-up, another app) kept the front: never click or type blind
+            return f"'{title}' did not come to the front (another window is in front). NOT DONE: ask the user to bring it forward or close what is covering it."
         return hwnd, title, rect(hwnd)
 
     def used_ok() -> bool:
@@ -378,7 +415,11 @@ def build_computer_tools(cfg, confirm, get_llm, windows=list_windows, capture=ca
         history: list[str] = []
         prev_png, still = None, 0
         tried: dict[str, int] = {}
+        started = clock()
+        verified = 0
         for step in range(1, max(1, min(int(max_steps), 20)) + 1):
+            if clock() - started > TASK_SECONDS:
+                return f"NOT DONE: ran out of time ({TASK_SECONDS} s). Steps so far: " + "; ".join(history)
             if cancelled():
                 return "Stopped by the user. " + "; ".join(history[-3:])
             status = media_status() if MEDIA_GOAL.search(goal) else ""
@@ -392,7 +433,7 @@ def build_computer_tools(cfg, confirm, get_llm, windows=list_windows, capture=ca
                 history[-1] += " (screen unchanged)"
             prev_png = png
             if still >= 3 and len(set(h.replace(" (screen unchanged)", "") for h in history[-3:])) == 1:
-                return f"Giving up: the window stopped changing after '{history[-1] if history else 'the first step'}'. Steps so far: " + "; ".join(history)
+                return f"NOT DONE: gave up, the window stopped changing after '{history[-1] if history else 'the first step'}'. Steps so far: " + "; ".join(history)
             img = _png_to_qimage(png)
             W, H = img.width(), img.height()
             lines = ocr(png)
@@ -410,19 +451,24 @@ def build_computer_tools(cfg, confirm, get_llm, windows=list_windows, capture=ca
             if act is None:
                 history.append("(the model gave no usable action)")
                 if sum(h.startswith("(the model") for h in history) >= 3:
-                    return "The vision model could not decide what to do. It may not support images, or is too small for this. Steps so far: " + "; ".join(history)
+                    return "NOT DONE: the vision model could not decide what to do. It may not support images, or is too small for this. Steps so far: " + "; ".join(history)
                 continue
             kind = str(act.get("action", "")).lower()
             progress(f"computer step {step}: {kind} {act.get('target') or act.get('text') or act.get('keys') or act.get('direction') or ''}"[:140])
             if kind == "done":
+                if verified < 2 and not verify(llm, goal, png):
+                    verified += 1
+                    history.append("(said done, but a second look did not show the goal achieved)")
+                    continue
                 return f"Done: {act.get('summary', 'finished')}"
             if kind == "fail":
-                return f"Could not do it: {act.get('reason', 'unknown')}. Steps: " + "; ".join(history)
+                return f"NOT DONE: {act.get('reason', 'unknown')}. Steps: " + "; ".join(history)
             if not used_ok():
-                return f"Action limit reached ({MAX_ACTIONS}). Steps so far: " + "; ".join(history)
+                return f"NOT DONE: action limit reached ({MAX_ACTIONS}). Steps so far: " + "; ".join(history)
             used["n"] += 1
             if kind in ("click", "double_click", "right_click"):
                 c1 = _cell_to_rc(act.get("cell"), 8, 6)
+                ocr_label = ""
                 target = str(act.get("target", "the target"))
                 try:
                     idx = int(act.get("id"))
@@ -432,6 +478,7 @@ def build_computer_tools(cfg, confirm, get_llm, windows=list_windows, capture=ca
                     ln = lines[idx - 1]
                     pos = offset_point(ln["x"] + ln["w"] / 2, ln["y"] + ln["h"] / 2, ln, act.get("where"))
                     pos = (max(0, min(W - 1, pos[0])), max(0, min(H - 1, pos[1])))
+                    ocr_label = ln["text"]
                     target = f"{target} ('{ln['text'][:30]}'{', ' + str(act['where']) if act.get('where') else ''})"
                 elif c1 is None:
                     pos = locate(llm, png, target, ask)
@@ -441,6 +488,8 @@ def build_computer_tools(cfg, confirm, get_llm, windows=list_windows, capture=ca
                 else:
                     pos = refine(llm, img, c1, target, ask)
                 x, y = region[0] + pos[0], region[1] + pos[1]
+                if risky_click(str(act.get("target", "")), ocr_label) and not confirm(f"The assistant wants to click: {target}\n\nThis looks like it could delete, send, buy or confirm something. Allow it?"):
+                    return "The user declined this action. NOT DONE."
                 focus(hwnd)
                 hands.click(x, y, "right" if kind == "right_click" else "left", kind == "double_click")
                 history.append(f"{kind.replace('_', ' ')} on {target}")
@@ -462,6 +511,8 @@ def build_computer_tools(cfg, confirm, get_llm, windows=list_windows, capture=ca
                 if not keys_allowed(keys):
                     history.append(f"blocked key {keys}")
                     continue
+                if risky_keys(keys) and not confirm(f"The assistant wants to press {keys} in '{title}'. This can delete or close things. Allow it?"):
+                    return "The user declined this action. NOT DONE."
                 focus(hwnd)
                 hands.keys(keys)
                 history.append(f"pressed {keys}")
@@ -479,7 +530,7 @@ def build_computer_tools(cfg, confirm, get_llm, windows=list_windows, capture=ca
         last = media_status() if MEDIA_GOAL.search(goal) else ""
         if song_playing(last, goal):  # the final action may be the one that worked
             return f"Done: {last}"
-        return "Step limit reached without finishing. Steps taken: " + "; ".join(history)
+        return "NOT DONE: step limit reached without finishing. Steps taken: " + "; ".join(history)
 
     def control_click(target: str, window: str, button: str = "left", double: bool = False) -> str:
         r = prepare(window)

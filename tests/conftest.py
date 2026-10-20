@@ -25,3 +25,5 @@ def no_real_launches(monkeypatch):
     monkeypatch.setattr("voice_assistant.agent_tools.focus_window", refuse)
     monkeypatch.setattr("keyboard.send", refuse)  # no test may press keys on the real desktop
     monkeypatch.setattr("keyboard.write", refuse)
+    monkeypatch.setattr("voice_assistant.computer._foreground", lambda: None)  # tests never ask the real desktop which window is in front
+    monkeypatch.setattr("voice_assistant.computer._verify_done", lambda *a, **k: True)

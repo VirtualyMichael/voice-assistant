@@ -181,7 +181,7 @@ def test_task_loop_respects_blocks_stop_and_step_limit():
     t3, h3, _ = make_task(['{"action":"key","keys":"a"}'] * 3, cancelled=lambda: True)
     assert "Stopped" in t3["computer_task"]("g", "youtube music") and not h3.log
     t4, _, _ = make_task(['{"action":"wait","seconds":1}'] * 5)
-    assert "Step limit" in t4["computer_task"]("g", "youtube music", 3)
+    assert "step limit" in t4["computer_task"]("g", "youtube music", 3)
 
 
 def test_clicking_by_ocr_id_hits_the_exact_text_centre_and_prompt_lists_the_text():
@@ -257,3 +257,54 @@ def test_a_song_started_by_the_very_last_step_still_counts_as_done():
     t, hands, _ = make_task(['{"action":"key","keys":"a"}'], media_status=lambda: next(states))
     out = t["computer_task"]("Play the song Cataclysm by Sibewest", "youtube music", 1)
     assert out.startswith("Done:") and "Cataclysm" in out
+
+
+def test_risky_clicks_and_keys_need_a_yes():
+    from voice_assistant.computer import risky_click, risky_keys
+
+    assert risky_click("the Delete button") and risky_click("button", "Confirm purchase") and risky_click("Send") and not risky_click("the Play button", "Play")
+    assert risky_keys("delete") and risky_keys("alt+f4") and risky_keys("ctrl+w") and not risky_keys("enter") and not risky_keys("ctrl+f")
+
+
+def run_with_confirm(script, answer, text_lines=None):
+    asked, hands = [], Hands()
+    decisions = iter(script)
+    shots = iter([0xFF000000 + 0x101010 * i for i in range(20)])
+    tools = build_computer_tools(Config(), lambda p: asked.append(p) or (answer if "wants to" in p else True), lambda: None, windows=lambda: WINS,
+                                 capture=lambda *a, **k: png_of(next(shots)), rect=lambda h: (0, 0, 1600, 960), focus=lambda h: None, hands=hands,
+                                 sleep=lambda s: None, decide=lambda *a: next(decisions), ocr=lambda png: text_lines or FAKE_TEXT, media_status=lambda: "",
+                                 foreground=lambda: 1, verify=lambda *a: True, ask=lambda *a: "C3")
+    return {t.name: t.handler for t in tools}["computer_task"]("g", "youtube music"), asked, hands
+
+
+def test_a_risky_click_is_not_made_when_declined_and_is_when_allowed():
+    out, asked, hands = run_with_confirm(['{"action":"click","target":"the Delete button","cell":"A1"}'], False)
+    assert "NOT DONE" in out and not hands.log and any("wants to click" in a for a in asked)
+    out2, _, hands2 = run_with_confirm(['{"action":"click","target":"the Delete button","cell":"A1"}', '{"action":"done","summary":"x"}'], True)
+    assert out2.startswith("Done") and hands2.log[0][0] == "click"
+    out3, asked3, hands3 = run_with_confirm(['{"action":"key","keys":"alt+f4"}'], False)
+    assert "NOT DONE" in out3 and not hands3.log
+
+
+def test_done_needs_a_second_look_and_the_window_must_really_be_in_front():
+    decisions = iter(['{"action":"done","summary":"early"}', '{"action":"done","summary":"early again"}', '{"action":"done","summary":"third"}'])
+    answers = iter([False, False])
+    tools = build_computer_tools(Config(), lambda p: True, lambda: None, windows=lambda: WINS, capture=lambda *a, **k: png_of(0xFF303030), rect=lambda h: (0, 0, 1600, 960),
+                                 focus=lambda h: None, hands=Hands(), sleep=lambda s: None, decide=lambda *a: next(decisions), ocr=lambda png: [], media_status=lambda: "",
+                                 foreground=lambda: 1, verify=lambda *a: next(answers, True))
+    out = {t.name: t.handler for t in tools}["computer_task"]("g", "youtube music")
+    assert out == "Done: third"  # two early 'done's were rejected by the second look, the third passed
+    blocked = build_computer_tools(Config(), lambda p: True, lambda: None, windows=lambda: WINS, capture=lambda *a, **k: b"", rect=lambda h: (0, 0, 1, 1), focus=lambda h: None,
+                                   hands=Hands(), foreground=lambda: 999)
+    out2 = {t.name: t.handler for t in blocked}["control_keys"]("tab", "youtube music")
+    assert "did not come to the front" in out2 and "NOT DONE" in out2
+
+
+def test_failures_are_labelled_not_done_and_time_is_capped():
+    t, _, _ = make_task(["blah"] * 6)
+    assert t["computer_task"]("g", "youtube music").startswith("NOT DONE")
+    ticks = iter(range(0, 10000, 100))
+    tools = build_computer_tools(Config(), lambda p: True, lambda: None, windows=lambda: WINS, capture=lambda *a, **k: png_of(0xFF303030), rect=lambda h: (0, 0, 1600, 960),
+                                 focus=lambda h: None, hands=Hands(), sleep=lambda s: None, decide=lambda *a: '{"action":"wait","seconds":1}', ocr=lambda png: [], media_status=lambda: "",
+                                 foreground=lambda: 1, clock=lambda: next(ticks))
+    assert "ran out of time" in {t.name: t.handler for t in tools}["computer_task"]("g", "youtube music", 20)
