@@ -31,6 +31,8 @@ from .permissions import FolderPolicy
 from .routing import double_voice_warnings, listen_routes
 from .delegate import UsageLog, build_delegate_tools
 from .extras import build_extra_tools
+from .music import build_music_tools
+from .screen import list_windows
 from .profile import Profile, build_profile_tools
 from .screen import build_screen_tools
 from .smart_home import HOME_TOOL_NAMES, build_home_tools, make_govee
@@ -733,6 +735,7 @@ class MainWindow(QMainWindow):
         if cfg.delegate_enabled:
             registry.add(build_delegate_tools(cfg, self.policy, self._confirm, self.usage))
         registry.add(build_extra_tools(cfg, self._confirm, lambda name, args: registry.call(name, args)))
+        registry.add(build_music_tools(cfg, self._confirm, list_windows))
         registry.add(build_screen_tools(cfg, self._confirm, lambda: self.session.agent.llm))
         self.pdfs = PdfStore()
         registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))

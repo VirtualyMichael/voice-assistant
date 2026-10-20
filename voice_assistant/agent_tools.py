@@ -294,6 +294,7 @@ def capabilities_prompt(cfg, names: list[str]) -> str:
         "user declined, accept that and do not retry. When asked to open an app, call launch_app right away with the name as the user said it "
         "(punctuation does not matter, partial names are fine); a confirmation dialog appears by itself, so do not ask in words first. "
         "For lights and other home devices, act immediately without asking 'should I': if the user did not name a light, use target 'all'. "
+        "To play a song or artist, call play_music with the title and artist (never launch_app + web_search + open_url). "
         "launch_app switches to an app that is already open instead of starting a second copy. To look at or translate what is in an app or game, call look_at_screen with its window name; "
         "if no window matches, ask the user whether to open it, and open it only if they agree."
     )
