@@ -143,11 +143,18 @@ def play_in_ytm(video_id: str, windows, launch, close, wait=time.sleep, timeout:
 
 
 def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=resolve_song, close=close_window, wait=time.sleep,
-                      foreground=foreground_window, playing=is_playing, nudge=press_play) -> list[Tool]:
+                      foreground=foreground_window, playing=is_playing, nudge=press_play, in_window=None) -> list[Tool]:
     from .agent_tools import _obj, _str
 
     def play_music(query: str) -> str:
         """query like 'Maps by Maroon 5'."""
+        if in_window is not None and ytm_windows(windows()):
+            out = in_window(query)  # YouTube Music is already open: search and play inside that window, like a person would
+            if out.startswith("Done"):
+                return out
+            note = f"(Tried it inside the open window first: {out[:200]}) "
+        else:
+            note = ""
         found = resolver(query)
         if not found:
             return f"Could not find a song for '{query}'. Ask the user for the title and artist."
@@ -167,7 +174,7 @@ def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=res
         result = play_in_ytm(vid, windows, launch, close, wait, foreground=foreground, playing=playing, nudge=nudge, expected=label.split(' by ')[0])
         if not cmd:
             result = "The YouTube Music app was not found on this PC, so the song was opened in the web browser instead. " + result
-        return f"{label}: {result}"
+        return f"{note}{label}: {result}"
 
-    return [Tool("play_music", "Play a song in YouTube Music from a spoken request such as 'play Maps by Maroon 5'. Finds the song, opens it and replaces any open YouTube Music window. "
+    return [Tool("play_music", "Play a song in YouTube Music from a spoken request such as 'play Maps by Maroon 5'. If YouTube Music is already open it searches and plays inside that window (when computer control is on); otherwise it opens the song in the app. "
                  "Use this instead of launch_app, web_search and open_url for playing songs.", _obj({"query": _str}, ["query"]), play_music)]

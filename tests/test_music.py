@@ -142,3 +142,30 @@ def test_real_start_menu_lookup_does_not_crash():
 
     r = app_launcher()
     assert r is None or "--app-id" in " ".join(r)
+
+
+def test_play_music_uses_the_open_window_first_and_falls_back_to_the_link():
+    import voice_assistant.music as M
+
+    calls, launches = [], []
+
+    class P:
+        def __init__(self, cmd):
+            launches.append(cmd)
+
+    orig = M.subprocess.Popen
+    M.subprocess.Popen = P
+    try:
+        windows = lambda: [(9, "YouTube Music", "chrome")]
+        common = dict(launcher=lambda: ["app.exe"], resolver=lambda q: ("VID", "Song by Band"), close=lambda h: True, wait=lambda s: None,
+                      foreground=lambda: 9, playing=lambda *a: True, nudge=lambda h: None)
+        ok = build_music_tools(Config(), lambda p: True, windows, in_window=lambda q: calls.append(q) or "Done: now playing", **common)[0].handler
+        assert ok("Song by Band") == "Done: now playing" and calls == ["Song by Band"] and not launches
+        bad = build_music_tools(Config(), lambda p: True, windows, in_window=lambda q: "Giving up: the window stopped changing", **common)[0].handler
+        out = bad("Song by Band")
+        assert "Tried it inside the open window first" in out and launches == [["app.exe", "https://music.youtube.com/watch?v=VID"]]
+        closed = build_music_tools(Config(), lambda p: True, lambda: [], in_window=lambda q: calls.append("never") or "Done", **common)[0].handler
+        closed("x")
+        assert "never" not in calls  # no open YouTube Music window: straight to the app link
+    finally:
+        M.subprocess.Popen = orig

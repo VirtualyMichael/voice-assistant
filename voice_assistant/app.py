@@ -741,9 +741,7 @@ class MainWindow(QMainWindow):
         if cfg.delegate_enabled:
             registry.add(build_delegate_tools(cfg, self.policy, self._confirm, self.usage))
         registry.add(build_extra_tools(cfg, self._confirm, lambda name, args: registry.call(name, args)))
-        registry.add(build_music_tools(cfg, self._confirm, list_windows))
-        if cfg.computer_control:
-            registry.add(self._computer_tools())
+        registry.add(self._music_and_computer_tools())
         registry.add(build_screen_tools(cfg, self._confirm, lambda: self.session.agent.llm))
         self.pdfs = PdfStore()
         registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))
@@ -1064,8 +1062,16 @@ class MainWindow(QMainWindow):
             box.setCurrentIndex(box.findData("bm_george"))  # also speaks a sample
         self.chat.add("bubbleNote", "Jarvis-style preset applied: George (UK) voice and butler personality. Restart to use \"Jarvis\" as the wake phrase.")
 
+    def _music_and_computer_tools(self):
+        """play_music, plus the computer tools when enabled; play_music then searches inside an already-open YouTube Music window."""
+        ctools = self._computer_tools() if self.cfg.computer_control else []
+        task = next((t.handler for t in ctools if t.name == "computer_task"), None)
+        in_window = (lambda q: task(f"Search for '{q}' and play that song.", "YouTube Music", 12)) if task else None
+        return build_music_tools(self.cfg, self._confirm, list_windows, in_window=in_window) + ctools
+
     def _computer_tools(self):
-        return build_computer_tools(self.cfg, self._confirm, lambda: self.session.agent.llm, cancelled=lambda: self.session._cancel.is_set())
+        return build_computer_tools(self.cfg, self._confirm, lambda: self.session.agent.llm, cancelled=lambda: self.session._cancel.is_set(),
+                                    progress=lambda m: self.bridge.tool.emit(m))
 
     def _set_persona(self, on: bool) -> None:
         self._set_field("persona_jarvis", on)
@@ -1078,9 +1084,8 @@ class MainWindow(QMainWindow):
     def _refresh_home_tools(self) -> None:
         """Apply smart-home settings now: swap the home tools in the live agent and tell it about them."""
         self.govee = make_govee(self.cfg)
-        self._registry.remove(HOME_TOOL_NAMES + ("delegate_task", "usage_report", "learn_about_user", "control_click", "control_type", "control_keys", "control_scroll", "control_focus"))
-        if self.cfg.computer_control:
-            self._registry.add(self._computer_tools())
+        self._registry.remove(HOME_TOOL_NAMES + ("delegate_task", "usage_report", "learn_about_user", "computer_task", "control_click", "control_type", "control_keys", "control_scroll", "control_focus", "play_music"))
+        self._registry.add(self._music_and_computer_tools())
         self._registry.add(build_profile_tools(self.cfg, self.profile, self._confirm))
         self._registry.add(build_home_tools(self.cfg, self._confirm, self.govee))
         if self.cfg.delegate_enabled:

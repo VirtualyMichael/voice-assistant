@@ -110,3 +110,116 @@ def test_locate_zooms_in_on_the_first_guess():
     pos = locate(None, _to_png(img), "a thing", ask=lambda llm, q, png: next(answers))
     # first pass: column C (index 2) of 8, row 3 (index 2) of 6 -> cell 200x160 at (400, 320); zoom box (300..700, 240..560); second pass D4 -> col 3, row 3 of 6
     assert abs(pos[0] - (300 + 3.5 * 400 / 6)) < 1 and abs(pos[1] - (240 + 3.5 * 320 / 6)) < 1
+
+
+def png_of(color):
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from PySide6.QtGui import QImage
+    from voice_assistant.computer import _to_png
+
+    img = QImage(1600, 960, QImage.Format_ARGB32)
+    img.fill(color)
+    return _to_png(img)
+
+
+FAKE_TEXT = [{"text": "Search box", "x": 600, "y": 20, "w": 100, "h": 20}, {"text": "Play", "x": 1200, "y": 260, "w": 40, "h": 20}]
+
+
+def make_task(script, colors=None, ocr=lambda png: FAKE_TEXT, media_status=lambda: "", **kw):
+    """A computer_task tool whose 'model' replies from `script` and whose screen shows a new colour after every action."""
+    hands = Hands()
+    shots = iter(colors or [0xFF000000 + 0x101010 * i for i in range(40)])
+    decisions = iter(script)
+    notes = []
+    tools = build_computer_tools(Config(), lambda p: True, lambda: None, windows=lambda: WINS, capture=lambda *a, **k: png_of(next(shots)), rect=lambda h: (100, 50, 1600, 960),
+                                 focus=lambda h: None, hands=hands, ask=lambda *a: "C3", progress=notes.append, sleep=lambda s: None,
+                                 decide=lambda llm, system, prompt, png: next(decisions), ocr=ocr, media_status=media_status, **kw)
+    return {t.name: t.handler for t in tools}, hands, notes
+
+
+def test_parse_action_accepts_fences_and_chatter():
+    from voice_assistant.computer import parse_action
+
+    assert parse_action('```json\n{"action":"key","keys":"enter"}\n```') == {"action": "key", "keys": "enter"}
+    assert parse_action('Sure! {"action": "click", "target": "box", "cell": "B2"} hope that helps')["cell"] == "B2"
+    assert parse_action("no json here") is None and parse_action('{"nothing": 1}') is None
+
+
+def test_task_loop_clicks_types_presses_and_finishes():
+    script = ['{"action":"click","target":"search box","cell":"D1"}', '{"action":"type","text":"billions and billions","enter":true}',
+              '{"action":"double_click","target":"first song","cell":"B3"}', '{"action":"done","summary":"playing Billions and Billions"}']
+    t, hands, notes = make_task(script)
+    out = t["computer_task"]("play billions and billions", "youtube music")
+    assert out == "Done: playing Billions and Billions"
+    kinds = [h[0] for h in hands.log]
+    assert kinds == ["click", "type", "keys", "click"] and hands.log[3][4] is True  # the last click was a double click
+    assert len(notes) == 4 and "search box" in notes[0]
+
+
+def test_task_loop_zooms_into_the_chosen_cell_before_clicking():
+    t, hands, _ = make_task(['{"action":"click","target":"x","cell":"D1"}', '{"action":"done","summary":"ok"}'])
+    t["computer_task"]("g", "youtube music")
+    x, y = hands.log[0][1], hands.log[0][2]
+    # cell D1 of 8x6 on 1600x960 is x 600-800, y 0-160; zoom box x 500-900, y 0-240; fake zoom answer C3 -> col 2,row 2 of 6
+    assert x == 100 + int(500 + 2.5 * 400 / 6) and y == 50 + int(0 + 2.5 * 240 / 6)
+
+
+def test_task_loop_gives_up_when_nothing_changes_and_on_garbage():
+    same = [0xFF303030] * 10
+    t, _, _ = make_task(['{"action":"key","keys":"tab"}'] * 10, colors=same)
+    assert "stopped changing" in t["computer_task"]("g", "youtube music")
+    t2, _, _ = make_task(["blah", "blah", "blah", "blah"])
+    assert "could not decide" in t2["computer_task"]("g", "youtube music")
+
+
+def test_task_loop_respects_blocks_stop_and_step_limit():
+    t, hands, _ = make_task(['{"action":"key","keys":"win+r"}', '{"action":"key","keys":"a"}', '{"action":"done","summary":"x"}'])
+    t["computer_task"]("g", "youtube music")
+    assert [h for h in hands.log if h[0] == "keys"] == [("keys", "a")]  # the Windows-key shortcut never ran
+    assert "Refused" in make_task([])[0]["computer_task"]("g", "powershell")
+    t3, h3, _ = make_task(['{"action":"key","keys":"a"}'] * 3, cancelled=lambda: True)
+    assert "Stopped" in t3["computer_task"]("g", "youtube music") and not h3.log
+    t4, _, _ = make_task(['{"action":"wait","seconds":1}'] * 5)
+    assert "Step limit" in t4["computer_task"]("g", "youtube music", 3)
+
+
+def test_clicking_by_ocr_id_hits_the_exact_text_centre_and_prompt_lists_the_text():
+    prompts = []
+    hands = Hands()
+    decisions = iter(['{"action":"click","target":"the Play button","id":2}', '{"action":"done","summary":"ok"}'])
+
+    def decide(llm, system, prompt, png):
+        prompts.append(prompt)
+        return next(decisions)
+
+    shots = iter([0xFF101010, 0xFF202020, 0xFF303030])
+    tools = build_computer_tools(Config(), lambda p: True, lambda: None, windows=lambda: WINS, capture=lambda *a, **k: png_of(next(shots)), rect=lambda h: (100, 50, 1600, 960),
+                                 focus=lambda h: None, hands=hands, sleep=lambda s: None, decide=decide, ocr=lambda png: FAKE_TEXT, media_status=lambda: "")
+    out = {t.name: t.handler for t in tools}["computer_task"]("play it", "youtube music")
+    assert out.startswith("Done") and hands.log == [("click", 100 + 1220, 50 + 270, "left", False)]
+    assert '[2] "Play" @G2' in prompts[0] and '[1] "Search box"' in prompts[0]
+
+
+def test_parse_ocr_output_and_description():
+    from voice_assistant.computer import describe_text, parse_ocr
+
+    lines = parse_ocr("94|8|80|9|YouTube Music" + chr(10) + "bad line" + chr(10) + "1228|261|26|14|Play" + chr(10) + "5|5|x|y|broken" + chr(10))
+    assert lines == [{"text": "YouTube Music", "x": 94, "y": 8, "w": 80, "h": 9}, {"text": "Play", "x": 1228, "y": 261, "w": 26, "h": 14}]
+    assert describe_text(lines, 1920, 1032).splitlines()[1] == '[2] "Play" @F2'
+
+
+def test_task_finishes_by_itself_when_windows_reports_the_requested_song_playing():
+    t, hands, _ = make_task([], media_status=lambda: "Chrome. is now playing: Billions and Billions by Stellardrone.")
+    out = t["computer_task"]("Search for Billions and Billions by Stellardrone and play it", "youtube music")
+    assert out.startswith("Done:") and not hands.log
+    t2, h2, _ = make_task(['{"action":"done","summary":"x"}'], media_status=lambda: "Chrome. is now playing: Something Else by Someone.")
+    assert t2["computer_task"]("play Billions and Billions", "youtube music") == "Done: x"
+    t3, h3, _ = make_task(['{"action":"done","summary":"y"}'], media_status=lambda: "Chrome. is now playing: Billions and Billions by Stellardrone.")
+    assert t3["computer_task"]("open the Explore page", "youtube music") == "Done: y"  # no music words in the goal: the status is ignored
+
+
+def test_type_with_replace_selects_the_old_text_first():
+    t, hands, _ = make_task(['{"action":"type","text":"new query","enter":true,"replace":true}', '{"action":"type","text":"plain"}', '{"action":"done","summary":"x"}'])
+    t["computer_task"]("g", "youtube music")
+    assert hands.log == [("keys", "ctrl+a"), ("type", "new query"), ("keys", "enter"), ("type", "plain")]
