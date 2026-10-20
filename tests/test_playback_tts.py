@@ -82,3 +82,27 @@ def test_numbers_and_jargon_are_spoken():
 def test_voice_table_has_both_genders_and_unique_ids():
     assert {v.gender for v in KOKORO_EN_V019} == {"female", "male"}
     assert len({v.sid for v in KOKORO_EN_V019}) == len(KOKORO_EN_V019)
+
+
+def test_multisynth_routes_each_voice_to_its_engine_and_shares_speed():
+    import numpy as np
+    from voice_assistant.models import MultiSynth, Voice
+
+    class Eng:
+        def __init__(self, name, ids):
+            self.engine, self.voices, self.speed, self.cur = name, [Voice(i, i, "male", n) for n, i in enumerate(ids)], 1.0, ids[0]
+
+        def set_voice(self, vid):
+            self.cur = vid
+            return next(v for v in self.voices if v.id == vid)
+
+        def __call__(self, text):
+            return np.array([hash(self.engine) % 7], np.float32), 8000
+
+    a, b = Eng("kokoro", ["am_michael"]), Eng("supertonic", ["st1", "st3"])
+    m = MultiSynth([a, b])
+    assert [v.id for v in m.voices] == ["am_michael", "st1", "st3"] and m.engine == "kokoro+supertonic"
+    assert m.set_voice("st3").id == "st3" and b.cur == "st3"
+    assert m("hi")[0][0] == b("hi")[0][0]
+    m.speed = 1.2
+    assert a.speed == b.speed == 1.2

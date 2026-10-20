@@ -775,10 +775,10 @@ class MainWindow(QMainWindow):
         if not self.synth:
             return
         box = QComboBox()
-        for gender in ("female", "male"):
+        for gender in ("female", "male", "other"):
             for v in self.synth.voices:
                 if v.gender == gender:
-                    box.addItem(f"{gender.title()} \u2014 {v.label}", v.id)
+                    box.addItem(f"{gender.title()} \u2014 {v.label}" if gender != "other" else v.label, v.id)
         cur = self.synth.set_voice(self.cfg.tts_voice)
         box.setCurrentIndex(max(box.findData(cur.id), 0))
         box.setToolTip("Install the Kokoro model (fetch-models kokoro) for more natural voices" if self.synth.engine == "piper" else "")

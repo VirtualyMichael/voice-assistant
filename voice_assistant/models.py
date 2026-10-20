@@ -33,6 +33,8 @@ MODEL_SPECS = [
     ModelSpec("asr2", "Parakeet TDT 0.6B v2 (accurate recognizer)", f"{REL}/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2", "far fewer mis-heard words (recommended)", size_mb=460, core=False),
     ModelSpec("kws", "zipformer gigaspeech 3.3M", f"{REL}/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2", "wake word (optional)", size_mb=17, core=False),
     ModelSpec("kokoro", "Kokoro English v0.19 (11 natural voices)", f"{REL}/tts-models/kokoro-en-v0_19.tar.bz2", "natural-sounding voices (recommended)", size_mb=305, core=False),
+    ModelSpec("supertonic", "Supertonic v3 (natural voices)", f"{REL}/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2", "more natural voices; MIT licence for the code, check the model card", size_mb=128, core=False),
+    ModelSpec("piper_kusal", "Piper Kusal (US male)", f"{REL}/tts-models/vits-piper-en_US-kusal-medium-int8.tar.bz2", "a natural male voice", size_mb=20, core=False),
     ModelSpec("kokoro2", "Kokoro v1.0 (53 voices, better male voices)", f"{REL}/tts-models/kokoro-multi-lang-v1_0.tar.bz2", "newer Kokoro: more and better male voices", size_mb=340, core=False),
 ]
 
@@ -203,7 +205,7 @@ PIPER_AMY = [Voice("amy", "Amy (US)", "female", 0)]
 class SherpaSynth:
     """Kokoro (natural, many voices) when <dir>/voices.bin exists, otherwise a Piper VITS voice."""
 
-    def __init__(self, folder: Path, speed: float = 1.0, num_threads: int = 4, voice: str = "", custom: bool = False):
+    def __init__(self, folder: Path, speed: float = 1.0, num_threads: int = 4, voice: str = "", custom: bool = False, voices: list | None = None):
         import sherpa_onnx
 
         d = _need(folder, "tts")
@@ -225,7 +227,7 @@ class SherpaSynth:
                 model=str(model[0]), tokens=_tokens(d), data_dir=espeak, lexicon=str(lexicon) if lexicon.exists() else "",
             )
             mc = sherpa_onnx.OfflineTtsModelConfig(vits=vits, num_threads=num_threads, provider="cpu")
-            self.voices, self.engine = ([Voice("custom", "Your voice", "male", 0)] if custom else PIPER_AMY), "piper"
+            self.voices, self.engine = (voices or ([Voice("custom", "Your voice", "male", 0)] if custom else PIPER_AMY)), "piper"
         self._tts = sherpa_onnx.OfflineTts(sherpa_onnx.OfflineTtsConfig(model=mc, max_num_sentences=1))
         self.speed, self.sid = speed, 0
         self.set_voice(voice)
@@ -241,12 +243,91 @@ class SherpaSynth:
         return np.asarray(audio.samples, dtype=np.float32), audio.sample_rate
 
 
-def load_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_dir: str = "") -> SherpaSynth:
+SUPERTONIC_VOICES = [Voice(f"st{i}", f"Supertonic {i}", "male" if i in (1, 3, 7) else "other", i) for i in range(10)]  # 1, 3 and 7 were picked by ear as the male-sounding ones
+
+
+class SupertonicSynth:
+    """Supertonic v3 (10 voices, English here): natural, runs on the CPU. Needs <folder>/{duration_predictor,text_encoder,vector_estimator,vocoder}.int8.onnx etc."""
+
+    engine = "supertonic"
+
+    def __init__(self, folder: Path, speed: float = 1.0, num_threads: int = 4, voice: str = "", steps: int = 8):
+        import sherpa_onnx
+
+        d = _need(folder, "supertonic")
+        st = sherpa_onnx.OfflineTtsSupertonicModelConfig(
+            duration_predictor=str(d / "duration_predictor.int8.onnx"), text_encoder=str(d / "text_encoder.int8.onnx"),
+            vector_estimator=str(d / "vector_estimator.int8.onnx"), vocoder=str(d / "vocoder.int8.onnx"),
+            tts_json=str(d / "tts.json"), unicode_indexer=str(d / "unicode_indexer.bin"), voice_style=str(d / "voice.bin"),
+        )
+        self._tts = sherpa_onnx.OfflineTts(sherpa_onnx.OfflineTtsConfig(model=sherpa_onnx.OfflineTtsModelConfig(supertonic=st, num_threads=num_threads, provider="cpu")))
+        self.voices, self.speed, self.steps, self.sid = SUPERTONIC_VOICES, speed, steps, 0
+        self.set_voice(voice)
+
+    def set_voice(self, voice_id: str) -> Voice:
+        v = next((v for v in self.voices if v.id == voice_id), self.voices[1])
+        self.sid = v.sid
+        return v
+
+    def __call__(self, text: str) -> tuple[np.ndarray, int]:
+        import sherpa_onnx
+
+        g = sherpa_onnx.GenerationConfig()
+        g.sid, g.num_steps, g.speed = self.sid, self.steps, self.speed
+        g.extra["lang"] = "en"
+        audio = self._tts.generate(text, g)
+        return np.asarray(audio.samples, dtype=np.float32), audio.sample_rate
+
+
+class MultiSynth:
+    """Several voice engines behind one voice list; picking a voice switches to its engine."""
+
+    def __init__(self, engines: list):
+        self.engines = engines
+        self.voices = [v for e in engines for v in e.voices]
+        self.engine = "+".join(e.engine for e in engines)
+        self._cur = engines[0]
+        self._speed = getattr(engines[0], "speed", 1.0)
+
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    @speed.setter
+    def speed(self, value: float) -> None:
+        self._speed = value
+        for e in self.engines:
+            e.speed = value
+
+    def set_voice(self, voice_id: str) -> Voice:
+        for e in self.engines:
+            if any(v.id == voice_id for v in e.voices):
+                self._cur = e
+                return e.set_voice(voice_id)
+        self._cur = self.engines[0]
+        return self._cur.set_voice(voice_id)
+
+    def __call__(self, text: str) -> tuple[np.ndarray, int]:
+        return self._cur(text)
+
+
+def load_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_dir: str = ""):
     """The user's own voice folder if set, else the Kokoro model (models_dir/kokoro), else the Piper voice (models_dir/tts)."""
     if custom_dir and Path(custom_dir).is_dir():
         return SherpaSynth(Path(custom_dir), speed, threads, voice, custom=True)
-    slot = next((s for s in ("kokoro2", "kokoro") if (models_dir / s).is_dir()), "tts")  # newest Kokoro first
-    return SherpaSynth(models_dir / slot, speed, threads, voice)
+    engines = []
+    slot = next((s for s in ("kokoro2", "kokoro") if (models_dir / s).is_dir()), None)  # newest Kokoro first
+    if slot:
+        engines.append(SherpaSynth(models_dir / slot, speed, threads, voice))
+    if (models_dir / "supertonic").is_dir():
+        engines.append(SupertonicSynth(models_dir / "supertonic", speed, threads, voice))
+    if (models_dir / "piper_kusal").is_dir():
+        engines.append(SherpaSynth(models_dir / "piper_kusal", speed, threads, voice, voices=[Voice("kusal", "Kusal (US)", "male", 0)]))
+    if not engines:
+        return SherpaSynth(models_dir / "tts", speed, threads, voice)
+    synth = engines[0] if len(engines) == 1 else MultiSynth(engines)
+    synth.set_voice(voice)
+    return synth
 
 
 def fetch_model(spec: ModelSpec, models_dir: Path, progress=None) -> Path:
