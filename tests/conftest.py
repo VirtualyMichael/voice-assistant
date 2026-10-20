@@ -23,3 +23,5 @@ def no_real_launches(monkeypatch):
     monkeypatch.setattr("webbrowser.open", refuse)
     monkeypatch.setattr("voice_assistant.agent_tools.list_windows", lambda: [])  # no real windows: results must not depend on what is open
     monkeypatch.setattr("voice_assistant.agent_tools.focus_window", refuse)
+    monkeypatch.setattr("keyboard.send", refuse)  # no test may press keys on the real desktop
+    monkeypatch.setattr("keyboard.write", refuse)

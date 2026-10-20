@@ -50,18 +50,21 @@ def ytm_windows(windows) -> list[int]:
     return [h for h, t, e in windows if is_ytm_window(t, e)]
 
 
-def app_launcher() -> list[str] | None:
+def app_launcher(run=subprocess.run) -> list[str] | None:
     """Command that starts the installed YouTube Music app: read from its Start-menu shortcut (it holds the app id and browser profile)."""
-    ps = (r"$sh = New-Object -ComObject WScript.Shell; Get-ChildItem \"$env:APPDATA\Microsoft\Windows\Start Menu\Programs\" -Recurse -Filter 'YouTube Music*.lnk' "
-          r"-ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { $l = $sh.CreateShortcut($_.FullName); $l.TargetPath + '|' + $l.Arguments }")
+    ps = ("$sh = New-Object -ComObject WScript.Shell; "
+          "$root = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Microsoft\Windows\Start Menu\Programs'; "
+          "Get-ChildItem $root -Recurse -Filter 'YouTube Music*.lnk' -ErrorAction SilentlyContinue | "
+          "ForEach-Object { $l = $sh.CreateShortcut($_.FullName); $l.TargetPath + '|' + $l.Arguments }")
     try:
-        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=15).stdout.strip()
+        out = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=20).stdout
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if "|" not in out or "--app-id" not in out:
-        return None
-    target, args = out.split("|", 1)
-    return [target, *args.split()] if Path(target).exists() else None
+    for line in out.splitlines():
+        target, _, args = line.strip().partition("|")
+        if "--app-id" in args and Path(target).exists():
+            return [target, *args.split()]
+    return None
 
 
 def close_window(hwnd: int, wait=time.sleep, now=time.time) -> bool:
@@ -88,16 +91,30 @@ def foreground_window() -> int:
     return int(ctypes.windll.user32.GetForegroundWindow())
 
 
-def is_playing() -> bool:
+def is_playing(expected: str = "") -> bool:
+    """Something is playing; when `expected` (a song title) is given, it must be that song, not whatever was on before."""
     from .extras import media_session
 
-    return "playing" in (media_session("status") or "").lower()
+    now = (media_session("status") or "").lower()
+    return "playing" in now and (not expected or expected.lower()[:15] in now)
+
+
+def press_play(hwnd: int) -> None:
+    """A new window opened by a link often waits with the song loaded but paused (browsers block autoplay): bring it forward and press Space,
+    YouTube Music's play/pause key."""
+    from .screen import focus_window
+
+    focus_window(hwnd)
+    time.sleep(0.5)
+    import keyboard
+
+    keyboard.send("space")
 
 
 def play_in_ytm(video_id: str, windows, launch, close, wait=time.sleep, timeout: float = 12.0, clock=time.time,
-                foreground=foreground_window, playing=is_playing) -> str:
+                foreground=foreground_window, playing=is_playing, nudge=press_play, expected: str = "") -> str:
     """Open the song through the app. Chrome may start a new window or reuse the open one, so afterwards keep one YouTube Music window
-    (the one in front, which is the one that took the link) and close the rest. If that stops the music, start the song again."""
+    (the one in front, which is the one that took the link), close the rest, and press play if the song is loaded but paused."""
     before = set(ytm_windows(windows()))
     launch(WATCH + video_id)
     deadline = clock() + timeout
@@ -109,23 +126,24 @@ def play_in_ytm(video_id: str, windows, launch, close, wait=time.sleep, timeout:
             break
     if not now:
         return "Started it, but no YouTube Music window showed up."
-    wait(1.0)  # let the song start before anything is closed
+    wait(1.5)  # let the page load
     fg = foreground()
     new = [h for h in now if h not in before]
-    keep = fg if fg in now else (new[-1] if new else now[-1])
-    extras = [h for h in now if h != keep]
-    stuck = [h for h in extras if not close(h)]
-    note = ""
-    if extras and not playing():  # the closed window was the one playing: play it again in the one left
-        launch(WATCH + video_id)
-        wait(3.0)
-        note = " (restarted it after tidying up)"
-    done = len(extras) - len(stuck)
-    return ("Playing in YouTube Music" + (f"; closed {done} extra window(s)" if done else "") + note + "."
+    keep = new[-1] if new else (fg if fg in now else now[-1])  # a new window is the one holding the song; with none, Chrome reused the open one
+    stuck = [h for h in now if h != keep and not close(h)]
+    closed = len(now) - 1 - len(stuck)
+    started = playing(expected)
+    if not started:
+        nudge(keep)
+        wait(2.0)
+        started = playing(expected)
+    return (("Playing in YouTube Music" if started else "Opened the song in YouTube Music, but it did not start by itself; the user may need to press play")
+            + (f"; closed {closed} extra window(s)" if closed else "") + "."
             + (f" {len(stuck)} extra window(s) would not close; the user can close them." if stuck else ""))
 
 
-def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=resolve_song, close=close_window, wait=time.sleep) -> list[Tool]:
+def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=resolve_song, close=close_window, wait=time.sleep,
+                      foreground=foreground_window, playing=is_playing, nudge=press_play) -> list[Tool]:
     from .agent_tools import _obj, _str
 
     def play_music(query: str) -> str:
@@ -146,7 +164,9 @@ def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=res
 
                 webbrowser.open(url)
 
-        result = play_in_ytm(vid, windows, launch, close, wait)
+        result = play_in_ytm(vid, windows, launch, close, wait, foreground=foreground, playing=playing, nudge=nudge, expected=label.split(' by ')[0])
+        if not cmd:
+            result = "The YouTube Music app was not found on this PC, so the song was opened in the web browser instead. " + result
         return f"{label}: {result}"
 
     return [Tool("play_music", "Play a song in YouTube Music from a spoken request such as 'play Maps by Maroon 5'. Finds the song, opens it and replaces any open YouTube Music window. "
