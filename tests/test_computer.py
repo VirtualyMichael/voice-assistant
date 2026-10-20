@@ -223,3 +223,37 @@ def test_type_with_replace_selects_the_old_text_first():
     t, hands, _ = make_task(['{"action":"type","text":"new query","enter":true,"replace":true}', '{"action":"type","text":"plain"}', '{"action":"done","summary":"x"}'])
     t["computer_task"]("g", "youtube music")
     assert hands.log == [("keys", "ctrl+a"), ("type", "new query"), ("keys", "enter"), ("type", "plain")]
+
+
+def test_where_clicks_the_picture_above_a_title_and_clamps_inside_the_window():
+    from voice_assistant.computer import offset_point
+
+    ln = {"text": "Beautiful Mistakes", "x": 400, "y": 700, "w": 200, "h": 20}
+    assert offset_point(500, 710, ln, "above") == (500, 600) and offset_point(500, 710, ln, "left") == (340, 710)
+    assert offset_point(500, 710, ln, "right") == (660, 710) and offset_point(500, 710, ln, "below") == (500, 760) and offset_point(500, 710, ln, None) == (500, 710)
+    t, hands, _ = make_task(['{"action":"click","target":"cover","id":2,"where":"above"}', '{"action":"done","summary":"ok"}'])
+    t["computer_task"]("g", "youtube music")
+    assert hands.log == [("click", 100 + 1220, 50 + 160, "left", False)]  # the Play text line sits at y=260; the picture is 100 px above it
+
+
+def test_repeated_failures_are_fed_back_to_the_model():
+    prompts = []
+    hands = Hands()
+    decisions = iter(['{"action":"click","target":"the title","id":1}'] * 3 + ['{"action":"done","summary":"x"}'])
+
+    def decide(llm, system, prompt, png):
+        prompts.append(prompt)
+        return next(decisions)
+
+    shots = iter([0xFF000000 + 0x101010 * i for i in range(10)])
+    tools = build_computer_tools(Config(), lambda p: True, lambda: None, windows=lambda: WINS, capture=lambda *a, **k: png_of(next(shots)), rect=lambda h: (0, 0, 1600, 960),
+                                 focus=lambda h: None, hands=hands, sleep=lambda s: None, decide=decide, ocr=lambda png: FAKE_TEXT, media_status=lambda: "")
+    {t.name: t.handler for t in tools}["computer_task"]("g", "youtube music")
+    assert "did not work" not in prompts[1] and "did not work" in prompts[2] and "the title (x2)" in prompts[2]
+
+
+def test_a_song_started_by_the_very_last_step_still_counts_as_done():
+    states = iter(["", "Chrome. is now playing: Cataclysm by Sibewest."])  # nothing at the start of step 1; playing after the last step
+    t, hands, _ = make_task(['{"action":"key","keys":"a"}'], media_status=lambda: next(states))
+    out = t["computer_task"]("Play the song Cataclysm by Sibewest", "youtube music", 1)
+    assert out.startswith("Done:") and "Cataclysm" in out
