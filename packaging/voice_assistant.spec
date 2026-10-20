@@ -5,7 +5,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 root = os.path.dirname(SPECPATH)
 datas, binaries, hidden = [], [], []
-for pkg in ("sherpa_onnx", "sounddevice", "_sounddevice_data", "sentencepiece", "num2words", "ddgs", "keyring", "mcp", "pycaw", "comtypes", "ytmusicapi"):
+for pkg in ("sherpa_onnx", "sounddevice", "_sounddevice_data", "sentencepiece", "num2words", "ddgs", "keyring", "mcp", "pycaw", "comtypes", "ytmusicapi", "websockets"):
     try:
         d, b, h = collect_all(pkg)
         datas += d

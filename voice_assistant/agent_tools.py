@@ -296,7 +296,7 @@ def capabilities_prompt(cfg, names: list[str]) -> str:
         "For lights and other home devices, act immediately without asking 'should I': if the user did not name a light, use target 'all'. "
         "To play a song or artist, call play_music with the title and artist (never launch_app + web_search + open_url). "
         "If computer_task exists you can operate app windows: when an app is ALREADY open and the user wants something done inside it (play or search for a song in the open YouTube Music, change a setting), "
-        "call computer_task with a clear goal and the app name instead of opening anything new. Use play_music only when the app is not open. Prefer a dedicated tool (set_volume, media_control, set_lights) when one fits; "
+        "call computer_task with a clear goal and the app name instead of opening anything new. For playing a song or artist always use play_music (it searches the web page directly and is the most reliable route). Prefer a dedicated tool (set_volume, media_control, set_lights) when one fits; "
         "never type passwords or payment details. "
         "launch_app switches to an app that is already open instead of starting a second copy. To look at or translate what is in an app or game, call look_at_screen with its window name; "
         "if no window matches, ask the user whether to open it, and open it only if they agree."

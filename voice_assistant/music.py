@@ -53,7 +53,7 @@ def ytm_windows(windows) -> list[int]:
 def app_launcher(run=subprocess.run) -> list[str] | None:
     """Command that starts the installed YouTube Music app: read from its Start-menu shortcut (it holds the app id and browser profile)."""
     ps = ("$sh = New-Object -ComObject WScript.Shell; "
-          "$root = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Microsoft\Windows\Start Menu\Programs'; "
+          "$root = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Microsoft\\Windows\\Start Menu\\Programs'; "
           "Get-ChildItem $root -Recurse -Filter 'YouTube Music*.lnk' -ErrorAction SilentlyContinue | "
           "ForEach-Object { $l = $sh.CreateShortcut($_.FullName); $l.TargetPath + '|' + $l.Arguments }")
     try:
@@ -143,11 +143,20 @@ def play_in_ytm(video_id: str, windows, launch, close, wait=time.sleep, timeout:
 
 
 def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=resolve_song, close=close_window, wait=time.sleep,
-                      foreground=foreground_window, playing=is_playing, nudge=press_play, in_window=None) -> list[Tool]:
+                      foreground=foreground_window, playing=is_playing, nudge=press_play, in_window=None, browser_play=None) -> list[Tool]:
     from .agent_tools import _obj, _str
 
     def play_music(query: str) -> str:
         """query like 'Maps by Maroon 5'."""
+        browser_note = ""
+        if browser_play is not None:  # the reliable route: search and click play in the page itself
+            try:
+                out = browser_play(query)
+                if out.startswith("Playing"):
+                    return out
+                browser_note = f"(The assistant's YouTube Music window said: {out[:160]}) "
+            except Exception as e:
+                browser_note = f"(The assistant's YouTube Music window could not do it: {str(e)[:160]}) "
         if in_window is not None and ytm_windows(windows()):
             out = in_window(query)  # YouTube Music is already open: search and play inside that window, like a person would
             if out.startswith("Done"):
@@ -155,9 +164,10 @@ def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=res
             note = f"(Tried it inside the open window first: {out[:200]}) "
         else:
             note = ""
+        note = browser_note + note
         found = resolver(query)
         if not found:
-            return f"Could not find a song for '{query}'. Ask the user for the title and artist."
+            return f"{note}Could not find a song for '{query}'. Ask the user for the title and artist."
         vid, label = found
         if cfg.confirm_launch and not confirm(f"Play {label} in YouTube Music?\n\nIt opens in a new YouTube Music window and the old one is closed."):
             return "The user declined this action."

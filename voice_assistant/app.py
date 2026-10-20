@@ -33,6 +33,7 @@ from .delegate import UsageLog, build_delegate_tools
 from .computer import build_computer_tools
 from .extras import build_extra_tools
 from .music import build_music_tools
+from .ytm_browser import YtmBrowser
 from .screen import list_windows
 from .profile import Profile, build_profile_tools
 from .screen import build_screen_tools
@@ -577,7 +578,12 @@ class MainWindow(QMainWindow):
         ctl.setToolTip("Asks before it first touches each window; never terminals, password managers or security prompts. Works best with a strong vision model.")
         ctl.setChecked(cfg.computer_control)
         ctl.toggled.connect(lambda v: self._set_home("computer_control", v))
+        ytmb = QCheckBox("Play YouTube Music in the assistant's own YouTube Music window")
+        ytmb.setToolTip("Reliable and free: the assistant searches and presses play on the web page itself. It opens a separate YouTube Music window (sign in there once).")
+        ytmb.setChecked(cfg.ytm_browser)
+        ytmb.toggled.connect(lambda v: self._set_home("ytm_browser", v))
         form.addRow(ask)
+        form.addRow(ytmb)
         form.addRow(ctl)
         form.addRow(self.apps_count)
         form.addRow(self.apps_list)
@@ -1067,7 +1073,10 @@ class MainWindow(QMainWindow):
         ctools = self._computer_tools() if self.cfg.computer_control else []
         task = next((t.handler for t in ctools if t.name == "computer_task"), None)
         in_window = (lambda q: task(f"Search for '{q}' and play that song.", "YouTube Music", 12)) if task else None
-        return build_music_tools(self.cfg, self._confirm, list_windows, in_window=in_window) + ctools
+        if not hasattr(self, "ytm"):
+            self.ytm = YtmBrowser()
+        browser_play = self.ytm.play if self.cfg.ytm_browser else None
+        return build_music_tools(self.cfg, self._confirm, list_windows, in_window=in_window, browser_play=browser_play) + ctools
 
     def _computer_tools(self):
         return build_computer_tools(self.cfg, self._confirm, lambda: self.session.agent.llm, cancelled=lambda: self.session._cancel.is_set(),
