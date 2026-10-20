@@ -78,6 +78,52 @@ def media_session(action: str, run=subprocess.run) -> str | None:
     return f"{app} is now {after.lower()}: {what}."
 
 
+BROWSERS = ("chrome", "msedge", "brave", "firefox", "opera", "vivaldi")
+APP_ALIASES = {"youtubemusic": BROWSERS + ("youtubemusic",), "youtube": BROWSERS, "ytmusic": BROWSERS + ("youtubemusic",), "browser": BROWSERS,
+               "music": BROWSERS + ("spotify", "zunemusic", "applemusic", "itunes"), "edge": ("msedge",), "googlechrome": ("chrome",)}
+
+
+class Audio:
+    """Windows volume: the master volume, and each app's own level in the Volume Mixer (what lowering 'YouTube Music' there does)."""
+
+    def _speakers(self):
+        from pycaw.pycaw import AudioUtilities
+
+        return AudioUtilities.GetSpeakers().EndpointVolume
+
+    def master(self) -> float:
+        return float(self._speakers().GetMasterVolumeLevelScalar())
+
+    def set_master(self, level: float) -> None:
+        self._speakers().SetMasterVolumeLevelScalar(max(0.0, min(1.0, level)), None)
+
+    def toggle_mute(self) -> bool:
+        ev = self._speakers()
+        muted = not bool(ev.GetMute())
+        ev.SetMute(muted, None)
+        return muted
+
+    def sessions(self) -> list[dict]:
+        from pycaw.pycaw import AudioUtilities
+
+        out = []
+        for s in AudioUtilities.GetAllSessions():
+            p = s.Process
+            if p is None or s.SimpleAudioVolume is None:
+                continue
+            vol = s.SimpleAudioVolume
+            out.append({"name": p.name().rsplit(".", 1)[0], "active": s.State == 1, "get": vol.GetMasterVolume,
+                        "set": (lambda v, vol=vol: vol.SetMasterVolume(max(0.0, min(1.0, v)), None))})
+        return out
+
+
+def match_sessions(sessions: list[dict], app: str) -> list[dict]:
+    key = "".join(app.lower().split()).replace("-", "").replace(".exe", "")
+    wanted = set(APP_ALIASES.get(key, ())) | {key}
+    hits = [s for s in sessions if any(w and (w in s["name"].lower() or s["name"].lower() in w) for w in wanted)]
+    return [s for s in hits if s["active"]] or hits  # the ones making sound now, else all of that app's
+
+
 def weather(place: str, client: httpx.Client | None = None) -> str:
     """Current conditions and today's range from Open-Meteo (no account or key). Sends the place name to open-meteo.com."""
     http = client or httpx.Client(timeout=10)
@@ -126,11 +172,12 @@ class Notes:
         return f"Deleted: {gone['text']}"
 
 
-def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=press, session=media_session) -> list[Tool]:
+def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=press, session=media_session, audio=None) -> list[Tool]:
     """call_tool(name, json_args) runs another registered tool (used by routines)."""
     from .agent_tools import _obj, _str
 
     notes = notes or Notes()
+    audio = audio or Audio()
     declined = "The user declined this action."
 
     def media(action: str) -> str:
@@ -144,15 +191,39 @@ def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=
         return ("No music app is reporting playback to Windows, so I sent the media key, which may do nothing. "
                 "Tell the user to open their player and start a song once, then try again.")
 
-    def volume(action: str, percent: int | None = None) -> str:
-        if percent is not None:  # each key press moves Windows volume by 2%
-            keys("volume_down", 50)
-            keys("volume_up", max(0, min(100, int(percent))) // 2)
-            return f"Volume set to about {max(0, min(100, int(percent)))}%."
-        if action not in ("up", "down", "mute"):
-            return "Error: action must be up, down or mute (or give a percent)."
-        keys({"up": "volume_up", "down": "volume_down", "mute": "mute"}[action], 5 if action != "mute" else 1)
-        return {"up": "Volume up.", "down": "Volume down.", "mute": "Toggled mute."}[action]
+    def volume(action: str = "", percent: int | None = None, app: str = "") -> str:
+        act = action.strip().lower()
+        act = {"raise": "up", "louder": "up", "increase": "up", "lower": "down", "quieter": "down", "decrease": "down", "unmute": "mute"}.get(act, act)
+        try:
+            if app.strip():  # one app's level in the Windows Volume Mixer (YouTube Music runs inside the browser, so its process is the browser)
+                hits = match_sessions(audio.sessions(), app)
+                if not hits:
+                    heard = sorted({s["name"] for s in audio.sessions() if s["active"]})
+                    return f"No app matching '{app}' is playing sound right now. Apps making sound: {', '.join(heard) or 'none'}."
+                now = hits[0]["get"]()
+                target = (int(percent) / 100 if percent is not None else now + (0.1 if act == "up" else -0.1 if act == "down" else 0))
+                target = max(0.0, min(1.0, target))
+                for h in hits:
+                    h["set"](target)
+                return f"{app} volume set to {round(target * 100)}% (its own level in the Windows mixer; the master volume is unchanged)."
+            if percent is not None:
+                audio.set_master(max(0, min(100, int(percent))) / 100)
+                return f"Volume set to {max(0, min(100, int(percent)))}%."
+            if act in ("up", "down"):
+                now = audio.master()
+                audio.set_master(now + (0.1 if act == "up" else -0.1))
+                return f"Volume {'up' if act == 'up' else 'down'} to {round(max(0.0, min(1.0, now + (0.1 if act == 'up' else -0.1))) * 100)}%."
+            if act == "mute":
+                return "Muted." if audio.toggle_mute() else "Unmuted."
+        except Exception:
+            if percent is not None:  # the audio API failed: fall back to the keyboard volume keys (2% each)
+                keys("volume_down", 50)
+                keys("volume_up", max(0, min(100, int(percent))) // 2)
+                return f"Volume set to about {max(0, min(100, int(percent)))}%."
+            if act in ("up", "down", "mute"):
+                keys({"up": "volume_up", "down": "volume_down", "mute": "mute"}[act], 5 if act != "mute" else 1)
+                return {"up": "Volume up.", "down": "Volume down.", "mute": "Toggled mute."}[act]
+        return "Error: give a percent (0-100), or an action: up, down or mute. Add app (e.g. YouTube Music) for one app's volume."
 
     def run_routine(name: str) -> str:
         steps = cfg.routines.get(name.strip().lower())
@@ -169,7 +240,7 @@ def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=
 
     tools = [
         Tool("media_control", "Control music/video playback on this PC: play, pause, play_pause, next, previous, stop. Reports what the player actually did.", _obj({"action": _str}, ["action"]), media),
-        Tool("set_volume", "Change PC volume: action up/down/mute, or give percent (0-100) to set it.", _obj({"action": _str, "percent": {"type": "integer"}}), volume),
+        Tool("set_volume", "Set volume once: give percent (0-100) to set it, or action up/down/mute. Add app (for example 'YouTube Music' or 'Spotify') to change only that app's volume; otherwise it changes the whole PC. Call it a single time per request.", _obj({"action": _str, "percent": {"type": "integer"}, "app": _str}), volume),
         Tool("remember_note", "Save something the user wants remembered (stored on this PC).", _obj({"text": _str}, ["text"]), notes.add),
         Tool("list_notes", "Search or list the user's saved notes.", _obj({"query": _str}), notes.listing),
         Tool("delete_note", "Delete a saved note by its number.", _obj({"number": {"type": "integer"}}, ["number"]), lambda number: notes.remove(int(number))),
