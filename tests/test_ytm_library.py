@@ -159,3 +159,27 @@ def test_playlist_player_plays_only_a_saved_playlist_and_checks_the_song(tmp_pat
     t = iter(range(10_000))
     with pytest.raises(Exception, match="did not start playing it"):
         b.play_playlist("early morning", L, sleep=lambda s: None, clock=lambda: next(t))
+
+
+def test_a_playlist_request_is_recognised_whichever_way_it_is_worded(tmp_path):
+    L = Library(tmp_path / "i.json")
+    data = {"fetchedAt": time.time() * 1000, "playlists": [
+        {"id": "PLish", "title": "likeish", "tracks": [{"videoId": "1", "title": "Ish I Like", "artist": "Breadwin Deville"}]},
+        {"id": "PLec", "title": "Eternity", "tracks": [{"videoId": "2", "title": "Eternity", "artist": "Stellardrone"}]},
+    ]}
+    L.save(data)
+    assert L.playlist_intent("my like-ish playlist")["id"] == "PLish" and L.playlist_intent("like ish")["id"] == "PLish"  # speech splits the word
+    assert L.playlist_intent("Eternity by Stellardrone") is None and L.playlist_intent("Eternity") is None  # a saved song with that very name wins
+    assert L.playlist_intent("Ish I Like by Breadwin Deville") is None and L.playlist_intent("some other song") is None
+
+
+def test_play_music_hands_a_playlist_request_to_the_playlist_player():
+    from voice_assistant.config import Config
+    from voice_assistant.music import build_music_tools
+
+    asked = []
+    tools = build_music_tools(Config(), lambda m: True, lambda: [], browser_play=lambda q: asked.append(q) or "Playing x",
+                              playlist_play=lambda n: f"Playing your playlist '{n}'.", playlist_for=lambda q: {"title": "likeish"} if "like" in q else None)
+    play = next(t.handler for t in tools if t.name == "play_music")
+    assert play("my like-ish playlist") == "Playing your playlist 'likeish'." and asked == []
+    assert play("Maps") == "Playing x" and asked == ["Maps"]

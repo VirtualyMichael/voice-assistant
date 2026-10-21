@@ -1106,7 +1106,8 @@ class MainWindow(QMainWindow):
         browser_play = make_player(self.ytm_bridge if self.cfg.ytm_extension else None, self.ytm if self.cfg.ytm_browser else None, open_tab=open_users_youtube_music,
                                   judge=make_judge(lambda: self.session.agent.llm), library=self.library)
         playlist_play = make_playlist_player(self.ytm_bridge if self.cfg.ytm_extension else None, self.library, open_tab=open_users_youtube_music)
-        return build_music_tools(self.cfg, self._confirm, list_windows, in_window=in_window, browser_play=browser_play, playlist_play=playlist_play) + ctools
+        return build_music_tools(self.cfg, self._confirm, list_windows, in_window=in_window, browser_play=browser_play, playlist_play=playlist_play,
+                                   playlist_for=self.library.playlist_intent) + ctools
 
     def _open_extension_folder(self) -> None:
         folder = extension_folder()

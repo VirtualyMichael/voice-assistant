@@ -101,6 +101,22 @@ class Library:
             return scored[0][1], closest
         return None, closest
 
+    def playlist_intent(self, query: str) -> dict | None:
+        """The saved playlist a play request means, or None when it means a song. 'play my like-ish playlist' says so; a bare 'play like ish' counts only when a saved
+        playlist is called exactly that and none of your saved songs is."""
+        toks = tokens(query)
+        if "by" in toks and "playlist" not in toks:
+            return None
+        pl, _ = self.find_playlist(query)
+        if pl is None:
+            return None
+        if "playlist" in toks:
+            return pl
+        key = "".join(t for t in toks if t not in ("the", "my", "play", "a"))
+        if "".join(tokens(pl.get("title", ""))) != key or any("".join(tokens(c["title"])) == key for c in self.candidates()):
+            return None
+        return pl
+
     def playlist_titles(self) -> list[str]:
         return [p.get("title", "") for p in (self.data or {}).get("playlists", [])]
 
