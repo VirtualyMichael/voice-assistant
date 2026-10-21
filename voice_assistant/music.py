@@ -67,6 +67,17 @@ def app_launcher(run=subprocess.run) -> list[str] | None:
     return None
 
 
+def open_users_youtube_music() -> None:
+    """Start the user's own YouTube Music (their installed app, signed in; else their default browser)."""
+    cmd = app_launcher()
+    if cmd:
+        subprocess.Popen(cmd)
+    else:
+        import webbrowser
+
+        webbrowser.open("https://music.youtube.com")
+
+
 def close_window(hwnd: int, wait=time.sleep, now=time.time) -> bool:
     """Close a browser app window, answering "Leave app?" with its default button. True when the window is gone."""
     u = ctypes.windll.user32

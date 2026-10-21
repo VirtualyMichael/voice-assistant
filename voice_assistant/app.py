@@ -32,7 +32,7 @@ from .routing import double_voice_warnings, listen_routes
 from .delegate import UsageLog, build_delegate_tools
 from .computer import build_computer_tools
 from .extras import build_extra_tools
-from .music import build_music_tools
+from .music import build_music_tools, open_users_youtube_music
 from .ytm_bridge import YtmBridge, extension_folder, make_player
 from .ytm_browser import YtmBrowser
 from .screen import list_windows
@@ -1094,7 +1094,7 @@ class MainWindow(QMainWindow):
             self.ytm_bridge = YtmBridge(extension_id=self.cfg.ytm_extension_id, on_trust=lambda i: self._set_field("ytm_extension_id", i))
             if self.cfg.ytm_extension:
                 self.ytm_bridge.start()
-        browser_play = make_player(self.ytm_bridge if self.cfg.ytm_extension else None, self.ytm if self.cfg.ytm_browser else None)
+        browser_play = make_player(self.ytm_bridge if self.cfg.ytm_extension else None, self.ytm if self.cfg.ytm_browser else None, open_tab=open_users_youtube_music)
         return build_music_tools(self.cfg, self._confirm, list_windows, in_window=in_window, browser_play=browser_play) + ctools
 
     def _open_extension_folder(self) -> None:

@@ -79,7 +79,7 @@ async function connect() {
 }
 
 // keep trying: the app may start after the browser, and the service worker can be put to sleep
-chrome.alarms.create("reconnect", { periodInMinutes: 1 });
+chrome.alarms.create("reconnect", { periodInMinutes: 0.5 }); // the browser's minimum: reconnect within ~30 s of the app starting
 chrome.alarms.onAlarm.addListener(() => connect());
 chrome.runtime.onStartup.addListener(() => connect());
 chrome.runtime.onInstalled.addListener(() => connect());

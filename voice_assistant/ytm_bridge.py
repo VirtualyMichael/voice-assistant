@@ -130,8 +130,36 @@ class YtmBridge:
         return msg
 
     # ---- playing ------------------------------------------------------------------------
-    def play(self, query: str, sleep=time.sleep, clock=time.time) -> str:
+    def ensure_tab(self, open_tab, sleep=time.sleep, clock=time.time, timeout: float = 25.0) -> None:
+        """Make sure the user's browser has a YouTube Music tab or app window; if not, open their YouTube Music (signed in) and wait for it."""
+        try:
+            self.request("ping", timeout=8)
+            return
+        except YtmError as e:
+            if "No YouTube Music tab" not in str(e) or open_tab is None:
+                raise
+        open_tab()
+        end = clock() + timeout
+        while clock() < end:
+            sleep(1.0)
+            try:
+                self.request("ping", timeout=8)
+                sleep(1.5)  # let the page finish loading its search box
+                return
+            except YtmError:
+                continue
+        raise YtmError("I opened YouTube Music in your browser, but its page never became ready.")
+
+    def wait_connected(self, seconds: float = 8.0, sleep=time.sleep, clock=time.time) -> bool:
+        """The extension reconnects by itself within about half a minute of the app starting; wait briefly for it when it is known to be installed."""
+        end = clock() + seconds
+        while not self.connected and clock() < end:
+            sleep(0.4)
+        return self.connected
+
+    def play(self, query: str, sleep=time.sleep, clock=time.time, open_tab=None) -> str:
         """Search in the user's own YouTube Music tab, click play on the best match, confirm."""
+        self.ensure_tab(open_tab, sleep, clock)
         cands = self.request("search", timeout=30, query=query).get("cands", [])
         best = choose(query, cands)
         state: dict = {}
@@ -151,21 +179,28 @@ class YtmBridge:
         raise YtmError(f"I clicked play on '{best['title']}', but the page did not start playing that song (it shows '{state.get('title') or 'nothing'}').")
 
 
-def make_player(bridge: YtmBridge | None, browser=None):
-    """One play(query) that tries the user's own signed-in tab (extension) first, then the assistant's own YouTube Music window."""
+def make_player(bridge: YtmBridge | None, browser=None, open_tab=None):
+    """One play(query) that tries the user's own signed-in tab (extension) first, then the assistant's own YouTube Music window.
+    open_tab() starts the user's own YouTube Music (their app, signed in) when the extension is connected but no tab is open."""
 
     def play(query: str) -> str:
         problems: list[str] = []
-        if bridge is not None and bridge.connected:
-            try:
-                return bridge.play(query)
-            except YtmPaused as e:
-                return str(e)
-            except YtmError as e:
-                problems.append(f"your browser extension: {e}")
+        if bridge is not None:
+            if not bridge.connected and bridge.extension_id:
+                bridge.wait_connected()
+            if bridge.connected:
+                try:
+                    return bridge.play(query, open_tab=open_tab)
+                except YtmPaused as e:
+                    return str(e)
+                except YtmError as e:
+                    problems.append(f"your signed-in YouTube Music could not be used ({e})")
+            elif bridge.extension_id:
+                problems.append("your browser extension is not connected right now (it reconnects within about 30 seconds of the app starting)")
         if browser is not None:
             try:
-                return browser.play(query)
+                out = browser.play(query)
+                return out + (f" Note: {problems[0]}, so the assistant's own window was used." if problems else "")
             except Exception as e:
                 problems.append(f"the assistant's own window: {e}")
         raise YtmError("; ".join(problems) or "No YouTube Music route is available.")

@@ -49,7 +49,9 @@ class FakeExtension(threading.Thread):
                 for raw in ws:
                     msg = json.loads(raw)
                     self.log.append(msg["action"])
-                    if msg["action"] == "search":
+                    if msg["action"] == "ping":
+                        out = {"ok": True}
+                    elif msg["action"] == "search":
                         out = {"ok": True, "cands": RESULTS}
                     elif msg["action"] == "click":
                         self.clicked.append((msg["kind"], msg["i"]))
@@ -77,7 +79,7 @@ def test_extension_connects_and_the_app_can_play_through_it(bridge):
     assert wait_connected(bridge) and bridge.version == "1.0.0"
     out = bridge.play("Eternity by Stellardrone", sleep=lambda s: None)
     assert out.startswith("Playing Eternity by Stellardrone (a song)") and "in your YouTube Music" in out
-    assert ext.clicked == [("row", 0)] and ext.log[0] == "search"  # the Song, not the Video card
+    assert ext.clicked == [("row", 0)] and ext.log[:2] == ["ping", "search"]  # the Song, not the Video card
 
 
 def test_a_web_page_or_other_origin_is_refused(bridge):
@@ -200,3 +202,60 @@ def test_frozen_app_finds_the_extension_next_to_or_inside_the_program(tmp_path, 
     (tmp_path / "extension").mkdir()
     (tmp_path / "extension" / "manifest.json").write_text("{}")
     assert ytm_bridge.extension_folder() == tmp_path / "extension"  # the installer's copy wins when both exist
+
+
+def test_no_tab_open_opens_the_users_youtube_music_then_plays_there(bridge):
+    opened, state = [], {"tab": False}
+
+    class Ext(FakeExtension):
+        def run(self):
+            try:
+                with connect(f"ws://127.0.0.1:{self.port}", additional_headers={"Origin": self.origin}) as ws:
+                    ws.send(json.dumps({"type": "hello", "version": "1.0.0"}))
+                    for raw in ws:
+                        msg = json.loads(raw)
+                        if msg["action"] == "ping":
+                            out = {"ok": True} if state["tab"] else {"ok": False, "error": "No YouTube Music tab or app window is open in this browser."}
+                        elif msg["action"] == "search":
+                            out = {"ok": True, "cands": RESULTS}
+                        elif msg["action"] == "click":
+                            self.playing = True
+                            out = {"ok": True, "result": "clicked", "state": {}}
+                        else:
+                            out = {"ok": True, "state": {"paused": not self.playing, "title": "Eternity", "by": "x"}}
+                        ws.send(json.dumps({"id": msg["id"], **out}))
+            except Exception:
+                pass
+
+    ext = Ext(bridge.port)
+    ext.start()
+    assert wait_connected(bridge)
+
+    def open_tab():
+        opened.append(1)
+        state["tab"] = True  # the user's browser now has the page
+
+    t = iter(range(0, 10000))
+    out = bridge.play("Eternity by Stellardrone", sleep=lambda s: None, clock=lambda: next(t), open_tab=open_tab)
+    assert out.startswith("Playing Eternity") and opened == [1]
+    with pytest.raises(YtmError, match="No YouTube Music tab"):
+        state["tab"] = False
+        bridge.play("Eternity by Stellardrone", sleep=lambda s: None, clock=lambda: next(t), open_tab=None)
+
+
+def test_player_waits_briefly_for_a_known_extension_and_explains_a_fallback():
+    calls = []
+
+    class Browser:
+        def play(self, q):
+            calls.append(q)
+            return "Playing X (a song) in the assistant's YouTube Music window."
+
+    b = YtmBridge(ports=(0,), extension_id="abcdefghijklmnopabcdefghijklmnop")
+    waits = []
+    b.wait_connected = lambda *a, **k: waits.append(1) or False
+    out = make_player(b, Browser())("a")
+    assert waits == [1] and out.startswith("Playing X") and "not connected right now" in out and calls == ["a"]
+    unknown = YtmBridge(ports=(0,))  # never installed: no waiting, no remark
+    unknown.wait_connected = lambda *a, **k: waits.append(2) or False
+    assert make_player(unknown, Browser())("b") == "Playing X (a song) in the assistant's YouTube Music window." and waits == [1]
