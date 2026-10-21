@@ -34,6 +34,7 @@ from .computer import build_computer_tools
 from .extras import build_extra_tools
 from .music import build_music_tools, open_users_youtube_music
 from .ytm_bridge import YtmBridge, extension_folder, make_player
+from .ytm_library import Library
 from .ytm_browser import YtmBrowser, make_judge
 from .screen import list_windows
 from .profile import Profile, build_profile_tools
@@ -591,6 +592,10 @@ class MainWindow(QMainWindow):
         ext_open, ext_check = QPushButton("Open the extension folder"), QPushButton("Check connection")
         ext_open.clicked.connect(self._open_extension_folder)
         ext_check.clicked.connect(self._check_extension)
+        self.library_label = QLabel("", objectName="small", wordWrap=True)
+        lib_btn = QPushButton("Refresh my YouTube Music library now")
+        lib_btn.setToolTip("Saves the names of your playlists and every song in them on this PC (needs the extension), so spoken names are matched exactly")
+        lib_btn.clicked.connect(lambda: threading.Thread(target=self._refresh_library, daemon=True).start())
         ext_how = QLabel("Install once: open chrome://extensions, turn on Developer mode, click Load unpacked and pick that folder. Its code is plain JavaScript in the repository.",
                          objectName="small", wordWrap=True)
         form.addRow(ask)
@@ -599,6 +604,8 @@ class MainWindow(QMainWindow):
         form.addRow(ext_how)
         form.addRow(ext_open)
         form.addRow(ext_check)
+        form.addRow(self.library_label)
+        form.addRow(lib_btn)
         form.addRow(ytmb)
         form.addRow(ctl)
         form.addRow(self.apps_count)
@@ -1091,11 +1098,13 @@ class MainWindow(QMainWindow):
         in_window = (lambda q: task(f"Search for '{q}' and play that song.", "YouTube Music", 12)) if task else None
         if not hasattr(self, "ytm"):
             self.ytm = YtmBrowser()
+            self.library = Library()
+            threading.Thread(target=self._library_loop, daemon=True).start()
             self.ytm_bridge = YtmBridge(extension_id=self.cfg.ytm_extension_id, on_trust=lambda i: self._set_field("ytm_extension_id", i))
             if self.cfg.ytm_extension:
                 self.ytm_bridge.start()
         browser_play = make_player(self.ytm_bridge if self.cfg.ytm_extension else None, self.ytm if self.cfg.ytm_browser else None, open_tab=open_users_youtube_music,
-                                  judge=make_judge(lambda: self.session.agent.llm))
+                                  judge=make_judge(lambda: self.session.agent.llm), library=self.library)
         return build_music_tools(self.cfg, self._confirm, list_windows, in_window=in_window, browser_play=browser_play) + ctools
 
     def _open_extension_folder(self) -> None:
@@ -1105,7 +1114,28 @@ class MainWindow(QMainWindow):
             return
         os.startfile(str(folder))  # noqa: S606 - a folder inside the program's own install
 
+    def _refresh_library(self) -> None:
+        try:
+            self.bridge.tool.emit("Library: " + self.library.refresh(self.ytm_bridge))
+        except Exception as e:
+            self.bridge.tool.emit(f"Library not updated: {e}")
+
+    def _library_loop(self) -> None:
+        """When the extension is connected and the saved library is a day old (or missing), refresh it in the background; retry later after a failure."""
+        time.sleep(20)
+        while True:
+            try:
+                b = getattr(self, "ytm_bridge", None)
+                if self.cfg.ytm_extension and b is not None and b.connected and self.library.stale():
+                    self._refresh_library()
+                    if self.library.stale():
+                        time.sleep(600)
+            except Exception:
+                pass
+            time.sleep(60)
+
     def _check_extension(self) -> None:
+        self.library_label.setText(self.library.summary() if hasattr(self, "library") else "")
         b = getattr(self, "ytm_bridge", None)
         if b is None or b.port is None:
             self.ytm_ext_status.setText("The bridge is off (or its ports are busy). Turn the option on and restart the app.")

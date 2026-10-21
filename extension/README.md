@@ -8,7 +8,8 @@ It is three short files you can read in a few minutes: `manifest.json`, `backgro
 
 1. `background.js` keeps a connection to the app at `ws://127.0.0.1:47821` (ports 47821 to 47825). That address only exists on your computer; nothing goes to the internet.
 2. The app sends one of a few commands: `search`, `click`, `state`, `control` (play/pause/next/previous), `ping`.
-3. `content.js`, which runs only on `music.youtube.com`, does what you would do by hand: types into the page's own search box, reads the visible result rows (title, subtitle, play button), presses the play button of the one the app picked, and reports the player's title and paused/playing state.
+3. `library` (only when you press *Refresh* in the app, or once a day): `background.js` asks YouTube Music, from inside your own signed-in page and exactly as the page does, for the names of your playlists and the title and artist of every track in them, and hands that list to the app so it can recognise what you ask for.
+4. `content.js`, which runs only on `music.youtube.com`, does what you would do by hand: types into the page's own search box, reads the visible result rows (title, subtitle, play button), presses the play button of the one the app picked, and reports the player's title and paused/playing state.
 
 The app ranks the results and decides what to click; the extension only reports and clicks.
 
@@ -16,7 +17,7 @@ The app ranks the results and decides what to click; the extension only reports 
 
 - **Sites:** only `https://music.youtube.com/*` (`host_permissions`). It cannot read any other site.
 - **Browser permissions:** `tabs` (to find your YouTube Music tab and tell whether it is playing), `scripting` (to inject its page script into a YouTube Music tab that was already open when you installed it), `alarms` (to reconnect to the app if the browser put the extension to sleep).
-- **Data it sends to the app:** search result titles and subtitles, the currently playing title and artist, and paused/playing. Nothing else: no cookies, no account details, no history.
+- **Data it sends to the app:** search result titles and subtitles, the currently playing title and artist, paused/playing, and (on refresh) your playlist names with each track's title, artist and video id. Nothing else: no cookies, no account details, no watch history. The app keeps that list in its own settings folder on your PC.
 
 ## Who can talk to it
 

@@ -128,7 +128,7 @@ def test_player_prefers_the_extension_then_falls_back_to_the_own_window(bridge):
     calls = []
 
     class Browser:
-        def play(self, q, judge=None):
+        def play(self, q, judge=None, library=None):
             calls.append(q)
             return "Playing X (a song) in the assistant's YouTube Music window."
 
@@ -247,7 +247,7 @@ def test_player_waits_briefly_for_a_known_extension_and_explains_a_fallback():
     calls = []
 
     class Browser:
-        def play(self, q, judge=None):
+        def play(self, q, judge=None, library=None):
             calls.append(q)
             return "Playing X (a song) in the assistant's YouTube Music window."
 
@@ -267,11 +267,11 @@ def test_no_match_is_a_final_answer_not_a_reason_to_try_another_window():
     class Br:
         extension_id, connected = "x", True
 
-        def play(self, q, open_tab=None, judge=None):
+        def play(self, q, open_tab=None, judge=None, library=None):
             raise YtmNoMatch("Could not find 'q' on YouTube Music. Nothing played.")
 
     class Own:
-        def play(self, q, judge=None):
+        def play(self, q, judge=None, library=None):
             raise AssertionError("must not be tried: it would find the same results")
 
     assert make_player(Br(), Own())("q").startswith("Could not find")

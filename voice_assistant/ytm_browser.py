@@ -372,26 +372,27 @@ class YtmBrowser:
             previous = sig
         return []
 
-    def play(self, query: str, judge=None) -> str:
+    def play(self, query: str, judge=None, library=None) -> str:
         """Search YouTube Music for `query`, click play on the best match and confirm it started. Returns a sentence starting 'Playing' on success."""
         try:
-            return self._play_once(query, judge)
+            return self._play_once(query, judge, library)
         except YtmError:
             raise
         except Exception:  # the connection dropped (the window was closed or reloaded): reconnect once and try again
             if self.cdp is not None:
                 self.cdp.close()
             self.cdp = None
-            return self._play_once(query, judge)
+            return self._play_once(query, judge, library)
 
-    def _play_once(self, query: str, judge=None) -> str:
+    def _play_once(self, query: str, judge=None, library=None) -> str:
         cdp = self.attach()
         best, closest = None, []
-        for q in search_queries(query):
+        spelled = (library.resolve(query) if library else None) or query  # the saved library's own spelling of the song, when it is one of yours
+        for q in search_queries(spelled):
             cdp.call("Page.navigate", url=f"{START_URL}/search?q={quote_plus(q)}")
             cands = self._wait_results(cdp, q)
             try:
-                best = choose(query, cands, judge)
+                best = choose(spelled, cands, judge)
                 break
             except YtmNoMatch as e:
                 closest += e.closest

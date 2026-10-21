@@ -57,7 +57,7 @@ class YtmBridge:
             self._serve = serve
         for port in self.ports:
             try:
-                self._server = self._serve(self._handler, "127.0.0.1", port)
+                self._server = self._serve(self._handler, "127.0.0.1", port, max_size=64 * 1024 * 1024)  # a whole library is a big message
             except OSError:
                 continue
             self.port = port
@@ -157,14 +157,15 @@ class YtmBridge:
             sleep(0.4)
         return self.connected
 
-    def play(self, query: str, sleep=time.sleep, clock=time.time, open_tab=None, judge=None) -> str:
+    def play(self, query: str, sleep=time.sleep, clock=time.time, open_tab=None, judge=None, library=None) -> str:
         """Search in the user's own YouTube Music tab, click play on the best match, confirm."""
         self.ensure_tab(open_tab, sleep, clock)
         best, closest = None, []
-        for q in search_queries(query):
+        spelled = (library.resolve(query) if library else None) or query  # the saved library's own spelling of the song, when it is one of yours
+        for q in search_queries(spelled):
             cands = self.request("search", timeout=30, query=q).get("cands", [])
             try:
-                best = choose(query, cands, judge)
+                best = choose(spelled, cands, judge)
                 break
             except YtmNoMatch as e:
                 closest += e.closest
@@ -187,7 +188,7 @@ class YtmBridge:
         raise YtmError(f"I clicked play on '{best['title']}', but the page did not start playing that song (it shows '{state.get('title') or 'nothing'}').")
 
 
-def make_player(bridge: YtmBridge | None, browser=None, open_tab=None, judge=None):
+def make_player(bridge: YtmBridge | None, browser=None, open_tab=None, judge=None, library=None):
     """One play(query) that tries the user's own signed-in tab (extension) first, then the assistant's own YouTube Music window.
     open_tab() starts the user's own YouTube Music (their app, signed in) when the extension is connected but no tab is open."""
 
@@ -198,7 +199,7 @@ def make_player(bridge: YtmBridge | None, browser=None, open_tab=None, judge=Non
                 bridge.wait_connected()
             if bridge.connected:
                 try:
-                    return bridge.play(query, open_tab=open_tab, judge=judge)
+                    return bridge.play(query, open_tab=open_tab, judge=judge, library=library)
                 except YtmPaused as e:
                     return str(e)
                 except YtmNoMatch as e:  # the song is not on YouTube Music: the other window would only find the same results
@@ -209,7 +210,7 @@ def make_player(bridge: YtmBridge | None, browser=None, open_tab=None, judge=Non
                 problems.append("your browser extension is not connected right now (it reconnects within about 30 seconds of the app starting)")
         if browser is not None:
             try:
-                out = browser.play(query, judge=judge)
+                out = browser.play(query, judge=judge, library=library)
                 return out + (f" Note: {problems[0]}, so the assistant's own window was used." if problems else "")
             except YtmNoMatch as e:
                 return str(e)

@@ -155,4 +155,33 @@ await test("says so plainly when no YouTube Music tab exists", async () => {
   assert.match(reply.error, /No YouTube Music tab/);
 });
 
+// ---------- the library reader that runs inside the page ------------------------------------------
+await test("fetchLibrary reads every playlist and track as the page's own (channel) account, following continuations", async () => {
+  const src = read("background.js");
+  const fn = src.slice(src.indexOf("async function fetchLibrary()"), src.indexOf("async function handle(msg)"));
+  const calls = [];
+  const track = (id, title, artist) => ({ musicResponsiveListItemRenderer: { playlistItemData: { videoId: id }, flexColumns: [
+    { musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: title }] } } }, { musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: artist }] } } }] } });
+  const list = (id, title) => ({ musicTwoRowItemRenderer: { navigationEndpoint: { browseEndpoint: { browseId: id } }, title: { runs: [{ text: title }] }, subtitle: { runs: [{ text: "x" }] } } });
+  const answers = {
+    FEmusic_liked_playlists: { contents: [list("VLLM", "Liked Music"), list("VLPLa", "likeish"), list("SEskip", "Episodes")], more: { nextContinuationData: { continuation: "LISTS2" } } },
+    LISTS2: { contents: [list("VLPLb", "second page list")] },
+    VLLM: { contents: [track("1", "One", "A")] },
+    VLPLa: { contents: [track("2", "Two", "B")], more: { continuationCommand: { token: "TRACKS2" } } },
+    TRACKS2: { contents: [track("3", "Three", "C")] },
+    VLPLb: { contents: [] },
+  };
+  const context = { window: { ytcfg: { get: (k) => ({ INNERTUBE_CONTEXT: { client: {} }, DELEGATED_SESSION_ID: "channel123", SESSION_INDEX: "1", INNERTUBE_CONTEXT_CLIENT_VERSION: "1.2" })[k] } },
+    document: { cookie: "a=b; SAPISID=secret" }, location: { origin: "https://music.youtube.com" }, crypto: { subtle: { digest: async () => new Uint8Array([1, 2, 3]).buffer } },
+    TextEncoder, Uint8Array, Math, Date, JSON, Promise, Array, Object, String, Error, Set,
+    fetch: async (url, opts) => { const body = JSON.parse(opts.body); calls.push({ headers: opts.headers, body }); const key = body.continuation || body.browseId;
+      return { ok: true, json: async () => answers[key] || {} }; } };
+  vm.createContext(context);
+  const lib = plain(await vm.runInContext("(" + fn + ")()", context));
+  assert.deepEqual(lib.playlists.map((p) => p.title), ["Liked Music", "likeish", "second page list"]); // the Episodes shelf and "New playlist" cards are not playlists
+  assert.deepEqual(lib.playlists[1].tracks.map((t) => [t.videoId, t.title, t.artist]), [["2", "Two", "B"], ["3", "Three", "C"]]);
+  assert.ok(calls.every((c) => c.headers["x-goog-authuser"] === "1" && c.headers["x-goog-pageid"] === "channel123" && c.body.context.user.onBehalfOfUser === "channel123"));
+  assert.match(calls[0].headers.authorization, /^SAPISIDHASH \d+_[0-9a-f]+$/);
+});
+
 console.log(`${passed} extension tests passed`);
