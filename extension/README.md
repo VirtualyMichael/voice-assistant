@@ -1,0 +1,42 @@
+# Voice Assistant: YouTube Music bridge (browser extension)
+
+A small Chrome / Edge extension that lets the **Voice Assistant app on your own PC** search and play songs in **your signed-in YouTube Music**, in the tab or app window you already have open. It is optional: without it the app uses its own YouTube Music window (you sign in there once).
+
+It is three short files you can read in a few minutes: `manifest.json`, `background.js`, `content.js`.
+
+## What it does
+
+1. `background.js` keeps a connection to the app at `ws://127.0.0.1:47821` (ports 47821 to 47825). That address only exists on your computer; nothing goes to the internet.
+2. The app sends one of a few commands: `search`, `click`, `state`, `control` (play/pause/next/previous), `ping`.
+3. `content.js`, which runs only on `music.youtube.com`, does what you would do by hand: types into the page's own search box, reads the visible result rows (title, subtitle, play button), presses the play button of the one the app picked, and reports the player's title and paused/playing state.
+
+The app ranks the results and decides what to click; the extension only reports and clicks.
+
+## What it can access
+
+- **Sites:** only `https://music.youtube.com/*` (`host_permissions`). It cannot read any other site.
+- **Browser permissions:** `tabs` (to find your YouTube Music tab and tell whether it is playing), `scripting` (to inject its page script into a YouTube Music tab that was already open when you installed it), `alarms` (to reconnect to the app if the browser put the extension to sleep).
+- **Data it sends to the app:** search result titles and subtitles, the currently playing title and artist, and paused/playing. Nothing else: no cookies, no account details, no history.
+
+## Who can talk to it
+
+The app accepts a connection only from `127.0.0.1` and only when the browser reports this extension's own origin (`chrome-extension://fhlaljjbhimogfjcdpohgjkkaeboilac`). A web page cannot connect, because the browser sends the page's origin instead. The extension ID is fixed by the public key in `manifest.json` (the matching private key was discarded; it is not needed to run the extension). To check it yourself: the ID is the first 32 hex digits of the SHA-256 of the DER bytes of that key, with `0-9a-f` replaced by `a-p`; `tests/test_ytm_bridge.py` does this.
+
+## Install (one time)
+
+1. In the app: Settings > Apps > **Open the extension folder** (or find the `extension` folder next to the app / in this repository).
+2. In Chrome or Edge open `chrome://extensions` (or `edge://extensions`) and switch on **Developer mode**.
+3. Click **Load unpacked** and choose the `extension` folder.
+4. Keep the app running. Settings > Apps > **Check connection** should say Connected.
+
+Browsers show a "disable developer mode extensions" notice when they start, for any extension loaded this way. Dismiss it; it is the browser's standard warning, not a problem with this one.
+
+## Remove
+
+Remove it on `chrome://extensions`. The app then simply uses its other routes.
+
+## Limits
+
+- Browsers can block a page from starting audio by itself if you have never interacted with that tab; YouTube Music in an app window you use normally is not affected. If that happens the app says it opened the song and that you need to press play.
+- It works with the current YouTube Music web page layout. If YouTube Music changes its page, the selectors in `content.js` may need updating; the app then falls back to its own window and says why.
+- Tested in Chrome; Edge uses the same extension format.

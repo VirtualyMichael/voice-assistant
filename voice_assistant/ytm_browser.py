@@ -93,17 +93,42 @@ def rank(query: str, cands: list[dict]) -> list[tuple[float, dict]]:
     return sorted(out, key=lambda x: -x[0])
 
 
+def choose(query: str, cands: list[dict]) -> dict:
+    """The best candidate for the request, or a YtmError saying why there is none."""
+    ranked = rank(query, cands)
+    if not ranked:
+        raise YtmError(f"No results for '{query}' showed up on the page.")
+    score, best = ranked[0]
+    if score < 1.0:
+        raise YtmError(f"Nothing in the results matched '{query}' well enough (best was '{best['title']}').")
+    return best
+
+
+def started(best: dict, state: dict) -> str | None:
+    """A 'Playing ...' sentence when the page is really playing the chosen song (not a stale queue entry), else None."""
+    if state.get("paused") is False and state.get("title"):
+        want = set(tokens(best["title"])) - STOPWORDS
+        got = set(tokens(state["title"]))
+        if want and len(want & got) / len(want) < 0.5:
+            return None
+        kind, artist = kind_of(best["sub"])
+        what = f"{state['title']} by {artist}" if artist else state["title"]
+        return f"Playing {what} (a {kind or 'result'}) in the assistant's YouTube Music window."
+    return None
+
+
 EXTRACT_JS = r"""(() => {
   const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+  const visible = el => !!el && el.getClientRects().length > 0 && el.offsetParent !== null;  // earlier searches stay in the page, hidden
   const cands = [];
-  const card = document.querySelector('ytmusic-card-shelf-renderer');
+  const card = [...document.querySelectorAll('ytmusic-card-shelf-renderer')].find(visible);
   if (card) {
     const pb = card.querySelector('ytmusic-play-button-renderer');
     const title = norm((card.querySelector('.title') || {}).innerText);
     const sub = norm((card.querySelector('.subtitle') || card.querySelector('.secondary-flex-columns') || {}).innerText);
     if (pb && title) cands.push({kind: 'card', i: 0, title, sub, aria: pb.getAttribute('aria-label') || ''});
   }
-  [...document.querySelectorAll('ytmusic-responsive-list-item-renderer')].forEach((it, i) => {
+  [...document.querySelectorAll('ytmusic-responsive-list-item-renderer')].filter(visible).forEach((it, i) => {
     const pb = it.querySelector('ytmusic-play-button-renderer');
     if (!pb) return;
     cands.push({kind: 'row', i, title: norm((it.querySelector('.title') || {}).innerText),
@@ -114,7 +139,9 @@ EXTRACT_JS = r"""(() => {
 })()"""
 
 CLICK_JS = r"""((kind, i) => {
-  const el = kind === 'card' ? document.querySelector('ytmusic-card-shelf-renderer') : document.querySelectorAll('ytmusic-responsive-list-item-renderer')[i];
+  const visible = el => !!el && el.getClientRects().length > 0 && el.offsetParent !== null;
+  const el = kind === 'card' ? [...document.querySelectorAll('ytmusic-card-shelf-renderer')].find(visible)
+                             : [...document.querySelectorAll('ytmusic-responsive-list-item-renderer')].filter(visible)[i];
   const pb = el && el.querySelector('ytmusic-play-button-renderer');
   if (!pb) return 'missing';
   pb.click();
@@ -286,12 +313,7 @@ class YtmBrowser:
         cdp = self.attach()
         cdp.call("Page.navigate", url=f"{START_URL}/search?q={quote_plus(query)}")
         cands = self._wait_results(cdp, query)
-        ranked = rank(query, cands)
-        if not ranked:
-            raise YtmError(f"No results for '{query}' showed up on the page.")
-        score, best = ranked[0]
-        if score < 1.0:
-            raise YtmError(f"Nothing in the results matched '{query}' well enough (best was '{best['title']}').")
+        best = choose(query, cands)
         state = {}
         for attempt in (1, 2):  # a click can be lost while the page is still settling: click once more before giving up
             res = cdp.evaluate(CLICK_JS % (json.dumps(best["kind"]), best["i"]), gesture=True)
@@ -304,14 +326,9 @@ class YtmBrowser:
                     state = json.loads(cdp.evaluate(STATE_JS) or "{}")
                 except (YtmError, ValueError):
                     continue
-                if state.get("paused") is False and state.get("title"):
-                    want = set(tokens(best["title"])) - STOPWORDS
-                    got = set(tokens(state["title"]))
-                    if want and len(want & got) / len(want) < 0.5:  # something else is playing (stale list, a queued track)
-                        continue
-                    kind, artist = kind_of(best["sub"])
-                    what = f"{state['title']} by {artist}" if artist else state["title"]
-                    return f"Playing {what} (a {kind or 'result'}) in the assistant's YouTube Music window."
+                done = started(best, state)
+                if done:
+                    return done
         raise YtmError(f"I clicked play on '{best['title']}', but the page did not start playing that song (it shows '{state.get('title') or 'nothing'}').")
 
     def now_playing(self) -> str:

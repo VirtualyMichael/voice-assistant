@@ -23,6 +23,13 @@ def no_real_launches(monkeypatch):
     monkeypatch.setattr("webbrowser.open", refuse)
     monkeypatch.setattr("voice_assistant.agent_tools.list_windows", lambda: [])  # no real windows: results must not depend on what is open
     monkeypatch.setattr("voice_assistant.agent_tools.focus_window", refuse)
+    import voice_assistant.app as app_module
+
+    class QuietBridge(app_module.YtmBridge):  # tests that build the window must not open real network ports
+        def start(self):
+            return False
+
+    monkeypatch.setattr("voice_assistant.app.YtmBridge", QuietBridge)
     monkeypatch.setattr("keyboard.send", refuse)  # no test may press keys on the real desktop
     monkeypatch.setattr("keyboard.write", refuse)
     monkeypatch.setattr("voice_assistant.computer._foreground", lambda: None)  # tests never ask the real desktop which window is in front

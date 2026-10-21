@@ -33,6 +33,7 @@ from .delegate import UsageLog, build_delegate_tools
 from .computer import build_computer_tools
 from .extras import build_extra_tools
 from .music import build_music_tools
+from .ytm_bridge import YtmBridge, extension_folder, make_player
 from .ytm_browser import YtmBrowser
 from .screen import list_windows
 from .profile import Profile, build_profile_tools
@@ -582,7 +583,22 @@ class MainWindow(QMainWindow):
         ytmb.setToolTip("Reliable and free: the assistant searches and presses play on the web page itself. It opens a separate YouTube Music window (sign in there once).")
         ytmb.setChecked(cfg.ytm_browser)
         ytmb.toggled.connect(lambda v: self._set_home("ytm_browser", v))
+        ytmx = QCheckBox("Control my signed-in YouTube Music through the browser extension")
+        ytmx.setToolTip("Install the small extension from the folder below once. The app then searches and plays in your own YouTube Music tab or app window.")
+        ytmx.setChecked(cfg.ytm_extension)
+        ytmx.toggled.connect(lambda v: self._set_field("ytm_extension", v))
+        self.ytm_ext_status = QLabel("", objectName="small", wordWrap=True)
+        ext_open, ext_check = QPushButton("Open the extension folder"), QPushButton("Check connection")
+        ext_open.clicked.connect(lambda: os.startfile(str(extension_folder())))
+        ext_check.clicked.connect(self._check_extension)
+        ext_how = QLabel("Install once: open chrome://extensions, turn on Developer mode, click Load unpacked and pick that folder. Its code is plain JavaScript in the repository.",
+                         objectName="small", wordWrap=True)
         form.addRow(ask)
+        form.addRow(ytmx)
+        form.addRow(self.ytm_ext_status)
+        form.addRow(ext_how)
+        form.addRow(ext_open)
+        form.addRow(ext_check)
         form.addRow(ytmb)
         form.addRow(ctl)
         form.addRow(self.apps_count)
@@ -1075,8 +1091,20 @@ class MainWindow(QMainWindow):
         in_window = (lambda q: task(f"Search for '{q}' and play that song.", "YouTube Music", 12)) if task else None
         if not hasattr(self, "ytm"):
             self.ytm = YtmBrowser()
-        browser_play = self.ytm.play if self.cfg.ytm_browser else None
+            self.ytm_bridge = YtmBridge()
+            if self.cfg.ytm_extension:
+                self.ytm_bridge.start()
+        browser_play = make_player(self.ytm_bridge if self.cfg.ytm_extension else None, self.ytm if self.cfg.ytm_browser else None)
         return build_music_tools(self.cfg, self._confirm, list_windows, in_window=in_window, browser_play=browser_play) + ctools
+
+    def _check_extension(self) -> None:
+        b = getattr(self, "ytm_bridge", None)
+        if b is None or b.port is None:
+            self.ytm_ext_status.setText("The bridge is off (or its ports are busy). Turn the option on and restart the app.")
+        elif b.connected:
+            self.ytm_ext_status.setText(f"Connected: extension version {b.version or '?'}. Your own YouTube Music will be used.")
+        else:
+            self.ytm_ext_status.setText("Not connected yet. Install the extension (steps below), keep Chrome open, then check again in a few seconds.")
 
     def _computer_tools(self):
         return build_computer_tools(self.cfg, self._confirm, lambda: self.session.agent.llm, cancelled=lambda: self.session._cancel.is_set(),
