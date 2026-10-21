@@ -78,9 +78,9 @@ def test_play_fails_loudly_instead_of_claiming_success():
         browser_with(FakePage(RESULTS, start_playing=False)).play("Eternity Stellardrone")
     with pytest.raises(YtmError, match="could not be found"):
         browser_with(FakePage(RESULTS, click_result="missing")).play("Eternity Stellardrone")
-    with pytest.raises(YtmError, match="No results"):
+    with pytest.raises(YtmError, match="Could not find .anything."):
         browser_with(FakePage([])).play("anything")
-    with pytest.raises(YtmError, match="well enough"):
+    with pytest.raises(YtmError, match="Could not find"):
         browser_with(FakePage(RESULTS)).play("zebra crossing blues")
 
 
@@ -253,3 +253,81 @@ def test_a_lost_click_is_repeated_once():
 
     page.evaluate = evaluate
     assert browser_with(page).play("Eternity Stellardrone").startswith("Playing") and len(page.clicks) == 2
+
+
+SLVM = [
+    {"kind": "card", "i": 0, "title": "Orbiting Something Undefined", "sub": "Song • SLVMLORD • 3:14", "aria": ""},
+    {"kind": "row", "i": 0, "title": "SEARCH HISTORY", "sub": "Song • SLVMLORD • 586K plays", "aria": ""},
+    {"kind": "row", "i": 1, "title": "Residual Presence", "sub": "Song • SLVMLORD • 40K plays", "aria": ""},
+    {"kind": "row", "i": 2, "title": "Continuum", "sub": "Song • Lemaitre • 2.1M plays", "aria": ""},
+    {"kind": "row", "i": 3, "title": "a playlist for wandering without purpose :)", "sub": "Video • SLVMLORD • 96K views", "aria": ""},
+]
+WITH_SLVM = SLVM + [{"kind": "row", "i": 5, "title": "Continuum", "sub": "Song • SLVMLORD • 1.2M plays", "aria": ""}]
+
+
+def test_a_spoken_artist_name_split_in_two_matches_the_one_word_name():
+    from voice_assistant.ytm_browser import similarity
+
+    assert similarity("SLVM Lord", "SLVMLORD") == 1.0 and similarity("Maroon 5", "Maroon5") == 1.0 and similarity("Sub Urban", "Suburban") == 1.0
+    assert similarity("Stellardrone", "Lemaitre") < 0.5
+    assert rank("Continuum by SLVM Lord", WITH_SLVM)[0][1]["sub"].startswith("Song • SLVMLORD") and rank("Continuum by SLVM Lord", WITH_SLVM)[0][1]["title"] == "Continuum"
+
+
+def test_the_wrong_artist_is_never_played_just_because_the_title_matches():
+    from voice_assistant.ytm_browser import YtmNoMatch, choose
+
+    with pytest.raises(YtmNoMatch) as e:
+        choose("Continuum by SLVM Lord", SLVM)  # the only Continuum on the page is by Lemaitre
+    assert any("Lemaitre" in c for c in e.value.closest)
+
+
+def test_the_model_can_pick_from_the_whole_list_when_the_ranking_is_unsure():
+    from voice_assistant.ytm_browser import choose, make_judge
+
+    asked = []
+
+    def judge(query, cands):
+        asked.append([c["title"] for c in cands])
+        return next(c for c in cands if c["title"] == "Residual Presence")
+
+    assert choose("Continuum by SLVM Lord", SLVM, judge)["title"] == "Residual Presence" and asked
+    assert choose("Continuum by SLVM Lord", WITH_SLVM, judge)["sub"].find("SLVMLORD") > 0  # a sure match never needs the model
+
+    class Ev:
+        def __init__(self, t):
+            self.kind, self.text = "text", t
+
+    class LLM:
+        def __init__(self, answer):
+            self.answer = answer
+
+        def stream_chat(self, messages, tools=None, cancel=None):
+            self.seen = messages
+            yield Ev(self.answer)
+
+    llm = LLM("2")
+    assert make_judge(lambda: llm)("x", SLVM)["title"] == "Residual Presence" and "SLVMLORD" in llm.seen[0]["content"]
+    assert make_judge(lambda: LLM("NONE"))("x", SLVM) is None and make_judge(lambda: LLM("99"))("x", SLVM) is None
+
+
+def test_play_tries_artist_then_title_order_and_reports_honestly_when_nothing_matches():
+    from voice_assistant.ytm_browser import YtmNoMatch, search_queries
+
+    assert search_queries("Continuum by SLVM Lord") == ["Continuum by SLVM Lord", "SLVM Lord Continuum"] and search_queries("Maps") == ["Maps"]
+    page = FakePage(SLVM)
+    with pytest.raises(YtmNoMatch, match="Could not find 'Continuum by SLVM Lord'.*Nothing played.*Continuum by Lemaitre"):
+        browser_with(page).play("Continuum by SLVM Lord")
+    assert len(page.navigated) == 2 and not page.clicks  # both orders searched, nothing clicked
+    page2 = FakePage(SLVM)
+    out_calls = []
+    page2.original = page2.evaluate
+
+    def second_search_finds_it(js, gesture=False):
+        if "cands.push" in js and len(page2.navigated) == 2:
+            return json.dumps({"url": "https://music.youtube.com/search?q=" + page2.q, "q": page2.q, "ready": "complete", "cands": WITH_SLVM})
+        return page2.original(js, gesture)
+
+    page2.evaluate = second_search_finds_it
+    page2.now_title = "Continuum"
+    assert browser_with(page2).play("Continuum by SLVM Lord").startswith("Playing Continuum")
+    assert page2.clicks == ['"row", 5)']

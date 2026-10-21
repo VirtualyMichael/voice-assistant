@@ -14,6 +14,7 @@ import shutil
 import socket
 import subprocess
 import time
+from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -58,10 +59,32 @@ def split_request(query: str) -> tuple[list[str], list[str]]:
     return [t for t in tokens(query) if t not in STOPWORDS] or tokens(query), []
 
 
+class YtmNoMatch(YtmError):
+    """The page has no result that matches what was asked for (so the wrong song must not be played instead)."""
+
+    def __init__(self, message: str, closest: list[str] | None = None):
+        super().__init__(message)
+        self.closest = closest or []
+
+
+def compact(text: str) -> str:
+    return "".join(tokens(text))
+
+
+def similarity(a: str, b: str) -> float:
+    """0..1 how alike two names are with spaces ignored: 'SLVM Lord' and 'SLVMLORD' are the same name to a speech recogniser."""
+    a, b = compact(a), compact(b)
+    if not a or not b:
+        return 0.0
+    if a in b or b in a:
+        return 1.0 if min(len(a), len(b)) >= 3 else 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
 def rank(query: str, cands: list[dict]) -> list[tuple[float, dict]]:
-    """Candidates best first. Each candidate: {title, sub, aria}. Rewards a title that covers the requested song name and an artist that covers the requested
-    artist, prefers real songs, and penalises extra title words (so 'Eternity' beats 'Eternity (Reprise)'), lyric/karaoke/cover uploads, albums and playlists
-    (unless asked for) and artist pages."""
+    """Candidates best first (each gets `_title_hit` / `_artist_hit`, 0..1). Rewards a title that covers the requested song name and an artist that covers the
+    requested artist (names compared with spaces ignored), prefers real songs, and penalises extra title words (so 'Eternity' beats 'Eternity (Reprise)'),
+    lyric/karaoke/cover uploads, albums and playlists (unless asked for) and artist pages."""
     title_q, artist_q = split_request(query)
     all_q = set(title_q) | set(artist_q)
     wanted = {WANT_WORDS[t] for t in all_q if t in WANT_WORDS}
@@ -72,13 +95,17 @@ def rank(query: str, cands: list[dict]) -> list[tuple[float, dict]]:
         title_t, artist_t = set(tokens(c.get("title", ""))), set(tokens(artist))
         if not title_t or not (title_q or artist_q):
             continue
+        t_cover = sum(t in title_t for t in title_q) / max(1, len(title_q)) if title_q else 0.0
+        title_hit = max(t_cover, similarity(" ".join(title_q), c["title"])) if title_q else 0.0
         if artist_q:
-            title_hit = sum(t in title_t for t in title_q) / max(1, len(title_q))
-            artist_hit = sum(t in artist_t or t in title_t for t in artist_q) / len(artist_q)
+            a_cover = sum(t in artist_t or t in title_t for t in artist_q) / len(artist_q)
+            artist_hit = max(a_cover, similarity(" ".join(artist_q), artist) if artist else 0.0)
+            artist_hit = artist_hit if artist_hit >= 0.75 else min(artist_hit, a_cover)  # a loose resemblance is not a match
             score = title_hit * 1.6 + artist_hit * 1.4
         else:  # just a name: it may be a title, an artist or both
+            artist_hit = 0.0
             have = title_t | artist_t
-            score = sum(t in have for t in title_q) / max(1, len(title_q)) * 2.4
+            score = max(sum(t in have for t in title_q) / max(1, len(title_q)), similarity(" ".join(title_q), artist)) * 2.4
         extra = len(title_t - set(title_q) - set(artist_q)) / max(1, len(title_t))
         score -= extra * 0.5
         score += KINDS.get(kind, 0.0)
@@ -89,19 +116,67 @@ def rank(query: str, cands: list[dict]) -> list[tuple[float, dict]]:
             score += 1.0
         if kind in ("artist", "profile") or not kind:
             score -= 1.5
-        out.append((score, c))
+        out.append((score, {**c, "_title_hit": title_hit, "_artist_hit": artist_hit}))
     return sorted(out, key=lambda x: -x[0])
 
 
-def choose(query: str, cands: list[dict]) -> dict:
-    """The best candidate for the request, or a YtmError saying why there is none."""
+def describe(c: dict) -> str:
+    kind, artist = kind_of(c.get("sub", ""))
+    return f"{c['title']} by {artist}" if artist else c["title"]
+
+
+def choose(query: str, cands: list[dict], judge=None) -> dict:
+    """The best candidate for the request. When the top result is shaky (the requested artist does not match, a weak title match, or two near-equal
+    candidates) and a `judge` is given, the judge (a language model reading the whole list) decides. When nothing really matches, raises YtmNoMatch rather
+    than playing a different song."""
     ranked = rank(query, cands)
     if not ranked:
-        raise YtmError(f"No results for '{query}' showed up on the page.")
+        raise YtmNoMatch(f"No results for '{query}' showed up on the page.")
     score, best = ranked[0]
-    if score < 1.0:
-        raise YtmError(f"Nothing in the results matched '{query}' well enough (best was '{best['title']}').")
+    _, artist_q = split_request(query)
+    weak = score < 1.0 or best["_title_hit"] < 0.6 or (bool(artist_q) and best["_artist_hit"] < 0.6)
+    close_call = len(ranked) > 1 and score - ranked[1][0] < 0.2 and describe(ranked[1][1]) != describe(best)
+    if weak or close_call:
+        pick = judge(query, [c for _, c in ranked[:12]]) if judge else None
+        if pick is not None:
+            return pick
+        if weak:
+            raise YtmNoMatch(f"Nothing in the results matched '{query}'.", [describe(c) for _, c in ranked[:5]])
     return best
+
+
+def search_queries(query: str) -> list[str]:
+    """The request as spoken, then the same words in 'artist title' order (YouTube Music's search often finds the right song that way)."""
+    parts = re.split(r"\s+by\s+", query, maxsplit=1, flags=re.I)
+    return [query] + ([f"{parts[1].strip()} {parts[0].strip()}"] if len(parts) == 2 and parts[0].strip() and parts[1].strip() else [])
+
+
+def no_match_message(query: str, closest: list[str]) -> str:
+    seen = list(dict.fromkeys(closest))[:5]
+    return f"Could not find '{query}' on YouTube Music. Nothing played." + (" The closest results were: " + "; ".join(seen) + "." if seen else "")
+
+
+JUDGE_SYSTEM = ("You match a spoken music request to YouTube Music search results. The request came from speech recognition, so names may be split, joined or misspelled "
+                "(for example 'SLVM Lord' is the artist 'SLVMLORD'). Reply with ONLY the number of the result that is the requested song by the requested artist, "
+                "or NONE if no result is both. Never pick a song with the right title but a different artist.")
+
+
+def make_judge(get_llm):
+    """A judge(query, candidates) -> candidate | None that asks the user's own language model (text only, no images) to read the whole result list."""
+
+    def judge(query: str, cands: list[dict]):
+        lines = [f"{i}. {c['title']} | {c.get('sub', '')}" for i, c in enumerate(cands)]
+        messages = [{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": f"Request: {query}\nResults:\n" + "\n".join(lines) + "\nAnswer:"}]
+        try:
+            text = "".join(ev.text for ev in get_llm().stream_chat(messages) if ev.kind == "text").strip()
+        except Exception:
+            return None
+        if "NONE" in text.upper():
+            return None
+        m = re.search(r"\d+", text)
+        return cands[int(m.group())] if m and int(m.group()) < len(cands) else None
+
+    return judge
 
 
 def started(best: dict, state: dict) -> str | None:
@@ -297,23 +372,31 @@ class YtmBrowser:
             previous = sig
         return []
 
-    def play(self, query: str) -> str:
+    def play(self, query: str, judge=None) -> str:
         """Search YouTube Music for `query`, click play on the best match and confirm it started. Returns a sentence starting 'Playing' on success."""
         try:
-            return self._play_once(query)
+            return self._play_once(query, judge)
         except YtmError:
             raise
         except Exception:  # the connection dropped (the window was closed or reloaded): reconnect once and try again
             if self.cdp is not None:
                 self.cdp.close()
             self.cdp = None
-            return self._play_once(query)
+            return self._play_once(query, judge)
 
-    def _play_once(self, query: str) -> str:
+    def _play_once(self, query: str, judge=None) -> str:
         cdp = self.attach()
-        cdp.call("Page.navigate", url=f"{START_URL}/search?q={quote_plus(query)}")
-        cands = self._wait_results(cdp, query)
-        best = choose(query, cands)
+        best, closest = None, []
+        for q in search_queries(query):
+            cdp.call("Page.navigate", url=f"{START_URL}/search?q={quote_plus(q)}")
+            cands = self._wait_results(cdp, q)
+            try:
+                best = choose(query, cands, judge)
+                break
+            except YtmNoMatch as e:
+                closest += e.closest
+        if best is None:
+            raise YtmNoMatch(no_match_message(query, closest), closest)
         state = {}
         for attempt in (1, 2):  # a click can be lost while the page is still settling: click once more before giving up
             res = cdp.evaluate(CLICK_JS % (json.dumps(best["kind"]), best["i"]), gesture=True)

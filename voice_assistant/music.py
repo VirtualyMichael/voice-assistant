@@ -163,7 +163,7 @@ def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=res
         if browser_play is not None:  # the reliable route: search and click play in the page itself
             try:
                 out = browser_play(query)
-                if out.startswith(("Playing", "Opened")):  # "Opened ... press play" is a final answer too: do not start it a second time elsewhere
+                if out.startswith(("Playing", "Opened", "Could not find")):  # "Opened ... press play" is a final answer too: do not start it a second time elsewhere
                     return out
                 browser_note = f"(The assistant's YouTube Music window said: {out[:160]}) "
             except Exception as e:
