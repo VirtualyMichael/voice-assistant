@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from websockets.sync.client import connect
 
-from voice_assistant.ytm_bridge import EXTENSION_ID, PORTS, YtmBridge, YtmPaused, extension_folder, make_player
+from voice_assistant.ytm_bridge import PORTS, YtmBridge, YtmPaused, extension_folder, make_player
 from voice_assistant.ytm_browser import EXTRACT_JS, YtmError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,9 +20,14 @@ RESULTS = [
 ]
 
 
+EXTENSION_ID = "abcdefghijklmnopabcdefghijklmnop"
+trusted = []
+
+
 @pytest.fixture
 def bridge():
-    b = YtmBridge(ports=(0,))  # port 0: the OS picks a free one so tests never collide with a real app
+    trusted.clear()
+    b = YtmBridge(ports=(0,), extension_id=EXTENSION_ID, on_trust=trusted.append)  # port 0: the OS picks a free one so tests never collide with a real app
     assert b.start() or True
     b.port = b._server.socket.getsockname()[1]
     yield b
@@ -76,7 +81,7 @@ def test_extension_connects_and_the_app_can_play_through_it(bridge):
 
 
 def test_a_web_page_or_other_origin_is_refused(bridge):
-    for origin in ("https://evil.example", "chrome-extension://abcdefghijklmnopabcdefghijklmnop", ""):
+    for origin in ("https://evil.example", "chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba", "http://127.0.0.1:8000", ""):
         ext = FakeExtension(bridge.port, origin=origin)
         ext.start()
         time.sleep(0.4)
@@ -135,15 +140,32 @@ def test_player_prefers_the_extension_then_falls_back_to_the_own_window(bridge):
         make_player(None, None)("x")
 
 
-def test_ports_and_extension_id_match_the_files_in_the_repo():
-    manifest = json.loads((ROOT / "extension" / "manifest.json").read_text(encoding="utf-8"))
-    import base64
-    import hashlib
+def test_first_extension_is_remembered_and_later_ones_refused():
+    b = YtmBridge(ports=(0,), on_trust=trusted.append)
+    trusted.clear()
+    assert b.start() or True
+    port = b._server.socket.getsockname()[1]
+    try:
+        first = FakeExtension(port, origin="chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        first.start()
+        assert wait_connected(b) and trusted == ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] and b.extension_id == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        b._ws.close()
+        assert wait_connected(b, want=False)
+        FakeExtension(port, origin="chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").start()
+        time.sleep(0.4)
+        assert not b.connected and trusted == ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+        FakeExtension(port, origin="https://evil.example").start()
+        time.sleep(0.3)
+        assert not b.connected
+    finally:
+        b.stop()
 
-    digest = hashlib.sha256(base64.b64decode(manifest["key"])).hexdigest()[:32]
-    assert "".join(chr(ord("a") + int(c, 16)) for c in digest) == EXTENSION_ID  # the id the browser derives from the manifest key
+
+def test_ports_and_files_in_the_repo_agree():
     background = (ROOT / "extension" / "background.js").read_text(encoding="utf-8")
     assert re.search(r"PORTS = \[" + ", ".join(str(p) for p in PORTS) + r"\]", background)
+    manifest = json.loads((ROOT / "extension" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["manifest_version"] == 3 and manifest["host_permissions"] == ["https://music.youtube.com/*"]
     assert extension_folder() == ROOT / "extension" and (extension_folder() / "content.js").exists()
 
 

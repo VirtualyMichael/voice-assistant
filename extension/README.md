@@ -20,7 +20,7 @@ The app ranks the results and decides what to click; the extension only reports 
 
 ## Who can talk to it
 
-The app accepts a connection only from `127.0.0.1` and only when the browser reports this extension's own origin (`chrome-extension://fhlaljjbhimogfjcdpohgjkkaeboilac`). A web page cannot connect, because the browser sends the page's origin instead. The extension ID is fixed by the public key in `manifest.json` (the matching private key was discarded; it is not needed to run the extension). To check it yourself: the ID is the first 32 hex digits of the SHA-256 of the DER bytes of that key, with `0-9a-f` replaced by `a-p`; `tests/test_ytm_bridge.py` does this.
+The app accepts a connection only from `127.0.0.1`, and only from an extension: the browser itself reports who is connecting, so a web page shows up as its own `https://` origin and is refused. The first extension that connects is remembered (its ID is saved in the app's settings) and the only one accepted from then on. The `key` in `manifest.json` is there so the extension keeps the same ID on every PC and reinstall; the matching private key was discarded and is not needed to run it.
 
 ## Install (one time)
 

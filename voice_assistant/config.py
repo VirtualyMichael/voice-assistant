@@ -51,6 +51,7 @@ class Config:
     glass: str = "frosted"  # window backdrop: off | frosted | mica (Windows 11 only; solid elsewhere)
     glass_tint: int = 55  # 0-100: how solid the cards are over the glass
     accent: str = "#6c8cff"
+    ytm_extension_id: str = ""  # the browser extension the bridge trusts (filled in by the first one that connects)
     ytm_extension: bool = True  # use the YouTube Music bridge browser extension when it is installed and connected
     ytm_browser: bool = True  # play YouTube Music through the assistant's own YouTube Music window (controlled through its web page)
     computer_control: bool = False  # experimental: click, type and press keys in app windows (asks per window)

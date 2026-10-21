@@ -1091,7 +1091,7 @@ class MainWindow(QMainWindow):
         in_window = (lambda q: task(f"Search for '{q}' and play that song.", "YouTube Music", 12)) if task else None
         if not hasattr(self, "ytm"):
             self.ytm = YtmBrowser()
-            self.ytm_bridge = YtmBridge()
+            self.ytm_bridge = YtmBridge(self.cfg.ytm_extension_id, on_trust=lambda i: self._set_field("ytm_extension_id", i))
             if self.cfg.ytm_extension:
                 self.ytm_bridge.start()
         browser_play = make_player(self.ytm_bridge if self.cfg.ytm_extension else None, self.ytm if self.cfg.ytm_browser else None)

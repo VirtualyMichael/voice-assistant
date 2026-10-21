@@ -1,8 +1,9 @@
 """Control the YouTube Music you are already signed in to, through a small browser extension that ships with the app (the `extension` folder: plain
 JavaScript you can read).
 
-The app listens on 127.0.0.1 only. The extension in your normal browser connects to it (the browser sends the extension's own origin, which the app checks),
-and then the app can ask it to search, click play and report what is playing, in your existing YouTube Music tab or app window. It is the same page work as
+The app listens on 127.0.0.1 only. The extension in your normal browser connects to it. The browser itself reports who is connecting (a web page shows up as its
+own https origin and is refused; an extension shows up as chrome-extension://<id>), and the first extension that connects is remembered and the only one
+accepted from then on. The app can then ask it to search, click play and report what is playing, in your existing YouTube Music tab or app window. It is the same page work as
 the assistant's own YouTube Music window (ytm_browser.py), but in your own signed-in session. When the extension is not installed or not connected, the app
 simply uses the other routes."""
 from __future__ import annotations
@@ -16,7 +17,6 @@ from pathlib import Path
 
 from .ytm_browser import YtmError, choose, kind_of, started
 
-EXTENSION_ID = "fhlaljjbhimogfjcdpohgjkkaeboilac"  # fixed by the public key in extension/manifest.json
 PORTS = (47821, 47822, 47823, 47824, 47825)
 
 
@@ -33,8 +33,9 @@ def extension_folder() -> Path:
 
 
 class YtmBridge:
-    def __init__(self, ports=PORTS, extension_id: str = EXTENSION_ID, serve=None):
-        self.ports, self.extension_id = ports, extension_id
+    def __init__(self, ports=PORTS, extension_id: str = "", serve=None, on_trust=None):
+        """extension_id: the extension remembered from an earlier run (empty the first time); on_trust(id) is called when a new one is remembered."""
+        self.ports, self.extension_id, self.on_trust = ports, extension_id, on_trust
         self._serve = serve
         self.port: int | None = None
         self.version = ""
@@ -74,9 +75,14 @@ class YtmBridge:
             origin = ws.request.headers.get("Origin", "")
         except Exception:
             pass
-        if origin != f"chrome-extension://{self.extension_id}":  # only our extension: a web page cannot talk to this
+        prefix = "chrome-extension://"
+        if not origin.startswith(prefix) or (self.extension_id and origin != prefix + self.extension_id):  # a web page, or another extension than the remembered one
             ws.close(1008, "origin not allowed")
             return
+        if not self.extension_id:  # first connection ever: remember this extension, refuse any other from now on
+            self.extension_id = origin[len(prefix):]
+            if self.on_trust:
+                self.on_trust(self.extension_id)
         with self._lock:
             self._ws = ws
         try:
