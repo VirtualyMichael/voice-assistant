@@ -15,7 +15,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .ytm_browser import YtmError, YtmNoMatch, choose, kind_of, no_match_message, search_queries, started
+from .ytm_browser import YtmError, YtmNoMatch, choose, kind_of, no_match_message, search_queries, started, tokens
 
 PORTS = (47821, 47822, 47823, 47824, 47825)
 
@@ -157,6 +157,30 @@ class YtmBridge:
             sleep(0.4)
         return self.connected
 
+    def play_playlist(self, name: str, library, sleep=time.sleep, clock=time.time, open_tab=None) -> str:
+        """Play one of your saved playlists by name, and check that a song from it really started."""
+        pl, closest = library.find_playlist(name)
+        if pl is None:
+            hint = " The closest saved playlists are: " + "; ".join(closest) + "." if closest else " No library is saved yet: run a library refresh first."
+            raise YtmNoMatch(f"Could not find a playlist called '{name}' in your saved playlists. Nothing played." + hint, closest)
+        self.ensure_tab(open_tab, sleep, clock)
+        self.request("open_playlist", playlist=pl["id"])
+        want = {"".join(tokens(t.get("title", ""))) for t in pl.get("tracks", [])}
+        sleep(2.0)  # the page reloads; the extension reconnects its page script
+        end, state = clock() + 20, {}
+        while clock() < end:
+            sleep(1.0)
+            try:
+                state = self.request("state", timeout=8).get("state", {})
+            except YtmError:
+                continue
+            title = "".join(tokens(state.get("title", "")))
+            if state.get("paused") is False and title and (not want or title in want):
+                return f"Playing your playlist '{pl['title']}', starting with {state['title']}" + (f" by {state['by']}" if state.get("by") else "") + "."
+        if state.get("paused") and state.get("title"):
+            raise YtmPaused(f"Opened your playlist '{pl['title']}', but the browser did not let it start by itself; press play there.")
+        raise YtmError(f"I opened your playlist '{pl['title']}', but the page did not start playing it (it shows '{state.get('title') or 'nothing'}').")
+
     def play(self, query: str, sleep=time.sleep, clock=time.time, open_tab=None, judge=None, library=None) -> str:
         """Search in the user's own YouTube Music tab, click play on the best match, confirm."""
         self.ensure_tab(open_tab, sleep, clock)
@@ -217,5 +241,23 @@ def make_player(bridge: YtmBridge | None, browser=None, open_tab=None, judge=Non
             except Exception as e:
                 problems.append(f"the assistant's own window: {e}")
         raise YtmError("; ".join(problems) or "No YouTube Music route is available.")
+
+    return play
+
+
+def make_playlist_player(bridge: YtmBridge | None, library, open_tab=None):
+    """play_playlist(name): one of the user's saved playlists, played in their own signed-in tab (needs the extension and the saved library)."""
+
+    def play(name: str) -> str:
+        if bridge is None:
+            raise YtmError("Playing a playlist needs the browser extension, and it is switched off in Settings > Apps.")
+        if not bridge.connected and bridge.extension_id:
+            bridge.wait_connected()
+        if not bridge.connected:
+            raise YtmError("Playing a playlist needs the browser extension, and it is not connected right now.")
+        try:
+            return bridge.play_playlist(name, library, open_tab=open_tab)
+        except (YtmPaused, YtmNoMatch) as e:
+            return str(e)
 
     return play

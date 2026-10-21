@@ -14,6 +14,7 @@ import shutil
 import socket
 import subprocess
 import time
+import unicodedata
 from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -33,6 +34,7 @@ class YtmError(RuntimeError):
 
 
 def tokens(text: str) -> list[str]:
+    text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))  # Beyonc\u00e9 -> beyonce
     return [t for t in re.findall(r"[a-z0-9']+", text.lower().replace("&", " and ")) if t]
 
 
@@ -71,14 +73,30 @@ def compact(text: str) -> str:
     return "".join(tokens(text))
 
 
-def similarity(a: str, b: str) -> float:
-    """0..1 how alike two names are with spaces ignored: 'SLVM Lord' and 'SLVMLORD' are the same name to a speech recogniser."""
-    a, b = compact(a), compact(b)
+LOOKALIKES = str.maketrans({"v": "u", "0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "$": "s", "@": "a", "z": "s", "y": "i", "c": "k", "q": "k"})
+
+
+def sounds_like(text: str) -> str:
+    """A rough 'how it sounds' form of a name: spaces gone, stylised letters read the way they are pronounced (SLVM -> SLUM, 'Kr3w' -> 'Krew'),
+    spelling variants merged (ph/f, ck/k, c/k, z/s, y/i) and doubled letters collapsed. 'Slum Lord' and 'SLVMLORD' both become 'slumlord'."""
+    t = compact(text).replace("ph", "f").replace("ck", "k").replace("'", "").translate(LOOKALIKES)
+    return re.sub(r"(.)\1+", r"\1", t)
+
+
+def _alike(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
     if a in b or b in a:
         return 1.0 if min(len(a), len(b)) >= 3 else 0.0
     return SequenceMatcher(None, a, b).ratio()
+
+
+def similarity(a: str, b: str) -> float:
+    """0..1 how alike two names are with spaces ignored ('SLVM Lord' = 'SLVMLORD') and, a little less, how they sound ('Slum Lord' is read as 'SLVMLORD' because
+    a V stands in for the U in the stylised spelling). A sound-alike match is capped at 0.97 so an exact spelling always wins."""
+    exact = _alike(compact(a), compact(b))
+    alike = _alike(sounds_like(a), sounds_like(b))
+    return max(exact, min(0.97, alike)) if alike >= 0.9 else exact  # only a near-identical sound counts: loose resemblances must not raise scores
 
 
 def rank(query: str, cands: list[dict]) -> list[tuple[float, dict]]:

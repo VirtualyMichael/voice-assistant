@@ -7,7 +7,7 @@ It is three short files you can read in a few minutes: `manifest.json`, `backgro
 ## What it does
 
 1. `background.js` keeps a connection to the app at `ws://127.0.0.1:47821` (ports 47821 to 47825). That address only exists on your computer; nothing goes to the internet.
-2. The app sends one of a few commands: `search`, `click`, `state`, `control` (play/pause/next/previous), `ping`.
+2. The app sends one of a few commands: `search`, `click`, `state`, `control` (play/pause/next/previous), `open_playlist` (opens `music.youtube.com/watch?list=<id>` in your YouTube Music tab, for a playlist you saved), `ping`.
 3. `library` (only when you press *Refresh* in the app, or once a day): `background.js` asks YouTube Music, from inside your own signed-in page and exactly as the page does, for the names of your playlists and the title and artist of every track in them, and hands that list to the app so it can recognise what you ask for.
 4. `content.js`, which runs only on `music.youtube.com`, does what you would do by hand: types into the page's own search box, reads the visible result rows (title, subtitle, play button), presses the play button of the one the app picked, and reports the player's title and paused/playing state.
 

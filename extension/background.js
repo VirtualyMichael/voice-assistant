@@ -104,6 +104,14 @@ async function handle(msg) {
       const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: fetchLibrary });
       return { ok: true, library: res.result };
     }
+    if (msg.action === "open_playlist") {
+      const id = String(msg.playlist || "");
+      if (!/^[A-Za-z0-9_-]{2,64}$/.test(id)) return { ok: false, error: "That is not a playlist id." };
+      // The page asks "Leave site?" when it is playing; swallow that one question so the navigation is not blocked.
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: () => window.addEventListener("beforeunload", (e) => e.stopImmediatePropagation(), true) });
+      await chrome.tabs.update(tab.id, { url: "https://music.youtube.com/watch?list=" + encodeURIComponent(id) });
+      return { ok: true, result: "opened" };
+    }
     const res = await ask(tab, msg);
     return res || { ok: false, error: "The YouTube Music page did not answer." };
   } catch (e) {

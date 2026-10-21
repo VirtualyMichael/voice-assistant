@@ -154,7 +154,7 @@ def play_in_ytm(video_id: str, windows, launch, close, wait=time.sleep, timeout:
 
 
 def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=resolve_song, close=close_window, wait=time.sleep,
-                      foreground=foreground_window, playing=is_playing, nudge=press_play, in_window=None, browser_play=None) -> list[Tool]:
+                      foreground=foreground_window, playing=is_playing, nudge=press_play, in_window=None, browser_play=None, playlist_play=None) -> list[Tool]:
     from .agent_tools import _obj, _str
 
     def play_music(query: str) -> str:
@@ -197,5 +197,16 @@ def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=res
             result = "The YouTube Music app was not found on this PC, so the song was opened in the web browser instead. " + result
         return f"{note}{label}: {result}"
 
-    return [Tool("play_music", "Play a song in YouTube Music from a spoken request such as 'play Maps by Maroon 5'. If YouTube Music is already open it searches and plays inside that window (when computer control is on); otherwise it opens the song in the app. "
+    def play_playlist(name: str) -> str:
+        """name like 'early morning'."""
+        try:
+            return playlist_play(name)
+        except Exception as e:
+            return f"Could not play the playlist: {e}"
+
+    tools = [Tool("play_music", "Play a song in YouTube Music from a spoken request such as 'play Maps by Maroon 5'. If YouTube Music is already open it searches and plays inside that window (when computer control is on); otherwise it opens the song in the app. "
                  "Use this instead of launch_app, web_search and open_url for playing songs.", _obj({"query": _str}, ["query"]), play_music)]
+    if playlist_play is not None:
+        tools.append(Tool("play_playlist", "Play one of the user's own saved YouTube Music playlists by name, such as 'play my early morning playlist'. Only saved playlists can be played; if none has that name it says so and lists the closest ones, "
+                          "then ask the user which they meant instead of playing a song search.", _obj({"name": _str}, ["name"]), play_playlist))
+    return tools

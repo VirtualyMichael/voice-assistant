@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from .config import config_dir
-from .ytm_browser import YtmError, kind_of, rank, split_request, tokens
+from .ytm_browser import YtmError, kind_of, rank, similarity, split_request, tokens
 
 STALE_S = 24 * 3600
 
@@ -86,6 +86,20 @@ class Library:
             if tied and not artist_q:  # two different songs with this title and no artist given: let the search page decide
                 return None
         return f"{best['title']} by {kind_of(best['sub'])[1]}" if best.get("artist") else best["title"]
+
+    def find_playlist(self, name: str) -> tuple[dict | None, list[str]]:
+        """(the saved playlist this name clearly refers to or None, the closest playlist names). 'Early morning' and 'the early morning playlist'
+        both find 'Early Morning'; a name that is only loosely like one is not accepted."""
+        words = [t for t in tokens(name) if t not in ("the", "my", "playlist", "play", "a")] or tokens(name)
+        probe = " ".join(words)
+        scored = sorted(((similarity(probe, p.get("title", "")), p) for p in (self.data or {}).get("playlists", []) if p.get("id")), key=lambda x: -x[0])
+        closest = [p["title"] for _, p in scored[:5]]
+        exact = [p for _, p in scored if "".join(tokens(p.get("title", ""))) == "".join(words)]
+        if len(exact) == 1:  # "changes mix 2" is the playlist called that, not its shorter near twin
+            return exact[0], closest
+        if scored and scored[0][0] >= 0.85 and (len(scored) == 1 or scored[1][0] < scored[0][0] - 0.05):
+            return scored[0][1], closest
+        return None, closest
 
     def playlist_titles(self) -> list[str]:
         return [p.get("title", "") for p in (self.data or {}).get("playlists", [])]
