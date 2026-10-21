@@ -27,6 +27,7 @@ def no_real_launches(monkeypatch):
 
     class QuietBridge(app_module.YtmBridge):  # tests that build the window must not open real network ports
         def start(self):
+            self.start_called = True
             return False
 
     monkeypatch.setattr("voice_assistant.app.YtmBridge", QuietBridge)

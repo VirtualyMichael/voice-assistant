@@ -179,3 +179,17 @@ def test_settings_page_replaces_the_chat(win):
 def test_jarvis_preset_sets_voice_persona_and_wake_phrase(win):
     win._apply_jarvis_preset()
     assert win.cfg.tts_voice == "bm_george" and win.cfg.persona_jarvis and win.cfg.wake_phrase == "Jarvis"
+
+
+def test_the_window_gives_the_bridge_the_real_ports_and_starts_it(win):
+    from voice_assistant.ytm_bridge import PORTS
+
+    assert win.ytm_bridge.ports == PORTS and win.ytm_bridge.start_called and win.ytm_bridge.extension_id == ""  # a positional slip once made the port list empty
+
+
+def test_open_extension_folder_says_so_when_it_is_missing(win, monkeypatch, tmp_path):
+    import voice_assistant.app as app_module
+
+    monkeypatch.setattr(app_module, "extension_folder", lambda: tmp_path / "nope")
+    win._open_extension_folder()
+    assert any("not found" in lbl.text() for lbl in win.chat._labels)

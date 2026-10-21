@@ -183,3 +183,20 @@ def test_extension_javascript_logic_with_node():
     script = ROOT / "tests" / "extension_test.mjs"
     r = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=60, cwd=str(ROOT))
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_frozen_app_finds_the_extension_next_to_or_inside_the_program(tmp_path, monkeypatch):
+    import sys
+
+    from voice_assistant import ytm_bridge
+
+    exe = tmp_path / "VoiceAssistant.exe"
+    exe.write_text("x")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    (tmp_path / "_internal" / "extension").mkdir(parents=True)
+    (tmp_path / "_internal" / "extension" / "manifest.json").write_text("{}")
+    assert ytm_bridge.extension_folder() == tmp_path / "_internal" / "extension"
+    (tmp_path / "extension").mkdir()
+    (tmp_path / "extension" / "manifest.json").write_text("{}")
+    assert ytm_bridge.extension_folder() == tmp_path / "extension"  # the installer's copy wins when both exist

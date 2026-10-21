@@ -589,7 +589,7 @@ class MainWindow(QMainWindow):
         ytmx.toggled.connect(lambda v: self._set_field("ytm_extension", v))
         self.ytm_ext_status = QLabel("", objectName="small", wordWrap=True)
         ext_open, ext_check = QPushButton("Open the extension folder"), QPushButton("Check connection")
-        ext_open.clicked.connect(lambda: os.startfile(str(extension_folder())))
+        ext_open.clicked.connect(self._open_extension_folder)
         ext_check.clicked.connect(self._check_extension)
         ext_how = QLabel("Install once: open chrome://extensions, turn on Developer mode, click Load unpacked and pick that folder. Its code is plain JavaScript in the repository.",
                          objectName="small", wordWrap=True)
@@ -1091,11 +1091,18 @@ class MainWindow(QMainWindow):
         in_window = (lambda q: task(f"Search for '{q}' and play that song.", "YouTube Music", 12)) if task else None
         if not hasattr(self, "ytm"):
             self.ytm = YtmBrowser()
-            self.ytm_bridge = YtmBridge(self.cfg.ytm_extension_id, on_trust=lambda i: self._set_field("ytm_extension_id", i))
+            self.ytm_bridge = YtmBridge(extension_id=self.cfg.ytm_extension_id, on_trust=lambda i: self._set_field("ytm_extension_id", i))
             if self.cfg.ytm_extension:
                 self.ytm_bridge.start()
         browser_play = make_player(self.ytm_bridge if self.cfg.ytm_extension else None, self.ytm if self.cfg.ytm_browser else None)
         return build_music_tools(self.cfg, self._confirm, list_windows, in_window=in_window, browser_play=browser_play) + ctools
+
+    def _open_extension_folder(self) -> None:
+        folder = extension_folder()
+        if not (folder / "manifest.json").exists():
+            self.chat.add("bubbleNote", f"The extension folder was not found at {folder}. It is in the repository's extension folder on GitHub.")
+            return
+        os.startfile(str(folder))  # noqa: S606 - a folder inside the program's own install
 
     def _check_extension(self) -> None:
         b = getattr(self, "ytm_bridge", None)

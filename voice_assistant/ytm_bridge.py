@@ -28,8 +28,13 @@ def extension_folder() -> Path:
     """Where the extension's files are: next to the installed program, or in the repository when running from source."""
     import sys
 
-    base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
-    return base / "extension"
+    if not getattr(sys, "frozen", False):
+        return Path(__file__).resolve().parents[1] / "extension"
+    here = Path(sys.executable).parent
+    for candidate in (here / "extension", here / "_internal" / "extension", Path(getattr(sys, "_MEIPASS", here)) / "extension"):
+        if (candidate / "manifest.json").exists():
+            return candidate
+    return here / "extension"
 
 
 class YtmBridge:
