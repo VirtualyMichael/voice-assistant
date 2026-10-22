@@ -28,37 +28,96 @@ def _words(text: str) -> list[str]:
 
 
 class AvatarNotes:
-    """Per-avatar entries kept in one small JSON file, keyed by the avatar id VRChat reports."""
+    """One small JSON file per avatar in a folder, so each can be opened and edited by hand: {'id', 'name', 'entries': [...], 'switches': {...}, 'imported_from'}.
+    The avatar id VRChat reports is the key (it matches the blueprint id shown in Unity's Pipeline Manager); the name in the file name is only for reading.
+    The files are read fresh every time, so a hand edit applies at once; a file that no longer parses is never overwritten (it is copied to .broken first)."""
 
-    def __init__(self, path: Path):
-        self.path = Path(path)
+    def __init__(self, folder: Path, legacy_file: Path | None = None):
+        self.folder = Path(folder)
         self._lock = threading.Lock()
+        if legacy_file is not None:
+            self._migrate(Path(legacy_file))
 
-    def _load(self) -> dict:
+    @staticmethod
+    def _safe(name: str) -> str:
+        return re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "", name).strip(" .")[:60] or "avatar"
+
+    def path_for(self, avatar_id: str) -> Path | None:
+        """The file already kept for this avatar id, or None."""
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
+            for f in sorted(self.folder.glob("*.json")):
+                if f"[{avatar_id}]" in f.name:
+                    return f
+        except OSError:
+            pass
+        return None
+
+    def files(self) -> list[tuple[str, Path]]:
+        """(avatar name, file) for every avatar with notes."""
+        out = []
+        try:
+            for f in sorted(self.folder.glob("*.json")):
+                try:
+                    out.append((str(json.loads(f.read_text(encoding="utf-8")).get("name") or f.stem), f))
+                except (OSError, ValueError):
+                    out.append((f.stem + " (not valid JSON)", f))
+        except OSError:
+            pass
+        return out
+
+    def _migrate(self, legacy: Path) -> None:
+        """Older versions kept every avatar in one file: split it into one file per avatar, once."""
+        if not legacy.exists():
+            return
+        try:
+            data = json.loads(legacy.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return {}
+            return
+        if isinstance(data, dict):
+            for aid, rec in data.items():
+                if isinstance(rec, dict) and self.path_for(aid) is None:
+                    self._write(aid, rec)
+        try:
+            legacy.rename(legacy.with_suffix(".json.migrated"))
+        except OSError:
+            pass
+
+    def _write(self, avatar_id: str, rec: dict) -> None:
+        path = self.path_for(avatar_id) or self.folder / f"{self._safe(rec.get('name') or 'avatar')} [{avatar_id}].json"
+        self.folder.mkdir(parents=True, exist_ok=True)
+        rec = {"id": avatar_id, **{k: v for k, v in rec.items() if k != "id"}}
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rec, indent=1, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
 
     def get(self, avatar_id: str) -> dict:
-        return self._load().get(avatar_id) or {"name": "", "entries": []}
+        p = self.path_for(avatar_id)
+        if p is not None:
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+            except (OSError, ValueError):
+                pass
+        return {"name": "", "entries": []}
 
     def entries(self, avatar_id: str) -> list[dict]:
-        return list(self.get(avatar_id).get("entries") or [])
+        return [e for e in (self.get(avatar_id).get("entries") or []) if isinstance(e, dict) and e.get("label") and isinstance(e.get("params"), list)]
 
     def update(self, avatar_id: str, name: str, fn) -> dict:
-        """fn(record) edits the avatar's record in place; the file is rewritten whole (a temporary file, then a rename, so a crash cannot half-write it)."""
+        """fn(record) edits the avatar's record in place; written through a temporary file and a rename."""
         with self._lock:
-            data = self._load()
-            rec = data.get(avatar_id) or {"name": name, "entries": []}
+            p = self.path_for(avatar_id)
+            if p is not None:
+                try:
+                    json.loads(p.read_text(encoding="utf-8"))
+                except ValueError:  # edited by hand into something that is not JSON: keep it, do not overwrite it
+                    p.with_suffix(".broken").write_bytes(p.read_bytes())
+            rec = self.get(avatar_id)
             rec["name"] = name or rec.get("name", "")
+            rec.setdefault("entries", [])
             fn(rec)
-            data[avatar_id] = rec
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, self.path)
+            self._write(avatar_id, rec)
             return rec
 
     def remember(self, avatar_id: str, name: str, label: str, params: list[str], source: str = "taught") -> None:
@@ -78,21 +137,36 @@ class AvatarNotes:
         return removed[0]
 
     def switch(self, avatar_id: str) -> dict:
-        """How individual switches behave on this avatar: {param: {'inverted': bool, 'note': str}}."""
-        return dict(self.get(avatar_id).get("switches") or {})
+        """How individual switches behave on this avatar: {param: {'inverted': bool, 'note': str, 'source': 'taught'|'unity'}}."""
+        sw = self.get(avatar_id).get("switches")
+        return {k: v for k, v in sw.items() if isinstance(v, dict)} if isinstance(sw, dict) else {}
 
-    def note_switches(self, avatar_id: str, name: str, params: list[str], inverted: bool, note: str) -> None:
+    def note_switches(self, avatar_id: str, name: str, params: list[str], inverted: bool, note: str, source: str = "taught") -> None:
         def edit(rec):
             sw = rec.setdefault("switches", {})
             for p in params:
-                sw[p] = {"inverted": bool(inverted), "note": note}
+                sw[p] = {"inverted": bool(inverted), "note": note, "source": source}
         self.update(avatar_id, name, edit)
 
-    def replace_imported(self, avatar_id: str, name: str, entries: list[dict], source_folder: str) -> None:
+    def replace_imported(self, avatar_id: str, name: str, entries: list[dict], source_folder: str, polarity: dict[str, dict] | None = None) -> list[str]:
+        """Store a Unity import: its menu entries, and which switches its animations say work backwards. Things the user taught are never overwritten;
+        returns the switches where the Unity files disagree with what was taught."""
+        conflicts: list[str] = []
+
         def edit(rec):
             rec["entries"] = [e for e in rec["entries"] if e.get("source") != "unity"] + entries
             rec["imported_from"] = source_folder
+            sw = rec.setdefault("switches", {})
+            for p, info in (polarity or {}).items():
+                old = sw.get(p)
+                if old and old.get("source") != "unity" and bool(old.get("inverted")) != bool(info["inverted"]):
+                    conflicts.append(f"{p}: you taught {'backwards' if old.get('inverted') else 'normal'}, Unity says {'backwards' if info['inverted'] else 'normal'} ({info['why']})")
+                    continue
+                if old and old.get("source") != "unity":
+                    continue
+                sw[p] = {"inverted": bool(info["inverted"]), "note": info["why"], "source": "unity"}
         self.update(avatar_id, name, edit)
+        return conflicts
 
 
 def match_entries(entries: list[dict], query: str) -> tuple[dict | None, list[str]]:
@@ -229,13 +303,17 @@ def flatten(menus: dict, root: str, depth: int = 0, seen: tuple = (), prefix: st
         path = f"{prefix}{c['name']}" if c["name"] else prefix.rstrip("/")
         if c["type"] == MENU_SUB and c["sub"]:
             inner = flatten(menus, c["sub"], depth + 1, seen + (root,), path + "/")
-            params, values = [], {}
+            params, values, seen_values = [], {}, {}
             for e in inner:
                 if e["kind"] in ("toggle", "button"):
                     for q in e["params"]:
                         if q not in params:
                             params.append(q)
                         values.update(e["values"])
+                        seen_values.setdefault(q, set()).add(e["values"].get(q))
+            choosers = {q for q, v in seen_values.items() if len(v) > 1}  # a parameter several items pick a number for (hair colour 0-4) is a choice, not something to switch with the folder
+            params = [q for q in params if q not in choosers]
+            values = {q: v for q, v in values.items() if q not in choosers}
             out.append({"label": path, "params": params, "values": values, "kind": "folder", "source": "unity"})
             out += inner
         elif c["type"] in (MENU_TOGGLE, MENU_BUTTON) and c["param"]:

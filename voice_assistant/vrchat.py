@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .tools import Tool
+from .unity_fx import analyze_project, project_root
 from .vrchat_menu import AvatarNotes, import_project, match_entries
 from .ytm_browser import similarity
 
@@ -73,7 +74,7 @@ def words(name: str) -> str:
 
 
 class VRChat:
-    def __init__(self, cfg, send=None, config_root: Path | None = None, clock=time.time, sleep=time.sleep, get=None, ports=None, notes_path: Path | None = None):
+    def __init__(self, cfg, send=None, config_root: Path | None = None, clock=time.time, sleep=time.sleep, get=None, ports=None, notes_dir: Path | None = None):
         """get(url) -> parsed JSON from VRChat's OSCQuery web page (raises when unreachable); ports() -> the TCP ports VRChat is listening on (tests replace both)."""
         self.cfg, self.clock, self.sleep = cfg, clock, sleep
         self._get = get or self._http_get
@@ -81,11 +82,12 @@ class VRChat:
         self._query_port: int | None = None
         self._dest: tuple[str, int] | None = None
         self.root = config_root if config_root is not None else default_config_root()
-        if notes_path is None:
+        if notes_dir is None:
             from .config import config_dir
 
-            notes_path = (config_dir() if config_root is None else self.root.parent) / "vrchat_avatars.json"
-        self.notes = AvatarNotes(notes_path)  # what each avatar's menu calls things, per avatar id
+            base = config_dir() if config_root is None else self.root.parent
+            notes_dir = base / "avatars"
+        self.notes = AvatarNotes(notes_dir, legacy_file=notes_dir.parent / "vrchat_avatars.json")  # one editable file per avatar id: what its menu calls things, which switches work backwards
         self._send = send or self._udp_send
         self._sock: socket.socket | None = None
         self._last_chat = 0.0
@@ -589,7 +591,7 @@ class VRChat:
         menu = [e["label"] for e in entries if e.get("source") == "unity" and e["kind"] == "folder"]
         out = f"{live['name'] or 'This avatar'}: {len(taught)} taught name(s)" + (f" ({'; '.join(taught[:30])})" if taught else "")
         out += f"; menu imported from {rec['imported_from']} with folders {', '.join(menu[:20])}" if rec.get("imported_from") else "; no menu imported"
-        back = [n for n, b in (rec.get("switches") or {}).items() if b.get("inverted")]
+        back = [n for n, b in (rec.get("switches") or {}).items() if isinstance(b, dict) and b.get("inverted")]
         out += f"; {len(back)} switch(es) work backwards (on hides the item): {', '.join(back[:40])}" if back else "; no backwards switches noted"
         return out + f". {len(loose)} switch(es) have no menu name yet: {', '.join(loose[:60])}{'...' if len(loose) > 60 else ''}."
 
@@ -652,15 +654,31 @@ class VRChat:
         path = self.resolve_path(str(folder)) or Path(str(folder).strip().strip('"'))
         if path.is_file():  # a menu file was attached: its neighbours (the sub-menus and .meta files) are in the same folder
             path = path.parent
+        menu_error = ""
         try:
             entries, note = import_project(path, {n for n in live["params"]})
         except ValueError as e:
-            return f"Error: {e}"
+            entries, note, menu_error = [], "", str(e)
         except OSError as e:
             return f"Error: could not read that folder ({e})."
-        self.notes.replace_imported(live["id"], live["name"], entries, str(path))
+        writable = {n for n, p in live["params"].items() if p["writable"]}
+        try:
+            polarity = analyze_project(path, writable)
+        except Exception:
+            polarity = {}
+        if not entries and not polarity:
+            return f"Error: {menu_error or 'nothing usable found there.'}"
+        conflicts = self.notes.replace_imported(live["id"], live["name"], entries, str(path), polarity)
         folders = [e["label"] for e in entries if e["kind"] == "folder"]
-        return f"Imported {live['name'] or 'the avatar'}'s menu: {note}. Folders: {', '.join(folders[:25]) or 'none'}. Menu names now work by voice for this avatar."
+        back = sorted(n for n, i in polarity.items() if i["inverted"])
+        who = live["name"] or "the avatar"
+        out = (f"Imported {who}'s menu: {note}. Folders: {', '.join(folders[:25]) or 'none'}. Menu names now work by voice for this avatar. " if entries
+               else f"No menu was read ({menu_error}). ")
+        out += (f"Its animations say {len(back)} switch(es) work backwards (on hides the item): {', '.join(back)}; {len(polarity) - len(back)} others work normally. " if polarity else
+                "No animator controller (FX) was found there, so which switches work backwards is not known: teach it with vrchat_switch_note, or attach the project folder. ")
+        if conflicts:
+            out += "The Unity files disagree with what was taught for: " + "; ".join(conflicts) + ". What was taught is kept: ask the user which is right."
+        return out
 
     # ---- game controls -------------------------------------------------------------------
     def press(self, action: str) -> str:

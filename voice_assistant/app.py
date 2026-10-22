@@ -45,6 +45,7 @@ from .diagnostics import CallLog, build_diagnostic_tools
 from .ducking import Ducker
 from .interpreter import Interpreter, build_interpreter_tools
 from .vrchat import VRCHAT_TOOL_NAMES, VRChat, build_vrchat_tools
+from .vrchat_menu import AvatarNotes
 from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_for, needs_key, save_key, set_model
 from .session import Session, SessionEvents
 from .speaker import Speaker
@@ -612,6 +613,20 @@ class MainWindow(QMainWindow):
         vrc.toggled.connect(lambda v: self._set_home("vrchat_enabled", v))
         form.addRow(vrc)
         form.addRow(QLabel("Needs OSC switched on in VRChat: Action Menu > Options > OSC > Enabled. Setup and what you can say: docs/VRCHAT.md in the repository.", objectName="small", wordWrap=True))
+        form.addRow(QLabel("Avatar memory: what each avatar's menu names mean and which switches work backwards, one file per avatar (matched by the avatar id VRChat reports). Open one to edit it by hand; it applies at once.", objectName="small", wordWrap=True))
+        self.avatar_box = QComboBox()
+        self.avatar_box.setToolTip("Avatars the assistant has notes for")
+        avatar_edit = QPushButton("Edit file")
+        avatar_edit.setToolTip("Open this avatar's notes (a JSON file) in your editor")
+        avatar_folder, avatar_refresh = QPushButton("Open folder"), QPushButton("Refresh")
+        row = QHBoxLayout()
+        for w in (self.avatar_box, avatar_edit, avatar_folder, avatar_refresh):
+            row.addWidget(w)
+        form.addRow(row)
+        avatar_edit.clicked.connect(self._edit_avatar_file)
+        avatar_folder.clicked.connect(self._open_avatar_folder)
+        avatar_refresh.clicked.connect(self._refresh_avatar_files)
+        self._refresh_avatar_files()
         form.use("Skills")
         form.addRow(QLabel("Skills are folders with a SKILL.md (the Bionic/Claude format). Add a skill folder, or a folder of skills.", objectName="small", wordWrap=True))
         self.skills_list = QListWidget()
@@ -988,6 +1003,28 @@ class MainWindow(QMainWindow):
             if hasattr(self, "ask_apps"):
                 self.ask_apps.setChecked(False)
         holder.event.set()
+
+    # ---- avatar memory files ---------------------------------------------------------
+    def _refresh_avatar_files(self) -> None:
+        self.avatar_box.clear()
+        for name, path in AvatarNotes(config_dir() / "avatars").files():
+            self.avatar_box.addItem(name, str(path))
+        if not self.avatar_box.count():
+            self.avatar_box.addItem("(nothing saved yet)", "")
+
+    def _edit_avatar_file(self) -> None:
+        path = self.avatar_box.currentData()
+        if not path:
+            return
+        try:
+            os.startfile(path, "edit")  # noqa: S606  the user's own editor for .json, when Windows has one
+        except OSError:
+            os.startfile(path)  # noqa: S606
+
+    def _open_avatar_folder(self) -> None:
+        folder = config_dir() / "avatars"
+        folder.mkdir(parents=True, exist_ok=True)
+        os.startfile(folder)  # noqa: S606
 
     # ---- attachments -----------------------------------------------------------------
     def dragEnterEvent(self, e) -> None:

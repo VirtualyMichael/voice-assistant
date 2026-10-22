@@ -206,7 +206,7 @@ def test_taught_names_survive_a_reimport_and_win_over_imported_ones(tmp_path):
     vr, vrc, sent = worn(tmp_path)
     vr.remember("Animal Parts", "CatEarTwitch")
     vr.import_menu(str(project(tmp_path)))
-    saved = json.loads((tmp_path / "vrchat_avatars.json").read_text(encoding="utf-8"))["avtr_worn"]
+    saved = json.loads((next((tmp_path / "avatars").glob("*[[]avtr_worn[]].json"))).read_text(encoding="utf-8"))
     assert saved["entries"][0]["source"] == "taught" and saved["imported_from"]
     vr.set_param("animal parts", "on")
     assert vrc.params["CatEarTwitch"][1] == 1 and vrc.params["wolfToggle"][1] is False  # what the user taught wins
