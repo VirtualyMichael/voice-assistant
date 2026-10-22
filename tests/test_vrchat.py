@@ -217,7 +217,7 @@ def test_buttons_are_pressed_then_released(tmp_path):
 def test_tools_exist_only_when_vrchat_is_switched_on():
     assert build_vrchat_tools(Config()) == []
     names = [t.name for t in build_vrchat_tools(Config(vrchat_enabled=True))]
-    assert names == ["vrchat_say", "vrchat_set", "vrchat_parameters", "vrchat_press"]
+    assert names == ["vrchat_say", "vrchat_set", "vrchat_set_group", "vrchat_parameters", "vrchat_press"]
     assert words("HatToggle") == "hat toggle" and words("Wing_Size2") == "wing size2" and "Voice" in BUILT_IN
 
 
@@ -234,3 +234,56 @@ def test_it_finds_the_oscquery_port_from_the_log_when_processes_cannot_be_listed
 
     vr._ports = lambda: mod.VRChat._vrchat_ports(vr)
     assert vr.live()["id"] == "avtr_worn" and vr._query_port == 53232
+
+
+STYLE = {"Stylization/Clothing/Shirt": ("T", False, 3), "Stylization/Clothing/Pants": ("T", True, 3), "Stylization/Clothing/Shoes": ("T", False, 3),
+         "Stylization/Hair/Bangs": ("T", False, 3), "Clothing/Shirt": ("T", True, 3), "Stylization/Clothing/Fit": ("f", 0.3, 3), "hatToggle": ("T", False, 3), "MuteSelf": ("T", False, 1)}
+
+
+def test_a_whole_folder_of_switches_is_set_at_once_and_checked(tmp_path):
+    vrc = FakeVRChat("avtr_worn", STYLE)
+    vr, sent, _ = make(tmp_path, vrc=vrc)
+    out = vr.set_group("Stylization/Clothing", "off")
+    assert "Set 3 of 3 switches" in out and "VRChat confirms every one" in out
+    assert [vrc.params[k][1] for k in ("Stylization/Clothing/Shirt", "Stylization/Clothing/Pants", "Stylization/Clothing/Shoes")] == [False, False, False]
+    assert vrc.params["Stylization/Hair/Bangs"][1] is False and vrc.params["Clothing/Shirt"][1] is True and vrc.params["hatToggle"][1] is False  # nothing outside the folder moved
+    assert vrc.params["Stylization/Clothing/Fit"][1] == 0.3  # a slider in the folder is not an on/off switch: left alone
+    assert len(sent) == 3
+    out = vr.set_group("stylization clothing", "on")  # spoken without the slash
+    assert "Set 3 of 3" in out and all(vrc.params[k][1] is True for k in ("Stylization/Clothing/Shirt", "Stylization/Clothing/Pants", "Stylization/Clothing/Shoes"))
+
+
+def test_toggling_a_folder_flips_each_switch_from_its_own_state(tmp_path):
+    vrc = FakeVRChat("avtr_worn", STYLE)
+    vr, sent, _ = make(tmp_path, vrc=vrc)
+    out = vr.set_group("Stylization/Clothing", "toggle")  # Shirt off->on, Pants on->off, Shoes off->on
+    assert (vrc.params["Stylization/Clothing/Shirt"][1], vrc.params["Stylization/Clothing/Pants"][1], vrc.params["Stylization/Clothing/Shoes"][1]) == (True, False, True)
+    assert "Switched 3 of 3" in out and "2 on, 1 off" in out
+
+
+def test_group_changes_report_what_did_not_take_and_unknown_groups_list_the_real_folders(tmp_path):
+    vrc = FakeVRChat("avtr_worn", STYLE)
+    vr, sent, _ = make(tmp_path, vrc=vrc)
+    vrc.deaf = True
+    out = vr.set_group("Stylization/Clothing", "on")
+    assert "Set 1 of 3" in out and "did not change 2" in out and "Shirt" in out and "VRChat confirms" not in out  # Pants was already on, so only the other two failed to change
+    vrc.deaf = False
+    out = vr.set_group("Stylization/Weapons", "on")
+    assert "No folder of switches called" in out and "Stylization/Clothing" in out and "Stylization/Hair" in out
+    sent.clear()
+    assert vr.set_group("hair", "off").startswith("Set 1 of 1") and "used the folders called that" in vr.set_group("hair", "off")  # no name starts with 'hair': the folder named Hair is used
+    assert vr.set_group("Stylization/Clothing", "purple").startswith("Error")
+    down, _, _ = make(tmp_path)
+    assert "needs VRChat to be running" in down.set_group("Stylization/Clothing", "off")
+
+
+def test_the_group_tool_is_offered():
+    assert "vrchat_set_group" in [t.name for t in build_vrchat_tools(Config(vrchat_enabled=True))]
+
+
+def test_filler_words_like_color_and_toggles_are_ignored_when_the_exact_words_match_nothing(tmp_path):
+    vrc = FakeVRChat("avtr_worn", STYLE)
+    vr, sent, _ = make(tmp_path, vrc=vrc)
+    out = vr.set_group("stylization clothing color toggles", "off")
+    assert out.startswith("Set 3 of 3") and "filler words removed" in out and vrc.params["Stylization/Clothing/Pants"][1] is False
+    assert vr.set_group("Stylization/Clothing", "on").startswith("Set 3 of 3") and "filler" not in vr.set_group("Stylization/Clothing", "on")  # an exact folder name needs no trimming

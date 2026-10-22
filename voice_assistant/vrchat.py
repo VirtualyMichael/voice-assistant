@@ -23,6 +23,7 @@ CHATBOX_MAX = 144  # VRChat's limit for one chatbox message
 CHATBOX_GAP_S = 1.6  # VRChat throttles the chatbox when it is sent too often, so messages are spaced out
 BUTTONS = {"mute": "Voice", "unmute": "Voice", "toggle mute": "Voice", "voice": "Voice", "jump": "Jump"}
 # Parameters VRChat itself fills in; they are not switches the user can flip.
+GROUP_FILLER = {"all", "the", "my", "every", "toggle", "toggles", "switch", "switches", "color", "colors", "colour", "colours", "folder", "group", "of"}
 BUILT_IN = {"IsLocal", "Viseme", "Voice", "GestureLeft", "GestureRight", "GestureLeftWeight", "GestureRightWeight", "AngularY", "VelocityX", "VelocityY", "VelocityZ",
             "VelocityMagnitude", "Upright", "Grounded", "Seated", "AFK", "TrackingType", "VRMode", "MuteSelf", "InStation", "Earmuffs", "IsOnFriendsList", "AvatarVersion",
             "ScaleModified", "ScaleFactor", "ScaleFactorInverse", "EyeHeightAsMeters", "EyeHeightAsPercent", "IsAnimatorEnabled", "PreviewMode", "VisemeLevel"}
@@ -291,6 +292,75 @@ class VRChat:
             return None, f"Error: '{val}' is not on, off, toggle or a number."
         return (bool(num) if kind == "Bool" else int(num) if kind == "Int" else num), ""
 
+    def group_members(self, live: dict, group: str) -> tuple[list[dict], str]:
+        """The worn avatar's on/off switches inside a folder of switches ('Stylization/Clothing' = every switch named Stylization/Clothing/...), and how the group matched.
+        The folder is matched from the start of the name; only if nothing starts that way, a folder of that name anywhere in the path counts."""
+        want = words(group).split()
+        if not want:
+            return [], ""
+        members, how = self._members(live, want)
+        if not members:  # 'stylization clothing color toggles' -> the folder 'Stylization/Clothing': filler words may be dropped when the exact words match nothing
+            trimmed = [w for w in want if w not in GROUP_FILLER]
+            if trimmed and trimmed != want:
+                members, how = self._members(live, trimmed)
+                how = how + "-trimmed" if members else how
+        return members, how
+
+    def _members(self, live: dict, want: list[str]) -> tuple[list[dict], str]:
+        switches = [p for p in live["params"].values() if p["writable"] and p["type"] == "Bool" and "/" in p["name"]]
+        starts = [p for p in switches if words(p["name"]).split()[:len(want)] == want and len(words(p["name"]).split()) > len(want)]
+        if starts:
+            return starts, "start"
+        inside = []
+        for p in switches:
+            folders = [words(seg).split() for seg in p["name"].split("/")[:-1]]  # the name without its last part is the folder path
+            flat = [w for f in folders for w in f]
+            if any(flat[i:i + len(want)] == want for i in range(len(flat))):
+                inside.append(p)
+        return inside, "inside"
+
+    def set_group(self, group: str, value: str = "toggle") -> str:
+        """Set every on/off switch in a folder at once ('Stylization/Clothing'), then check what VRChat reports for each."""
+        val = str(value).strip().lower()
+        live = self.live()
+        if live is None:
+            return "Setting a whole group needs VRChat to be running with OSC enabled, so it can list the avatar's switches and check the result. Start VRChat and enable OSC (Action Menu > Options > OSC > Enabled)."
+        who = f"your current avatar{' (' + live['name'] + ')' if live['name'] else ''}"
+        members, how = self.group_members(live, group)
+        if not members:
+            folders = sorted({"/".join(p["name"].split("/")[:-1]) for p in live["params"].values() if p["writable"] and p["type"] == "Bool" and "/" in p["name"]})
+            return f"No folder of switches called '{group}' on {who}. Its folders are: {', '.join(folders[:30]) or 'none (its switches are not in folders)'}."
+        if len(members) > 120:
+            return f"'{group}' holds {len(members)} switches, which is too many to change at once. Name a smaller folder."
+        plan = []
+        for p in members:
+            sent, err = self._target(p, val, p["value"])
+            if err:
+                return err
+            plan.append((p, sent))
+        for p, sent in plan:
+            self._send(osc_message("/avatar/parameters/" + p["name"], sent))
+            self.state[p["name"]] = sent
+            self.sleep(0.03)  # a small gap so none of the burst is dropped
+        later: dict = {}
+        for _ in range(8):
+            self.sleep(0.25)
+            fresh = self.live()
+            later = fresh["params"] if fresh else {}
+            if later and all(later.get(p["name"], {}).get("value") == sent for p, sent in plan):
+                break
+        failed = [p["name"] for p, sent in plan if later.get(p["name"], {}).get("value") != sent]
+        ons = sum(1 for p, sent in plan if sent)
+        what = "toggled each (now " + f"{ons} on, {len(plan) - ons} off)" if val == "toggle" else ("on" if plan[0][1] else "off")
+        base = f"{'Set' if val != 'toggle' else 'Switched'} {len(plan) - len(failed)} of {len(plan)} switches in '{group}' on {who}: {what}."
+        if how == "inside":
+            base += " (No switch name starts with that, so I used the folders called that.)"
+        elif how.endswith("-trimmed"):
+            base += f" (Nothing is called exactly '{group}', so I read it as the folder with the filler words removed.)"
+        if failed:
+            return base + f" VRChat did not change {len(failed)}: {', '.join(failed[:8])}{'...' if len(failed) > 8 else ''}. Check that OSC is enabled, or the avatar may drive those itself."
+        return base + " VRChat confirms every one."
+
     def listing(self, query: str = "") -> str:
         live = self.live()
         if live is not None:
@@ -330,7 +400,7 @@ class VRChat:
         return f"Pressed {button} in VRChat."
 
 
-VRCHAT_TOOL_NAMES = ("vrchat_say", "vrchat_set", "vrchat_parameters", "vrchat_press")
+VRCHAT_TOOL_NAMES = ("vrchat_say", "vrchat_set", "vrchat_set_group", "vrchat_parameters", "vrchat_press")
 
 
 def build_vrchat_tools(cfg, vr: VRChat | None = None) -> list[Tool]:
@@ -343,6 +413,8 @@ def build_vrchat_tools(cfg, vr: VRChat | None = None) -> list[Tool]:
         Tool("vrchat_say", "Type a message in the user's VRChat chatbox (other players see it; 144 characters). Use it only for words the user asked you to say there.", _obj({"text": _str}, ["text"]), vr.say),
         Tool("vrchat_set", "Switch a VRChat avatar parameter: a toggle, outfit piece, emote or slider, by the name the user says ('hat', 'wings', 'dance'). value is on, off, toggle or a number.",
              _obj({"name": _str, "value": _str}, ["name"]), vr.set_param),
+        Tool("vrchat_set_group", "Switch EVERY on/off switch in a folder of the worn avatar's switches in one go, e.g. group 'Stylization/Clothing' (spoken 'stylization clothing') with value on, off, or toggle (flips each one from its own state). "
+             "If the user names colours such as white or black, you do not know which one is 'on': use vrchat_parameters to look, or ask once.", _obj({"group": _str, "value": _str}, ["group", "value"]), vr.set_group),
         Tool("vrchat_parameters", "List the user's avatar parameter names (optionally only those containing a word).", _obj({"query": _str}), vr.listing),
         Tool("vrchat_press", "Press a VRChat control: 'mute' (toggles the microphone) or 'jump'.", _obj({"action": _str}, ["action"]), vr.press),
     ]

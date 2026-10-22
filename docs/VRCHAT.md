@@ -23,6 +23,7 @@ That is all. VRChat listens on port 9000 by default and the assistant sends to i
 | "Toggle my wings" | Flips it (see the note on toggles below). |
 | "Set wing size to half" | Sets a slider parameter (0 to 1). |
 | "Set my outfit to 2" | Sets a number parameter. |
+| "Turn off all the Stylization Clothing toggles" | Switches **every on/off switch in a folder** at once, then checks each one with VRChat. "Toggle all..." flips each switch from its own state. |
 | "What can I toggle?" | Lists the avatar parameters it found. |
 | "Mute me in VRChat" | Presses VRChat's mute toggle (it flips your mic; it cannot tell you which state you are in now). |
 | "Jump" | Presses the jump button (works only in worlds that allow jumping). |
@@ -43,6 +44,10 @@ An avatar's toggles, outfits and emotes are **parameters**: named values like `H
 You can see the same list by asking "what can I toggle?" It shows every switch on your current avatar with its current value.
 
 **If VRChat cannot be asked** (VRChat is not running, or OSC is not enabled), it falls back to the avatar files VRChat saved on your PC (`%USERPROFILE%\AppData\LocalLow\VRChat\VRChat\OSC\<your user id>\Avatars\<avatar id>.json`). Those cover every avatar you have worn with OSC on, not only the current one, so in that mode a name may belong to another avatar. The assistant says so and marks the result "Not verified".
+
+**Folders of switches.** Avatar tools put switches in folders by naming them like `Stylization/Clothing/Shirt`. You can change a whole folder in one request: "turn off all the Stylization Clothing toggles" or "toggle all the clothing toggles". The folder is matched from the start of the name (so `Stylization/Clothing` means everything named `Stylization/Clothing/...`; only if nothing starts that way does it look for a folder of that name elsewhere). Only on/off switches are changed (sliders and numbers in the folder are left alone), and the reply says how many VRChat confirmed and which, if any, did not change. If your avatar has no such folder, the reply lists the folders it does have. "Toggle" flips each switch from its own current state; "on" or "off" sets them all the same.
+
+**Colours like white and black.** The assistant does not know which of "white" or "black" a switch means: that depends on how the avatar was built. Say on or off (for example "turn all the Stylization Clothing toggles off"), and if you do not know which is which, try one and then say "toggle all the Stylization Clothing toggles" to flip them.
 
 **Names with slashes** such as `Clothing/Shirt` or `Stylization/Clothing/Shirt` are normal: avatar tools build them from menu folders. Say the words ("clothing shirt") and the assistant matches them.
 
