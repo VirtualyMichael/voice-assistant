@@ -1,7 +1,9 @@
 """VRChat over OSC: type in the chatbox, switch avatar parameters (toggles, outfits, emotes) and press a few game controls by voice.
 
-OSC is VRChat's own, documented way for other programs to talk to the game: small UDP messages sent to 127.0.0.1:9000 on this PC. Nothing leaves the PC.
-VRChat never answers (it does not confirm a message arrived), so the results say what was sent and what could not be checked. See docs/VRCHAT.md."""
+OSC is VRChat's own, documented way for other programs to talk to the game: small UDP messages sent to this PC's VRChat (127.0.0.1, port 9000 by default). Nothing leaves the PC.
+VRChat also runs an OSCQuery service (a small local web page) that says which avatar is worn, which parameters it has and what their values are right now. This module asks it,
+so it only touches parameters the worn avatar really has and can check that a change took effect. Without OSCQuery it falls back to the avatar files VRChat saved, and says so.
+See docs/VRCHAT.md."""
 from __future__ import annotations
 
 import json
@@ -12,6 +14,7 @@ import struct
 import threading
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from .tools import Tool
 from .ytm_browser import similarity
@@ -59,19 +62,115 @@ def words(name: str) -> str:
 
 
 class VRChat:
-    def __init__(self, cfg, send=None, config_root: Path | None = None, clock=time.time, sleep=time.sleep):
+    def __init__(self, cfg, send=None, config_root: Path | None = None, clock=time.time, sleep=time.sleep, get=None, ports=None):
+        """get(url) -> parsed JSON from VRChat's OSCQuery web page (raises when unreachable); ports() -> the TCP ports VRChat is listening on (tests replace both)."""
         self.cfg, self.clock, self.sleep = cfg, clock, sleep
+        self._get = get or self._http_get
+        self._ports = ports or self._vrchat_ports
+        self._query_port: int | None = None
+        self._dest: tuple[str, int] | None = None
         self.root = config_root if config_root is not None else default_config_root()
         self._send = send or self._udp_send
         self._sock: socket.socket | None = None
         self._last_chat = 0.0
         self._lock = threading.Lock()
-        self.state: dict[str, object] = {}  # what this program last set (VRChat is never asked, so a toggle flips from this)
+        self.state: dict[str, object] = {}  # what this program last set (used only when VRChat cannot be asked)
 
     def _udp_send(self, data: bytes) -> None:
         if self._sock is None:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.sendto(data, (self.cfg.vrchat_host, int(self.cfg.vrchat_port)))
+        self._sock.sendto(data, self._dest or (self.cfg.vrchat_host, int(self.cfg.vrchat_port)))
+
+    # ---- OSCQuery: what VRChat says about itself -----------------------------------------------
+    @staticmethod
+    def _http_get(url: str):
+        import httpx
+
+        r = httpx.get(url, timeout=2.0)
+        r.raise_for_status()
+        return r.json()
+
+    def _vrchat_ports(self) -> list[int]:
+        """TCP ports VRChat listens on (one of them is the OSCQuery page); the newest log's 'OSCQuery on <port>' line is the fallback."""
+        found: list[int] = []
+        try:
+            import psutil
+
+            for p in psutil.process_iter(["name"]):
+                if (p.info.get("name") or "").lower().startswith("vrchat"):
+                    conns = getattr(p, "net_connections", None) or p.connections
+                    found += [c.laddr.port for c in conns(kind="tcp") if c.status == "LISTEN"]
+        except Exception:
+            pass
+        try:
+            logs = sorted(self.root.parent.glob("output_log*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+            if logs:
+                m = re.findall(r"OSCQuery on (\d+)", logs[0].read_text(encoding="utf-8", errors="ignore"))
+                found += [int(x) for x in m[-1:]]
+        except Exception:
+            pass
+        return list(dict.fromkeys(found))
+
+    def _base(self) -> str | None:
+        """The OSCQuery address of the running VRChat, or None (VRChat is not running, or OSC is off). Also learns where VRChat wants OSC messages sent."""
+        for port in ([self._query_port] if self._query_port else []) + [p for p in self._ports() if p != self._query_port]:
+            try:
+                info = self._get(f"http://127.0.0.1:{port}/?HOST_INFO")
+            except Exception:
+                continue
+            if isinstance(info, dict) and "OSC_PORT" in info:
+                self._query_port = port
+                self._dest = (str(info.get("OSC_IP") or "127.0.0.1"), int(info["OSC_PORT"]))
+                return f"http://127.0.0.1:{port}"
+        self._query_port = None
+        return None
+
+    def live(self) -> dict | None:
+        """The worn avatar as VRChat reports it right now: {'id', 'name', 'params': {name: {'name', 'type', 'value', 'writable'}}} or None when VRChat cannot be asked."""
+        base = self._base()
+        if base is None:
+            return None
+        try:
+            tree = self._get(base + "/avatar")
+        except Exception:
+            return None
+        contents = tree.get("CONTENTS") or {}
+        ident = ((contents.get("change") or {}).get("VALUE") or [""])[0]
+        params: dict[str, dict] = {}
+
+        def walk(node: dict) -> None:
+            if "TYPE" in node and str(node.get("FULL_PATH", "")).startswith("/avatar/parameters/"):
+                name = node["FULL_PATH"][len("/avatar/parameters/"):]
+                kind = {"T": "Bool", "F": "Bool", "i": "Int", "f": "Float"}.get(str(node["TYPE"]))
+                if kind and name not in BUILT_IN:
+                    v = (node.get("VALUE") or [None])[0]
+                    params[name] = {"name": name, "type": kind, "value": v, "writable": int(node.get("ACCESS", 0)) >= 2}
+                elif kind:
+                    params.setdefault(name, {"name": name, "type": kind, "value": (node.get("VALUE") or [None])[0], "writable": False})
+            for child in (node.get("CONTENTS") or {}).values():
+                walk(child)
+
+        walk(contents.get("parameters") or {})
+        return {"id": ident, "name": self.avatar_name(ident), "params": params}
+
+    def avatar_name(self, avatar_id: str) -> str:
+        """The avatar's name from the file VRChat saved for it (the OSCQuery page gives only its id), or ''."""
+        try:
+            for f in self.root.glob(f"*/Avatars/{avatar_id}.json"):
+                return str(json.loads(f.read_text(encoding="utf-8-sig")).get("name") or "")
+        except Exception:
+            pass
+        return ""
+
+    def read(self, name: str):
+        """One parameter's value as VRChat reports it right now, or None."""
+        base = self._base()
+        if base is None:
+            return None
+        try:
+            return (self._get(base + "/avatar/parameters/" + quote(name, safe="/")).get("VALUE") or [None])[0]
+        except Exception:
+            return None
 
     # ---- chatbox -------------------------------------------------------------------------
     def say(self, text: str) -> str:
@@ -80,6 +179,7 @@ class VRChat:
             return "Error: nothing to say."
         cut = len(text) > CHATBOX_MAX
         text = text[:CHATBOX_MAX]
+        self._base()  # learn where VRChat listens (it may not be 9000)
         with self._lock:
             wait = CHATBOX_GAP_S - (self.clock() - self._last_chat)
             if wait > 0:
@@ -114,10 +214,15 @@ class VRChat:
                 seen.setdefault(p["name"], p)
         return list(seen.values())
 
-    def find_param(self, query: str) -> tuple[dict | None, list[str]]:
+    def find_param(self, query: str, params: list[dict] | None = None) -> tuple[dict | None, list[str]]:
         """(the parameter a spoken name clearly means, closest names)."""
         probe = words(query)
-        scored = sorted(((similarity(probe, words(p["name"])), p) for p in self.parameters()), key=lambda x: -x[0])
+        def score(p: dict) -> float:
+            theirs = words(p["name"])
+            shared = any(len(w) >= 4 and w in theirs.split() for w in probe.split())  # 'Clothing/Shirt' shares the word 'shirt' with 'shirtToggle': a candidate to offer, never an automatic match
+            return max(similarity(probe, theirs), 0.6 if shared else 0.0)
+
+        scored = sorted(((score(p), p) for p in (self.parameters() if params is None else params)), key=lambda x: -x[0])
         closest = [p["name"] for _, p in scored[:6]]
         exact = [p for s, p in scored if words(p["name"]) == probe]
         if len(exact) == 1:
@@ -128,49 +233,100 @@ class VRChat:
 
     def set_param(self, name: str, value: str = "toggle") -> str:
         val = str(value).strip().lower()
+        live = self.live()
+        if live is not None:
+            who = f"your current avatar{' (' + live['name'] + ')' if live['name'] else ''}"
+            switches = [p for p in live["params"].values() if p["writable"]]
+            p, closest = self.find_param(name, switches)
+            if p is None:
+                if closest:
+                    return f"{who[0].upper() + who[1:]} has no switch that matches '{name}'. Its closest are: {', '.join(closest)}. Ask the user which one, or call vrchat_parameters."
+                return f"{who[0].upper() + who[1:]} has no switchable parameters that VRChat reports. Make sure OSC is enabled (Action Menu > Options > OSC > Enabled)."
+            sent, err = self._target(p, val, p["value"])
+            if err:
+                return err
+            self._send(osc_message("/avatar/parameters/" + p["name"], sent))
+            self.state[p["name"]] = sent
+            for _ in range(6):  # VRChat answers within a moment; look at what it reports
+                self.sleep(0.25)
+                now = self.read(p["name"])
+                if now is not None and (now == sent or (isinstance(sent, float) and isinstance(now, (int, float)) and abs(now - sent) < 0.01)):
+                    return f"Set {p['name']} to {self._shown(now)} on {who}. VRChat confirms it now reads {self._shown(now)}."
+            return (f"I sent {p['name']} = {self._shown(sent)} to {who}, but VRChat still reports {self._shown(self.read(p['name']))}, so the change did not take. "
+                    "Check Action Menu > Options > OSC > Enabled, or the avatar may be driving that parameter itself.")
         p, closest = self.find_param(name)
         if p is None:
             if closest:
-                return f"No avatar parameter matches '{name}'. The closest are: {', '.join(closest)}. Ask the user which one, or call vrchat_parameters."
+                return (f"VRChat could not be asked which avatar is worn (is it running with OSC enabled?). From the saved avatar files, no parameter matches '{name}'. "
+                        f"The closest are: {', '.join(closest)}. Ask the user which one, or call vrchat_parameters.")
             if not re.fullmatch(r"[A-Za-z0-9_ ]{1,60}", name.strip()):
                 return "Error: that is not a parameter name."
             p, note = {"name": name.strip().replace(" ", ""), "type": "Bool"}, " (no saved avatar configuration was found, so the name and its type are unchecked)"
         else:
-            note = ""
-        kind = p["type"]
-        if val in ("on", "true", "yes", "enable", "enabled", "show", "1") or (val == "toggle" and not self.state.get(p["name"])):
-            sent = True if kind == "Bool" else (1 if kind == "Int" else 1.0)
-        elif val in ("off", "false", "no", "disable", "disabled", "hide", "0", "toggle"):
-            sent = False if kind == "Bool" else (0 if kind == "Int" else 0.0)
-        else:
-            try:
-                num = float(val)
-            except ValueError:
-                return f"Error: '{value}' is not on, off, toggle or a number."
-            sent = bool(num) if kind == "Bool" else (int(num) if kind == "Int" else num)
+            note = " (VRChat could not be asked which avatar is worn, so this name comes from the saved avatar files and may belong to a different avatar)"
+        sent, err = self._target(p, val, self.state.get(p["name"]))
+        if err:
+            return err
         self._send(osc_message("/avatar/parameters/" + p["name"], sent))
         self.state[p["name"]] = sent
-        shown = ("on" if sent else "off") if isinstance(sent, bool) else sent
-        return f"Set {p['name']} to {shown}{note}. VRChat does not confirm it; if nothing changed, check Action Menu > Options > OSC > Enabled." + (
-            " (A toggle flips from what this assistant last set, so if you changed it by hand say 'turn it on' or 'off'.)" if val == "toggle" else "")
+        return f"Sent {p['name']} = {self._shown(sent)}{note}. Not verified: VRChat could not be reached to confirm it."
+
+    @staticmethod
+    def _shown(v) -> str:
+        return ("on" if v else "off") if isinstance(v, bool) else ("unknown" if v is None else f"{v:g}" if isinstance(v, float) else str(v))
+
+    @staticmethod
+    def _target(p: dict, val: str, current) -> tuple[object, str]:
+        """(the value to send in the parameter's own type, an error message). 'toggle' flips what VRChat reports now (or what was last set)."""
+        kind = p["type"]
+        on = val in ("on", "true", "yes", "enable", "enabled", "show", "1") or (val == "toggle" and not current)
+        off = val in ("off", "false", "no", "disable", "disabled", "hide", "0") or (val == "toggle" and bool(current))
+        if on:
+            return (True if kind == "Bool" else 1 if kind == "Int" else 1.0), ""
+        if off:
+            return (False if kind == "Bool" else 0 if kind == "Int" else 0.0), ""
+        try:
+            num = float(val)
+        except ValueError:
+            return None, f"Error: '{val}' is not on, off, toggle or a number."
+        return (bool(num) if kind == "Bool" else int(num) if kind == "Int" else num), ""
 
     def listing(self, query: str = "") -> str:
+        live = self.live()
+        if live is not None:
+            rows = [p for p in live["params"].values() if p["writable"] and (not query or words(query) in words(p["name"]))]
+            who = f"your current avatar{' (' + live['name'] + ')' if live['name'] else ''}"
+            if not rows:
+                return f"VRChat reports no matching switches on {who}."
+            names = [f"{p['name']} ({self._shown(p['value'])})" if p["type"] == "Bool" else f"{p['name']} ({p['type'].lower()}, now {self._shown(p['value'])})" for p in rows]
+            return f"{len(rows)} switch(es) on {who}, with their current values: " + ", ".join(names[:80]) + ("..." if len(names) > 80 else "")
         names = [p["name"] + ("" if p["type"] == "Bool" else f" ({p['type'].lower()})") for p in self.parameters() if not query or words(query) in words(p["name"])]
         if not names:
-            return ("No avatar parameters found. VRChat writes an avatar's OSC configuration after you publish it and switch to it with OSC enabled "
-                    "(Action Menu > Options > OSC > Enabled). You can still name a parameter exactly.")
-        return f"{len(names)} avatar parameter(s): " + ", ".join(names[:80]) + ("..." if len(names) > 80 else "")
+            return ("VRChat could not be asked, and no saved avatar parameters were found. Start VRChat and enable OSC (Action Menu > Options > OSC > Enabled), "
+                    "then try again. You can still name a parameter exactly.")
+        return (f"VRChat could not be asked which avatar is worn, so these are the parameters of every avatar saved on this PC ({len(names)}): "
+                + ", ".join(names[:80]) + ("..." if len(names) > 80 else ""))
 
     # ---- game controls -------------------------------------------------------------------
     def press(self, action: str) -> str:
         button = BUTTONS.get(action.strip().lower())
         if button is None:
             return "Error: action must be one of: " + ", ".join(sorted(BUTTONS)) + "."
+        before = self.read("MuteSelf") if button == "Voice" else None
+        self._base()
         self._send(osc_message("/input/" + button, 1))
         self.sleep(0.15)
         self._send(osc_message("/input/" + button, 0))  # a button is pressed with 1 and must be released with 0
         if button == "Voice":
-            return "Toggled your VRChat microphone (mute/unmute). VRChat does not say which state it is now in, so it cannot be reported."
+            if before is not None:
+                for _ in range(6):
+                    self.sleep(0.25)
+                    after = self.read("MuteSelf")
+                    if after is not None and after != before:
+                        return f"Your VRChat microphone is now {'muted' if after else 'unmuted'}."
+                return ("I pressed the mute toggle, but VRChat still reports your microphone as " + ("muted" if before else "unmuted") +
+                        ". The toggle only works when VRChat's 'Toggle Voice' setting is on and you are not in a locked state.")
+            return "Toggled your VRChat microphone (mute/unmute). VRChat could not be asked, so its new state cannot be reported."
         return f"Pressed {button} in VRChat."
 
 
