@@ -193,3 +193,13 @@ def test_open_extension_folder_says_so_when_it_is_missing(win, monkeypatch, tmp_
     monkeypatch.setattr(app_module, "extension_folder", lambda: tmp_path / "nope")
     win._open_extension_folder()
     assert any("not found" in lbl.text() for lbl in win.chat._labels)
+
+
+def test_ask_first_switches_are_in_settings_and_change_the_config(win):
+    for key in ("links", "screen", "clipboard", "routines"):
+        box = getattr(win, "ask_" + key)
+        assert box.isChecked() is True  # everything asks by default
+        box.setChecked(False)
+        assert getattr(win.cfg, "confirm_" + key) is False
+        box.setChecked(True)
+        assert getattr(win.cfg, "confirm_" + key) is True

@@ -125,6 +125,10 @@ Say "tell VRChat I'll be right back", "turn my hat on" or "mute me in VRChat": t
 - **Interpreter mode:** "translate everything I say into Japanese" until you say stop; with VRChat control on it can type each translation in the chatbox.
 - **"Why didn't that work?"** The assistant looks up the last failed action and explains it in plain words.
 
+## Ask first (Settings > General)
+
+By default the assistant asks before it opens a link, takes a screenshot, reads or replaces your clipboard, or runs a saved routine (opening an app has its own box in the Apps tab). Untick any of these to let it just do it, for example if you are tired of screenshot prompts for the translate feature. The tooltips explain the risk of each. Shell commands, writing files, handing jobs to Claude/Codex, controlling app windows and MCP tools always ask, and unticking a box never widens what is allowed (only http and https links can ever be opened).
+
 ## VR auto-switch
 
 Settings → "Switch devices while SteamVR is running" reveals VR microphone/speaker pickers (hidden until enabled).

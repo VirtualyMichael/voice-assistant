@@ -164,3 +164,20 @@ def test_failures_are_remembered_so_the_assistant_can_explain_them():
     assert not looks_failed("The user declined this action.") and looks_failed("Error: nope") and not looks_failed("Playing X.")
     reg.call("what_went_wrong", "{}")  # asking is not itself recorded as a failure
     assert all(i["tool"] != "what_went_wrong" for i in reg.log.items)
+
+
+def test_the_ask_first_switches_let_links_and_clipboard_skip_the_question_but_nothing_else(tmp_path, monkeypatch):
+    import voice_assistant.agent_tools as at
+
+    opened = []
+    monkeypatch.setattr(at.webbrowser, "open", lambda u: opened.append(u))
+    monkeypatch.setattr(at, "_powershell", lambda *a, **k: type("R", (), {"stdout": "clip text"})())
+    cfg = Config(confirm_links=False, confirm_clipboard=False)
+    asked = []
+    tools = build_agent_tools(cfg, FolderPolicy([tmp_path]), lambda q: asked.append(q) or False, lambda t: None)  # a confirm that always says no
+    reg = ToolRegistry(tools)
+    assert call(reg, "open_url", url="https://example.com") == "Opened." and opened == ["https://example.com"] and asked == []
+    assert "clip text" in call(reg, "read_clipboard") and call(reg, "write_clipboard", text="x") == "Copied to the clipboard." and asked == []
+    assert "only http" in call(reg, "open_url", url="file:///C:/x.exe")  # unticking the question never loosens what may be opened
+    on = ToolRegistry(build_agent_tools(Config(), FolderPolicy([tmp_path]), lambda q: asked.append(q) or False, lambda t: None))  # the defaults still ask
+    assert "declined" in call(on, "open_url", url="https://example.com") and "declined" in call(on, "read_clipboard") and len(asked) == 2

@@ -193,7 +193,7 @@ def build_agent_tools(cfg, policy: FolderPolicy, confirm: Confirm, announce, tim
     def open_url(url: str) -> str:
         if urlparse(url).scheme not in ("http", "https"):
             return "Error: only http(s) links can be opened."
-        if not confirm(f"Open this link in your browser?\n\n{url}"):
+        if cfg.confirm_links and not confirm(f"Open this link in your browser?\n\n{url}"):
             return declined
         webbrowser.open(url)
         return "Opened."
@@ -240,13 +240,13 @@ def build_agent_tools(cfg, policy: FolderPolicy, confirm: Confirm, announce, tim
         return f"{len(names)} apps installed. Some: " + ", ".join(names[:40]) if names else "The app list is not available yet."
 
     def read_clipboard() -> str:
-        if not confirm("Let the assistant read what is on your clipboard?"):
+        if cfg.confirm_clipboard and not confirm("Let the assistant read what is on your clipboard?"):
             return declined
         out = _powershell(["-Command", "Get-Clipboard -Raw"]).stdout
         return UNTRUSTED.replace("web content", "clipboard content") + out[:MAX_PAGE_CHARS]
 
     def write_clipboard(text: str) -> str:
-        if not confirm(f"Replace your clipboard with this text?\n\n{text[:300]}"):
+        if cfg.confirm_clipboard and not confirm(f"Replace your clipboard with this text?\n\n{text[:300]}"):
             return declined
         _powershell(["-Command", "Set-Clipboard -Value ([Console]::In.ReadToEnd())"], input=text)
         return "Copied to the clipboard."

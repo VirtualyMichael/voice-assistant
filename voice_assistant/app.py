@@ -751,6 +751,21 @@ class MainWindow(QMainWindow):
         form.addRow("Glass see-through \u2194 solid", tint)
         form.addRow("Accent colour", swatches)
         form.addRow(opacity_row)
+        form.use("General")
+        form.addRow(QLabel("Ask me first before the assistant... (untick to let it just do it)", objectName="small", wordWrap=True))
+        for key, label, tip in (
+            ("confirm_links", "opens a web link", "Untick only if you trust the web pages, files and messages the assistant reads: a hostile page could try to make it open a link."),
+            ("confirm_screen", "takes a screenshot of a window or screen", "A screenshot is sent to your AI model. If that is a cloud model, the picture leaves your PC. Local models keep it on this PC."),
+            ("confirm_clipboard", "reads or replaces my clipboard", "The clipboard may hold passwords or private text."),
+            ("confirm_routines", "runs one of my saved routines", "Saving or deleting a routine always asks."),
+        ):
+            box = QCheckBox(label)
+            box.setToolTip(tip)
+            box.setChecked(bool(getattr(cfg, key)))
+            box.toggled.connect(lambda v, k=key: self._set_field(k, v))
+            setattr(self, "ask_" + key.removeprefix("confirm_"), box)
+            form.addRow(box)
+        form.addRow(QLabel("Opening apps has its own box in the Apps tab. Shell commands, writing files, handing jobs to Claude/Codex, controlling windows and MCP tools always ask.", objectName="small", wordWrap=True))
         cfg_btn, setup_btn = QPushButton("Open settings file"), QPushButton("Run setup again")
         cfg_btn.clicked.connect(self._open_config)
         setup_btn.clicked.connect(self._rerun_setup)
