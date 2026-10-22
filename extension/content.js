@@ -85,13 +85,14 @@
     return "unconfirmed";
   }
 
-  // press the player bar's shuffle button and check that the queue really changed order
+  // press the player bar's shuffle button and check that the queue changed order or the button's icon changed
+  const shuffleIcon = () => { const p = document.querySelector("ytmusic-player-bar .shuffle path"); return p ? p.getAttribute("d") || "" : ""; }; // the button's icon changes shape when shuffle goes on or off
   async function shuffle() {
     const b = document.querySelector("ytmusic-player-bar .shuffle button");
     if (!b) return "missing";
-    const before = queueTitles();
+    const before = queueTitles(), icon = shuffleIcon();
     b.click();
-    for (let i = 0; i < 10; i++) { await sleep(250); if (queueTitles() !== before) return "shuffle toggled"; }
+    for (let i = 0; i < 10; i++) { await sleep(250); if (queueTitles() !== before || shuffleIcon() !== icon) return "shuffle toggled"; }
     return "unconfirmed";
   }
 

@@ -95,13 +95,14 @@ await test("message listener answers actions and reports unknown ones", async ()
 
 await test("like, unlike and shuffle press the page's own buttons and check the page really changed", async () => {
   const page = makePage({ rows: ROWS });
-  const st = { like: "INDIFFERENT", queue: ["A", "B", "C"], likeClicks: 0, shuffleClicks: 0, broken: false };
+  const st = { like: "INDIFFERENT", icon: "M1", queue: ["A", "B", "C"], likeClicks: 0, shuffleClicks: 0, broken: false };
   const base = page.document;
   page.document = {
     querySelector(sel) {
       if (sel === "ytmusic-player-bar ytmusic-like-button-renderer") return { getAttribute: (n) => (n === "like-status" ? st.like : null) };
       if (sel === "ytmusic-player-bar ytmusic-like-button-renderer #button-shape-like button") return { click() { st.likeClicks++; if (!st.broken) st.like = st.like === "LIKE" ? "INDIFFERENT" : "LIKE"; } };
-      if (sel === "ytmusic-player-bar .shuffle button") return { click() { st.shuffleClicks++; if (!st.broken) st.queue = [...st.queue].reverse(); } };
+      if (sel === "ytmusic-player-bar .shuffle button") return { click() { st.shuffleClicks++; if (!st.broken) { st.queue = st.queue.length > 1 ? [...st.queue].reverse() : st.queue; st.icon = st.icon === "M1" ? "M2" : "M1"; } } };
+      if (sel === "ytmusic-player-bar .shuffle path") return { getAttribute: () => st.icon };
       return base.querySelector(sel);
     },
     querySelectorAll(sel) {
@@ -115,6 +116,8 @@ await test("like, unlike and shuffle press the page's own buttons and check the 
   assert.equal(st.likeClicks, 1); // already liked: not clicked again (that would remove it)
   assert.equal(await api.control("unlike"), "like removed");
   assert.equal(await api.control("unlike"), "already not liked");
+  assert.equal(await api.control("shuffle"), "shuffle toggled");
+  st.queue = ["only one song"]; st.icon = "M1"; // a queue of one cannot visibly reorder: the button's icon change confirms the toggle instead
   assert.equal(await api.control("shuffle"), "shuffle toggled");
   st.broken = true; // the page ignores the click: it must say so instead of claiming success
   assert.equal(await api.control("like"), "unconfirmed");
