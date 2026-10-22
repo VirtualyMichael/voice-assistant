@@ -208,6 +208,12 @@ tools not marked read-only ask before every call unless the server has `"auto_ap
 as untrusted data. Tested against a real stdio MCP server (discovery, confirm/read-only behaviour, secret isolation, a
 failing server).
 
+**Ready-made servers: [My MCP](../My%20MCP).** A separate repo of small servers that install one at a time
+(`python install.py <name>` registers the server in this app's `mcp_servers` and copies its skill). Currently:
+`alcohol-tracker`, which lets you say "I just had a beer" (it reads the drink back, you say yes, it logs it to your
+Alcohol Ingestion Tracker, and "undo" removes only what it added in the last 10 minutes) and ask for detailed reports by
+time and amount. It cannot edit or delete anything else. Its skill is `alcohol-tracker` (picked up from `~/.lmstudio/skills`).
+
 ## Opening apps
 
 Apps open after a confirmation by default. Turn it off in Settings > Apps (*Ask before opening an app*), or tick *Don't ask again when opening apps* in the confirmation box itself. Links, clipboard access, file writes and shell commands keep asking regardless.
