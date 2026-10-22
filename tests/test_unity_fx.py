@@ -258,3 +258,12 @@ def test_a_broken_or_foreign_json_file_is_ignored(tmp_path):
     assert [load_export(tmp_path / n) for n in ("a.json", "b.json", "c.json", "missing.json")] == [None, None, None, None]
     ok = load_export(write_export(tmp_path / "d.json"))
     assert ok["id"] == "avtr_worn" and len(ok["entries"]) == 2 and set(ok["polarity"]) == {"wolfToggle", "ghostToggle"}
+
+
+def test_menu_names_with_rich_text_are_cleaned_for_matching():
+    from voice_assistant.vrchat_menu import clean_label, match_entries
+
+    assert clean_label("SPS/<b>Options/<b>Dual Mode</b>\n<size=20>Allows 2 active sockets") == "SPS/Options/Dual Mode"
+    assert clean_label("<color=#ff0000>Hat</color>") == "Hat" and clean_label("A//B") == "A/B"
+    entries = [{"label": "SPS/Options/Dual Mode", "params": ["dual"], "values": {}, "kind": "toggle", "source": "unity"}]
+    assert match_entries(entries, "dual mode")[0]["params"] == ["dual"]

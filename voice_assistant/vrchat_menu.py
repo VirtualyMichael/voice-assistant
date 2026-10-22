@@ -172,6 +172,16 @@ class AvatarNotes:
 EXPORT_KINDS = {"toggle", "button", "folder", "radial"}
 
 
+def clean_label(label: str) -> str:
+    """Menu names often carry rich text for the in-game menu ('<b>PCS 1.7.0</b>', a second line like '<size=20>Allows 2 sockets'): keep the readable first line of each part."""
+    plain = re.sub(r"<[^>]*>", "", str(label))
+    parts = []
+    for seg in plain.split("/"):
+        lines = [ln.strip() for ln in seg.splitlines() if ln.strip()]
+        parts.append(re.sub(r"\s+", " ", lines[0]) if lines else "")
+    return "/".join(p for p in parts if p)
+
+
 def load_export(path: Path) -> dict | None:
     """An avatar export written by the Unity exporter (unity/VoiceAssistantExport), checked and cleaned: {'name', 'id', 'entries', 'polarity', 'path'}, or None when it is not one."""
     try:
@@ -189,7 +199,7 @@ def load_export(path: Path) -> dict | None:
             continue
         values = {k: float(v) for k, v in (e.get("values") or {}).items() if isinstance(v, (int, float)) and not isinstance(v, bool)} if isinstance(e.get("values"), dict) else {}
         kind = e.get("kind") if e.get("kind") in EXPORT_KINDS else "toggle"
-        entries.append({"label": e["label"], "params": [p for p in e["params"] if isinstance(p, str)], "values": values, "kind": kind, "source": "unity"})
+        entries.append({"label": clean_label(e["label"]), "params": [p for p in e["params"] if isinstance(p, str)], "values": values, "kind": kind, "source": "unity"})
     polarity = {k: {"inverted": bool(v.get("inverted")), "why": str(v.get("why") or "from the Unity export")[:160]}
                 for k, v in (data.get("switches") or {}).items() if isinstance(v, dict) and "inverted" in v} if isinstance(data.get("switches"), dict) else {}
     return {"name": str(avatar.get("name") or ""), "id": str(avatar.get("id") or ""), "entries": entries, "polarity": polarity, "path": str(path),
