@@ -117,6 +117,14 @@ Settings opens as a full page with a sidebar: **Voice** (voice picker, wake word
 
 Say "tell VRChat I'll be right back", "turn my hat on" or "mute me in VRChat": the assistant types in the chatbox, flips avatar toggles and presses a few controls through VRChat's own OSC feature. Switch it on in Settings > VR and in VRChat (Action Menu > Options > OSC > Enabled). Full guide, including how avatar parameters work and troubleshooting: [docs/VRCHAT.md](docs/VRCHAT.md).
 
+## Routines, music actions, interpreter and more
+
+- **Routines:** "make a good night routine that turns the lights off and pauses the music" saves several actions under one phrase (you confirm it first); "good night" then runs them. Routines cannot contain shell commands, delegated jobs or computer control.
+- **Music actions** (need the browser extension): "like this song", "play more like this" (YouTube Music's radio for it), "shuffle", "what's playing", and "stop the music in 30 minutes". Each reports what the page showed afterwards.
+- **Quiet music while I talk** (Settings > Audio): lowers only the music apps' own volume while the assistant listens and speaks, then restores it.
+- **Interpreter mode:** "translate everything I say into Japanese" until you say stop; with VRChat control on it can type each translation in the chatbox.
+- **"Why didn't that work?"** The assistant looks up the last failed action and explains it in plain words.
+
 ## VR auto-switch
 
 Settings → "Switch devices while SteamVR is running" reveals VR microphone/speaker pickers (hidden until enabled).
