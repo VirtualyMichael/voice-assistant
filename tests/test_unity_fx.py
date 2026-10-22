@@ -200,3 +200,64 @@ def test_import_uses_everything_attached_and_an_id_is_not_a_switch(tmp_path):
     out = vr.import_menu()  # no folder given: the menus and the controllers attached separately are read together
     assert "Imported" in out and "work backwards" in out
     assert "That is an id" in vr.set_param("avtr_85b9f336-5651-481a-94d5-f9284b9bd4ab", "toggle")
+
+
+def write_export(path, avatar_id="avtr_worn", name="Raccoon", **extra):
+    data = {"format": "voice-assistant-avatar", "version": 1, "avatar": {"name": name, "id": avatar_id}, "parameters": [{"name": "wolfToggle", "type": "Bool", "default": "0"}],
+            "menu": [{"label": "Accessories", "kind": "folder", "params": ["wolfToggle"], "values": {"wolfToggle": 1}},
+                     {"label": "Accessories/Animal Parts", "kind": "toggle", "params": ["wolfToggle"], "values": {"wolfToggle": 1}}, "junk", {"label": "Bad"}],
+            "switches": {"wolfToggle": {"inverted": True, "why": "ON hides Animal Parts (read from FX)"}, "ghostToggle": {"inverted": True, "why": "not on this avatar"}}, **extra}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def worn_wolf(tmp_path):
+    vrc = FakeVRChat(params={"wolfToggle": ("T", False, 3), "shirtToggle": ("T", False, 3)})
+    vr, sent, now = make(tmp_path, vrc=vrc)
+    return vr, vrc
+
+
+def test_the_unity_exporters_file_is_found_by_avatar_id_and_applied(tmp_path):
+    vr, vrc = worn_wolf(tmp_path)
+    write_export(tmp_path / "unity-exports" / "Raccoon.json")
+    out = vr.import_menu()  # nothing attached: the exports folder is looked at
+    assert "Unity export Raccoon.json" in out and "avatar id matches" in out and "1 switch(es) work backwards" in out and "ghostToggle" not in out
+    assert vr.notes.switch("avtr_worn")["wolfToggle"]["inverted"] is True
+    vr.set_param("animal parts", "hide")
+    assert vrc.params["wolfToggle"][1] is True  # backwards: hiding turns it on
+    assert [e["label"] for e in vr.notes.entries("avtr_worn")] == ["Accessories", "Accessories/Animal Parts"]  # junk entries are dropped
+
+
+def test_an_export_for_another_avatar_is_not_used_but_a_name_match_or_an_idless_attached_file_is(tmp_path):
+    vr, vrc = worn_wolf(tmp_path)
+    other = write_export(tmp_path / "unity-exports" / "Other.json", avatar_id="avtr_other", name="Other")
+    assert "Nothing to read" in vr.import_menu()  # a different avatar's file in the folder is ignored
+    from voice_assistant.attachments import Inbox
+
+    inbox = Inbox()
+    inbox.add(other)
+    vr.resolve_path, vr.attached = inbox.resolve, lambda: [i["path"] for i in inbox.items.values()]
+    assert "is for the avatar Other" in vr.import_menu() and not vr.notes.entries("avtr_worn")  # attached on purpose but it belongs to someone else: refused, with the reason
+    inbox.clear()
+    write_export(tmp_path / "unity-exports" / "NoId.json", avatar_id="", name="Make Believe")
+    assert "Nothing to read" in vr.import_menu()  # no id and a different name: not guessed
+    write_export(tmp_path / "unity-exports" / "NoId.json", avatar_id="", name="Name of avtr_worn")
+    vr_named = vr  # the saved avatar file gives the worn avatar this name
+    vrc.avatar = "avtr_worn"
+    assert vr_named.live()["name"] in ("", "Name of avtr_worn")
+    inbox2 = Inbox()
+    inbox2.add(tmp_path / "unity-exports" / "NoId.json")
+    vr.resolve_path, vr.attached = inbox2.resolve, lambda: [i["path"] for i in inbox2.items.values()]
+    assert "no avatar id yet" in vr.import_menu() and vr.notes.entries("avtr_worn")
+
+
+def test_a_broken_or_foreign_json_file_is_ignored(tmp_path):
+    from voice_assistant.vrchat_menu import load_export
+
+    (tmp_path / "a.json").write_text("{ nope", encoding="utf-8")
+    (tmp_path / "b.json").write_text(json.dumps({"format": "something-else"}), encoding="utf-8")
+    (tmp_path / "c.json").write_text(json.dumps({"format": "voice-assistant-avatar", "menu": "wrong"}), encoding="utf-8")
+    assert [load_export(tmp_path / n) for n in ("a.json", "b.json", "c.json", "missing.json")] == [None, None, None, None]
+    ok = load_export(write_export(tmp_path / "d.json"))
+    assert ok["id"] == "avtr_worn" and len(ok["entries"]) == 2 and set(ok["polarity"]) == {"wolfToggle", "ghostToggle"}

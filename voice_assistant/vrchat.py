@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 from .tools import Tool
 from .unity_fx import analyze_roots
-from .vrchat_menu import AvatarNotes, import_project, match_entries
+from .vrchat_menu import AvatarNotes, import_project, load_export, match_entries
 from .ytm_browser import similarity
 
 CHATBOX_MAX = 144  # VRChat's limit for one chatbox message
@@ -87,6 +87,7 @@ class VRChat:
 
             base = config_dir() if config_root is None else self.root.parent
             notes_dir = base / "avatars"
+        self.exports_dir = notes_dir.parent / "unity-exports"  # where the Unity exporter writes <avatar>.json
         self.notes = AvatarNotes(notes_dir, legacy_file=notes_dir.parent / "vrchat_avatars.json")  # one editable file per avatar id: what its menu calls things, which switches work backwards
         self._send = send or self._udp_send
         self._sock: socket.socket | None = None
@@ -650,23 +651,71 @@ class VRChat:
         return (f"Saved for {live['name'] or 'this avatar'}: {', '.join(found)} " + ("work BACKWARDS (on hides the item, off shows it). " if inverted else "work normally (on shows the item). ")
                 + "Use value 'show' or 'hide' for items so this is handled for you; 'on'/'off' always mean the raw switch.")
 
+    def _find_export(self, live: dict, explicit: list[Path]) -> tuple[dict | None, str]:
+        """(the Unity exporter's file for the worn avatar, how it matched or why it was refused). The avatar id decides; a file with no id yet (an avatar never uploaded) matches by name;
+        a file the user attached or named themselves is accepted when it has no id, and refused with an explanation when its id belongs to a different avatar."""
+        candidates = [(p, True) for p in explicit if p.is_file() and p.suffix.lower() == ".json"]
+        try:
+            candidates += [(p, False) for p in sorted(self.exports_dir.glob("*.json")) if p not in explicit]
+        except OSError:
+            pass
+        refused = ""
+        by_name = None
+        for path, chosen in candidates:
+            ex = load_export(path)
+            if ex is None:
+                continue
+            if ex["id"] and ex["id"] == live["id"]:
+                return ex, "its avatar id matches"
+            if ex["id"] and chosen:
+                refused = f"{path.name} is for the avatar {ex['name'] or '?'} ({ex['id']}), but the worn avatar is {live['name'] or '?'} ({live['id']}). Wear that avatar, or export the right one from Unity."
+            elif not ex["id"] and (chosen or (ex["name"] and words(ex["name"]) == words(live["name"] or "~"))) and by_name is None:
+                by_name = (ex, "it has no avatar id yet (the avatar was never uploaded)" + ("" if chosen else " and its name matches"))
+        if by_name:
+            return by_name
+        return None, refused
+
+    def _apply_export(self, live: dict, ex: dict, how: str) -> str:
+        who = live["name"] or ex["name"] or "the avatar"
+        have = {n for n, p in live["params"].items() if p["writable"]}
+        used = {q for e in ex["entries"] for q in e["params"]}
+        polarity = {k: v for k, v in ex["polarity"].items() if k in have}
+        conflicts = self.notes.replace_imported(live["id"], live["name"], ex["entries"], ex["path"], polarity)
+        folders = [e["label"] for e in ex["entries"] if e["kind"] == "folder"]
+        back = sorted(n for n, i in polarity.items() if i["inverted"])
+        out = (f"Imported {who} from the Unity export {Path(ex['path']).name} ({how}): {len(ex['entries'])} menu entries, {len(used & have)} of the avatar's switches. "
+               f"Folders: {', '.join(folders[:25]) or 'none'}. Menu names now work by voice. ")
+        out += (f"The FX animations say {len(back)} switch(es) work backwards (on hides the item): {', '.join(back)}; {len(polarity) - len(back)} others work normally. " if polarity else "The export holds no backwards-switch information. ")
+        if used and not used & have:
+            out += "WARNING: none of the export's switches exist on the worn avatar, so it is probably another avatar. "
+        if conflicts:
+            out += "The Unity export disagrees with what was taught for: " + "; ".join(conflicts) + ". What was taught is kept: ask the user which is right."
+        return out.strip()
+
     def import_menu(self, folder: str = "") -> str:
-        """Read the avatar's real menu and which switches work backwards from its Unity files: the folder or attachment named, plus everything attached to the chat."""
+        """Read the avatar's real menu and which switches work backwards: from the Unity exporter's file for the worn avatar if there is one, else from the Unity files given or attached."""
         live, err = self._need_avatar()
         if live is None:
             return err
+        given_path = (self.resolve_path(str(folder or "").strip().strip('"')) or Path(str(folder or "").strip().strip('"'))) if str(folder or "").strip() else None
+        explicit = [Path(p) for p in ([given_path] if given_path else []) + list(self.attached())]
+        export, how = self._find_export(live, explicit)
+        if export:
+            return self._apply_export(live, export, how)
+        refused = how
         roots: list[Path] = []
         given = str(folder or "").strip().strip('"')
-        if given:
-            p = self.resolve_path(given) or Path(given)
-            roots.append(p.parent if p.is_file() and p.suffix.lower() in (".asset", ".meta") else p)  # a menu file's neighbours are its sub-menus
-        for p in self.attached():
-            p = Path(p)
-            p = p.parent if p.is_file() and p.suffix.lower() in (".asset", ".meta") else p
+        for p in ([self.resolve_path(given) or Path(given)] if given else []) + [Path(a) for a in self.attached()]:
+            if p.is_file() and p.suffix.lower() == ".json":
+                continue  # an exporter file: handled above
+            p = p.parent if p.is_file() and p.suffix.lower() in (".asset", ".meta") else p  # a menu file's neighbours are its sub-menus
             if p not in roots:
                 roots.append(p)
+        if not roots and refused:
+            return "Error: " + refused
         if not roots:
-            return "Nothing to read yet. Attach the avatar's Unity folder (the one holding its Menus, Controllers and Animations folders) with the paperclip, or give its folder path, then call this again."
+            return ("Nothing to read yet. Run Tools > Voice Assistant > Export selected avatar in Unity (see unity/VoiceAssistantExport in the repository), or attach the avatar's Unity folder "
+                    "(the one holding its Menus, Controllers and Animations folders) with the paperclip, or give its folder path, then call this again.")
         menu_error = ""
         try:
             entries, note = import_project(roots, {n for n in live["params"]})

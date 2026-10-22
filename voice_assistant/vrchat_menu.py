@@ -169,6 +169,33 @@ class AvatarNotes:
         return conflicts
 
 
+EXPORT_KINDS = {"toggle", "button", "folder", "radial"}
+
+
+def load_export(path: Path) -> dict | None:
+    """An avatar export written by the Unity exporter (unity/VoiceAssistantExport), checked and cleaned: {'name', 'id', 'entries', 'polarity', 'path'}, or None when it is not one."""
+    try:
+        if Path(path).stat().st_size > 20_000_000:
+            return None
+        data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("format") != "voice-assistant-avatar" or not isinstance(data.get("menu", []), list):
+        return None
+    avatar = data.get("avatar") if isinstance(data.get("avatar"), dict) else {}
+    entries = []
+    for e in data.get("menu") or []:
+        if not isinstance(e, dict) or not isinstance(e.get("label"), str) or not isinstance(e.get("params"), list):
+            continue
+        values = {k: float(v) for k, v in (e.get("values") or {}).items() if isinstance(v, (int, float)) and not isinstance(v, bool)} if isinstance(e.get("values"), dict) else {}
+        kind = e.get("kind") if e.get("kind") in EXPORT_KINDS else "toggle"
+        entries.append({"label": e["label"], "params": [p for p in e["params"] if isinstance(p, str)], "values": values, "kind": kind, "source": "unity"})
+    polarity = {k: {"inverted": bool(v.get("inverted")), "why": str(v.get("why") or "from the Unity export")[:160]}
+                for k, v in (data.get("switches") or {}).items() if isinstance(v, dict) and "inverted" in v} if isinstance(data.get("switches"), dict) else {}
+    return {"name": str(avatar.get("name") or ""), "id": str(avatar.get("id") or ""), "entries": entries, "polarity": polarity, "path": str(path),
+            "parameters": [p.get("name") for p in data.get("parameters") or [] if isinstance(p, dict)]}
+
+
 def match_entries(entries: list[dict], query: str) -> tuple[dict | None, list[str]]:
     """(the entry a spoken name clearly means, the labels it could be when it is unclear). Spoken 'animal parts' fits the label 'Accessories/Animal Parts'; a folder wins over the items inside it."""
     want = [w for w in _words(query) if w not in FILLER]
