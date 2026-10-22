@@ -212,7 +212,7 @@ class YtmBridge:
         raise YtmError(f"I clicked play on '{best['title']}', but the page did not start playing that song (it shows '{state.get('title') or 'nothing'}').")
 
 
-def make_player(bridge: YtmBridge | None, browser=None, open_tab=None, judge=None, library=None):
+def make_player(bridge: YtmBridge | None, browser=None, open_tab=None, judge=None, library=None, sleep=time.sleep):
     """One play(query) that tries the user's own signed-in tab (extension) first, then the assistant's own YouTube Music window.
     open_tab() starts the user's own YouTube Music (their app, signed in) when the extension is connected but no tab is open."""
 
@@ -221,6 +221,12 @@ def make_player(bridge: YtmBridge | None, browser=None, open_tab=None, judge=Non
         if bridge is not None:
             if not bridge.connected and bridge.extension_id:
                 bridge.wait_connected()
+                if not bridge.connected and open_tab is not None:
+                    # The browser is closed, so the extension is not running either: start the user's own signed-in YouTube Music (which starts the browser and the
+                    # extension), wait for the extension to connect and the page to load, and only then search. Never the assistant's own, not-signed-in window.
+                    open_tab()
+                    if bridge.wait_connected(30):
+                        sleep(4)
             if bridge.connected:
                 try:
                     return bridge.play(query, open_tab=open_tab, judge=judge, library=library)
@@ -230,8 +236,9 @@ def make_player(bridge: YtmBridge | None, browser=None, open_tab=None, judge=Non
                     return str(e)
                 except YtmError as e:
                     problems.append(f"your signed-in YouTube Music could not be used ({e})")
-            elif bridge.extension_id:
-                problems.append("your browser extension is not connected right now (it reconnects within about 30 seconds of the app starting)")
+            elif bridge.extension_id:  # the extension is installed, so the signed-in YouTube Music is the one to use: do not switch to the other window
+                raise YtmError("I opened your YouTube Music, but its browser extension did not connect within 30 seconds. Check that the extension is switched on in your browser "
+                               "(chrome://extensions), then ask again.")
         if browser is not None:
             try:
                 out = browser.play(query, judge=judge, library=library)

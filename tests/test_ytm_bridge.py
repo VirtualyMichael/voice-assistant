@@ -132,8 +132,12 @@ def test_player_prefers_the_extension_then_falls_back_to_the_own_window(bridge):
             calls.append(q)
             return "Playing X (a song) in the assistant's YouTube Music window."
 
+    assert make_player(YtmBridge(ports=(0,)), Browser())("a").startswith("Playing X") and calls == ["a"]  # no extension was ever installed: own window
+    bridge.wait_connected = lambda *a, **k: False
+    with pytest.raises(YtmError, match="did not connect"):  # installed but not connected: not the other window
+        make_player(bridge, Browser())("a")
+    del bridge.wait_connected
     player = make_player(bridge, Browser())
-    assert player("a").startswith("Playing X") and calls == ["a"]  # extension not connected yet: own window
     ext = FakeExtension(bridge.port)
     ext.start()
     assert wait_connected(bridge)
@@ -254,8 +258,9 @@ def test_player_waits_briefly_for_a_known_extension_and_explains_a_fallback():
     b = YtmBridge(ports=(0,), extension_id="abcdefghijklmnopabcdefghijklmnop")
     waits = []
     b.wait_connected = lambda *a, **k: waits.append(1) or False
-    out = make_player(b, Browser())("a")
-    assert waits == [1] and out.startswith("Playing X") and "not connected right now" in out and calls == ["a"]
+    with pytest.raises(YtmError, match="did not connect"):  # a known extension that never connects: say so, never switch to the not-signed-in window
+        make_player(b, Browser())("a")
+    assert waits == [1] and calls == []
     unknown = YtmBridge(ports=(0,))  # never installed: no waiting, no remark
     unknown.wait_connected = lambda *a, **k: waits.append(2) or False
     assert make_player(unknown, Browser())("b") == "Playing X (a song) in the assistant's YouTube Music window." and waits == [1]
@@ -275,3 +280,27 @@ def test_no_match_is_a_final_answer_not_a_reason_to_try_another_window():
             raise AssertionError("must not be tried: it would find the same results")
 
     assert make_player(Br(), Own())("q").startswith("Could not find")
+
+
+def test_a_closed_browser_is_started_with_the_users_youtube_music_then_waited_for_before_searching():
+    events = []
+
+    class Br:
+        extension_id, connected = "x", False
+
+        def wait_connected(self, seconds=8.0, *a, **k):
+            events.append(("wait", seconds))
+            if seconds == 30:
+                self.connected = True  # the extension came up once the browser started
+            return self.connected
+
+        def play(self, q, open_tab=None, judge=None, library=None):
+            events.append(("play", q))
+            return "Playing Forever by Lowx (a song) in your YouTube Music."
+
+    class Own:
+        def play(self, q, judge=None, library=None):
+            raise AssertionError("the assistant's own window must not be used")
+
+    out = make_player(Br(), Own(), open_tab=lambda: events.append("opened"), sleep=lambda s: events.append(("sleep", s)))("Forever by Lowx")
+    assert out.startswith("Playing Forever") and events == [("wait", 8.0), "opened", ("wait", 30), ("sleep", 4), ("play", "Forever by Lowx")]
