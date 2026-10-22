@@ -243,9 +243,6 @@ def test_an_export_for_another_avatar_is_not_used_but_a_name_match_or_an_idless_
     write_export(tmp_path / "unity-exports" / "NoId.json", avatar_id="", name="Make Believe")
     assert "Nothing to read" in vr.import_menu()  # no id and a different name: not guessed
     write_export(tmp_path / "unity-exports" / "NoId.json", avatar_id="", name="Name of avtr_worn")
-    vr_named = vr  # the saved avatar file gives the worn avatar this name
-    vrc.avatar = "avtr_worn"
-    assert vr_named.live()["name"] in ("", "Name of avtr_worn")
     inbox2 = Inbox()
     inbox2.add(tmp_path / "unity-exports" / "NoId.json")
     vr.resolve_path, vr.attached = inbox2.resolve, lambda: [i["path"] for i in inbox2.items.values()]

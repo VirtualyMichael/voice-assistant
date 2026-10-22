@@ -86,6 +86,15 @@ Things you taught by hand are never overwritten; if Unity disagrees, the assista
 
 Everything saved about an avatar is one file in `%APPDATA%\VoiceAssistantvatars\<name> [<avatar id>].json`. Settings > VR > Avatar memory lists them, opens one in your editor, or opens the folder. Edits apply at once. The file holds `entries` (menu names and what they switch, `source` says taught or unity), `switches` (backwards or normal, with a note on why) and where it was imported from. A file you break while editing is left alone (a copy is kept as `.broken`) rather than overwritten.
 
+### Avatars whose menu lives in a generated asset (VRCFury and similar): the Unity exporter
+
+Tools like VRCFury merge an avatar's menu, parameters and layers into one generated asset when you build or test it, often in a binary format the text readers above cannot open. For those avatars use the small Unity script in `unity/VoiceAssistantExport` (in the repository):
+
+1. Copy the `VoiceAssistantExport` folder into your Unity project's `Assets` folder (Unity 2022 + VRChat Avatars SDK 3). It only reads; it changes nothing and sends nothing.
+2. Select the avatar in the Hierarchy and choose **Tools > Voice Assistant > Export selected avatar**. For VRCFury avatars do this in Play mode with the Avatars 3.0 Emulator (or after Build & Test), so the generated menu and FX exist.
+3. It writes `%APPDATA%\VoiceAssistant\unity-exports\<avatar>.json`: the whole menu (folders, items, values), the parameters, and which switches work backwards, decided from the FX animations exactly as above, but read from Unity's live objects.
+4. Wear the avatar in VRChat and say "import this avatar". The file is found by the **avatar id** (the Blueprint ID in Unity's Pipeline Manager is the same id VRChat reports). An avatar that was never uploaded has no id yet: the file is then matched by the avatar's name, or attach the file with the paperclip to say it is the one. A file for a different avatar is refused with a message saying so.
+
 ### Attaching files and pictures
 
 Click the paperclip next to the message box, drop files or a whole folder onto the window, or paste a picture (Ctrl+V). The assistant is told what is attached and reads it only when it needs to: text files (Unity `.asset`, `.anim`, `.controller`, `.json`, `.txt`...) in parts, a folder by listing and searching it (never outside that folder), and pictures through your AI model's vision (so a screenshot of the Action Menu is read like a person would; if you use a cloud model, the picture goes to it like any chat message). Attachments are forgotten on New chat. Examples: "import this avatar's menu" with the Unity project folder attached; "here's a screenshot of my clothes menu, work out what these are called"; "search the project for what shirtToggle does".
