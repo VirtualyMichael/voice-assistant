@@ -156,7 +156,7 @@ def test_read_only_values_are_not_switches_and_the_list_shows_current_values(tmp
     vrc = FakeVRChat("avtr_worn", WORN)
     vr, _, _ = make(tmp_path, vrc=vrc)
     listing = vr.listing()
-    assert "shirtToggle (off)" in listing and "Clothing/Shirt Sleeve (on)" in listing and "wingSize (float, now 0.2)" in listing
+    assert "shirtToggle off" in listing and "[Clothing] Shirt Sleeve on" in listing and "wingSize (float) 0.2" in listing and "[Go] Pose (int) 0" in listing
     assert "VelocityX" not in listing and "MuteSelf" not in listing and "current avatar (Name of" not in listing  # no saved file for this avatar: no name, no crash
     assert "shirtColor" in vr.listing("shirt") and "wingSize" not in vr.listing("shirt")
     assert "no switch" in vr.set_param("MuteSelf", "on")  # read-only built-ins cannot be set
@@ -217,7 +217,7 @@ def test_buttons_are_pressed_then_released(tmp_path):
 def test_tools_exist_only_when_vrchat_is_switched_on():
     assert build_vrchat_tools(Config()) == []
     names = [t.name for t in build_vrchat_tools(Config(vrchat_enabled=True))]
-    assert names == ["vrchat_say", "vrchat_set", "vrchat_set_group", "vrchat_parameters", "vrchat_press"]
+    assert names == ["vrchat_say", "vrchat_set", "vrchat_set_group", "vrchat_set_many", "vrchat_parameters", "vrchat_press"]
     assert words("HatToggle") == "hat toggle" and words("Wing_Size2") == "wing size2" and "Voice" in BUILT_IN
 
 
@@ -287,3 +287,40 @@ def test_filler_words_like_color_and_toggles_are_ignored_when_the_exact_words_ma
     out = vr.set_group("stylization clothing color toggles", "off")
     assert out.startswith("Set 3 of 3") and "filler words removed" in out and vrc.params["Stylization/Clothing/Pants"][1] is False
     assert vr.set_group("Stylization/Clothing", "on").startswith("Set 3 of 3") and "filler" not in vr.set_group("Stylization/Clothing", "on")  # an exact folder name needs no trimming
+
+
+COLORS = {"shirtToggle": ("T", False, 3), "shirtColor": ("T", False, 3), "shortsColor": ("T", False, 3), "tankTopColor": ("T", True, 3), "hairColor": ("i", 3, 3),
+          "M_Color": ("f", 0.0, 3), "hatToggle": ("T", False, 3), "Hue Shift": ("f", 0.7, 3)}
+
+
+def test_a_loose_request_is_searched_across_the_whole_name_and_ranked(tmp_path):
+    vrc = FakeVRChat("avtr_worn", COLORS)
+    vr, _, _ = make(tmp_path, vrc=vrc)
+    out = vr.listing("clothing color white")  # no name has all three words; the colour switches fit best
+    assert "shirtColor off" in out and "shortsColor off" in out and "tankTopColor on" in out and "hairColor (int) 3" in out and "hatToggle" not in out
+    live = vr.live()
+    assert [p["name"] for p in vr.search_switches(live, "shirt")] == ["shirtToggle", "shirtColor"]
+    assert [p["name"] for p in vr.search_switches(live, "all the hat toggles")] == ["hatToggle"]  # filler words are ignored, 'toggle' is not
+    assert "no switches" in vr.listing("zebra")
+
+
+def test_several_chosen_switches_are_set_together_and_checked(tmp_path):
+    vrc = FakeVRChat("avtr_worn", COLORS)
+    vr, sent, _ = make(tmp_path, vrc=vrc)
+    out = vr.set_many("shirtColor, shortsColor; tank top color, notASwitch", "on")
+    assert "Set 3 of 3" in out and "Changed: shirtColor, shortsColor, tankTopColor" in out and "Not found, skipped: notASwitch" in out and "confirms every one" in out
+    assert [vrc.params[k][1] for k in ("shirtColor", "shortsColor", "tankTopColor")] == [True, True, True] and vrc.params["hatToggle"][1] is False
+    out = vr.set_many("shirtColor,shortsColor,tankTopColor", "toggle")
+    assert "Switched 3 of 3" in out and [vrc.params[k][1] for k in ("shirtColor", "shortsColor", "tankTopColor")] == [False, False, False]
+    assert "None of those names" in vr.set_many("zebra", "on") and vr.set_many("", "on").startswith("Error")
+    assert "needs VRChat to be running" in make(tmp_path)[0].set_many("shirtColor", "on")
+    vrc.deaf = True
+    assert "did not change 3" in vr.set_many("shirtColor, shortsColor, tankTopColor", "on")
+
+
+def test_the_assistant_is_told_to_check_colours_by_looking():
+    from voice_assistant.agent_tools import capabilities_prompt
+
+    text = capabilities_prompt(Config(), ["vrchat_say", "vrchat_set_many", "look_at_screen"])
+    assert "look_at_screen" in text and "vrchat_set_many" in text and "clothing colors to white" in text
+    assert "vrchat_set_many" in [t.name for t in build_vrchat_tools(Config(vrchat_enabled=True))]
