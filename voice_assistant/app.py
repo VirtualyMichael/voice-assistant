@@ -9,14 +9,15 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QPlainTextEdit, QSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
 from .agent import Agent
+from .attachments import Inbox, build_attachment_tools
 from .audio_io import AudioIO, list_devices
 from .hardware import detect_gpus, recommend
 from .config import INTERRUPT_MODES, LISTEN_MODES, Config, config_dir, load_config, save_config
@@ -85,6 +86,31 @@ def icon_button(glyph: str, tip: str, checkable: bool = False) -> QPushButton:
     b.setToolTip(tip)
     b.setAccessibleName(tip.split(":")[0])
     return b
+
+
+class PasteEntry(QLineEdit):
+    """The message box. Pasting a picture or copied files attaches them to the chat instead of typing something."""
+    attached = Signal(list)
+    picture = Signal(bytes)
+
+    def keyPressEvent(self, e) -> None:
+        if e.matches(QKeySequence.Paste):
+            clip = QApplication.clipboard()
+            md = clip.mimeData()
+            if md is not None and md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
+                self.attached.emit([u.toLocalFile() for u in md.urls() if u.isLocalFile()])
+                return
+            if md is not None and md.hasImage():
+                img = clip.image()
+                if not img.isNull():
+                    data = QByteArray()  # must outlive the buffer
+                    buf = QBuffer(data)
+                    buf.open(QIODevice.WriteOnly)
+                    img.save(buf, "PNG")
+                    buf.close()
+                    self.picture.emit(bytes(data))
+                    return
+        super().keyPressEvent(e)
 
 
 class _OpaqueDialogs(QObject):
@@ -268,16 +294,27 @@ class MainWindow(QMainWindow):
         head.addWidget(self.pin)
         head.addWidget(gear)
 
+        self.inbox = Inbox(config_dir() / "attachments", on_change=self._attachments_changed)  # files, folders and pictures handed to the assistant
+        self.setAcceptDrops(True)
         self.chat = Chat()
         self.partial = QLabel("", objectName="partial")
         self.partial.setWordWrap(True)
         self.latency = QLabel("", objectName="small")
-        self.entry = QLineEdit(placeholderText="Message the assistant…")
+        self.entry = PasteEntry(placeholderText="Message the assistant… (paste or drop files and pictures)")
         talk, stop = QPushButton("Talk", objectName="talk"), icon_button("\uE71A", "Stop: stop listening or speaking")
+        self.attach_btn = icon_button("\uE723", "Attach: give the assistant files, a folder or pictures to learn from (you can also drop them here or paste a picture)")
+        self.attach_label = QLabel("", objectName="small", wordWrap=True)
+        self.attach_clear = icon_button("\uE711", "Remove attachments: forget everything attached to this chat")
         inp = QHBoxLayout()
         inp.addWidget(self.entry, 1)
+        inp.addWidget(self.attach_btn)
         inp.addWidget(talk)
         inp.addWidget(stop)
+        attach_row = QHBoxLayout()
+        attach_row.addWidget(self.attach_label, 1)
+        attach_row.addWidget(self.attach_clear)
+        self.attach_label.setVisible(False)
+        self.attach_clear.setVisible(False)
 
         self.settings = self._build_settings()
         self.settings.setVisible(False)
@@ -294,6 +331,7 @@ class MainWindow(QMainWindow):
         page.addWidget(self.chat, 1)
         page.addWidget(self.partial)
         page.addLayout(inp)
+        page.addLayout(attach_row)
         page.addWidget(self.latency)
         col.addWidget(self.settings, 1)
         col.addWidget(self.chat_page, 1)
@@ -318,6 +356,10 @@ class MainWindow(QMainWindow):
         new_chat.clicked.connect(self._new_chat)
         self.mute.toggled.connect(lambda m: setattr(self.audio, "forward_muted", m))
         self.entry.returnPressed.connect(self._send_text)
+        self.entry.attached.connect(self._attach_paths)
+        self.entry.picture.connect(self._attach_picture)
+        self.attach_btn.clicked.connect(self._pick_files)
+        self.attach_clear.clicked.connect(lambda: self.inbox.clear())
         self.timer = QTimer(self, interval=100)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
@@ -817,6 +859,8 @@ class MainWindow(QMainWindow):
         registry.add(build_home_tools(cfg, self._confirm, self.govee))
         self.vrchat = VRChat(cfg)
         registry.add(build_vrchat_tools(cfg, self.vrchat))
+        self.vrchat.resolve_path = self.inbox.resolve  # 'import the menu from the folder I attached'
+        registry.add(build_attachment_tools(self.inbox, lambda: self.session.agent.llm, lambda: cfg.main_language))
         self.interp = Interpreter(say=lambda t: self.vrchat.say(t), on_change=lambda: self._refresh_prompt(), chatbox_ok=lambda: self.cfg.vrchat_enabled)
         registry.add(build_interpreter_tools(self.interp))
         registry.add(build_profile_tools(cfg, self.profile, self._confirm))
@@ -861,7 +905,7 @@ class MainWindow(QMainWindow):
 
     def _system_prompt(self) -> str:
         return (self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + self.profile.prompt() + capabilities_prompt(self.cfg, self._registry.names()) + self.skills.prompt()
-                + self.interp.prompt())
+                + self.interp.prompt() + self.inbox.prompt())
 
     def _refresh_prompt(self) -> None:
         try:
@@ -944,6 +988,35 @@ class MainWindow(QMainWindow):
             if hasattr(self, "ask_apps"):
                 self.ask_apps.setChecked(False)
         holder.event.set()
+
+    # ---- attachments -----------------------------------------------------------------
+    def dragEnterEvent(self, e) -> None:
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e) -> None:
+        self._attach_paths([u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()])
+
+    def _pick_files(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(self, "Attach files or pictures to the chat")
+        if paths:
+            self._attach_paths(paths)
+
+    def _attach_paths(self, paths: list[str]) -> None:
+        for p in paths:
+            name, err = self.inbox.add(p)
+            self.chat.add("bubbleNote", f"Attached {name}." if name else err)
+
+    def _attach_picture(self, png: bytes) -> None:
+        name, err = self.inbox.add_image_bytes(png)
+        self.chat.add("bubbleNote", f"Attached the pasted picture as {name}." if name else err)
+
+    def _attachments_changed(self) -> None:
+        text = self.inbox.summary()
+        self.attach_label.setText("\U0001F4CE " + text if text else "")
+        self.attach_label.setVisible(bool(text))
+        self.attach_clear.setVisible(bool(text))
+        self._refresh_prompt()  # the assistant is told what is attached, so voice and text both know
 
     def _send_text(self) -> None:
         self.session.submit_text(self.entry.text())
@@ -1500,6 +1573,7 @@ class MainWindow(QMainWindow):
         self.session.stop()
         self.session.agent.reset()
         self.store.clear()
+        self.inbox.clear()
         self.chat.clear()
         self.chat.add("bubbleNote", "New conversation started.")
 

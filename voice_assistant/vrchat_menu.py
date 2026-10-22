@@ -77,6 +77,17 @@ class AvatarNotes:
         self.update(avatar_id, "", edit)
         return removed[0]
 
+    def switch(self, avatar_id: str) -> dict:
+        """How individual switches behave on this avatar: {param: {'inverted': bool, 'note': str}}."""
+        return dict(self.get(avatar_id).get("switches") or {})
+
+    def note_switches(self, avatar_id: str, name: str, params: list[str], inverted: bool, note: str) -> None:
+        def edit(rec):
+            sw = rec.setdefault("switches", {})
+            for p in params:
+                sw[p] = {"inverted": bool(inverted), "note": note}
+        self.update(avatar_id, name, edit)
+
     def replace_imported(self, avatar_id: str, name: str, entries: list[dict], source_folder: str) -> None:
         def edit(rec):
             rec["entries"] = [e for e in rec["entries"] if e.get("source") != "unity"] + entries
@@ -184,11 +195,15 @@ def _guid_of(asset: Path) -> str:
 def find_menus(folder: Path) -> dict[str, tuple[Path, list[dict]]]:
     """Every VRCExpressionsMenu asset under a Unity project folder, by asset guid."""
     menus: dict[str, tuple[Path, list[dict]]] = {}
+    seen = 0
     for dirpath, dirnames, filenames in os.walk(folder):
         dirnames[:] = [d for d in dirnames if d.lower() not in SKIP_FOLDERS]
         for fn in filenames:
             if not fn.endswith(".asset"):
                 continue
+            seen += 1
+            if seen > 20000:  # a whole disk was dropped, not a project
+                return menus
             p = Path(dirpath) / fn
             try:
                 if p.stat().st_size > MAX_FILE:

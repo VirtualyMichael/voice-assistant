@@ -73,6 +73,14 @@ VRChat only tells other programs the raw switch names (`wolfToggle`), never the 
 
 Names you taught win over imported ones, and importing again never deletes them. Exact switch names always work as before, and a name that could mean two things makes it ask instead of guessing.
 
+### Attaching files and pictures
+
+Click the paperclip next to the message box, drop files or a whole folder onto the window, or paste a picture (Ctrl+V). The assistant is told what is attached and reads it only when it needs to: text files (Unity `.asset`, `.anim`, `.controller`, `.json`, `.txt`...) in parts, a folder by listing and searching it (never outside that folder), and pictures through your AI model's vision (so a screenshot of the Action Menu is read like a person would; if you use a cloud model, the picture goes to it like any chat message). Attachments are forgotten on New chat. Examples: "import this avatar's menu" with the Unity project folder attached; "here's a screenshot of my clothes menu, work out what these are called"; "search the project for what shirtToggle does".
+
+### Switches that work backwards
+
+On many avatars the clothes toggles work the other way round: **off = worn, on = hidden**, while colour switches are normal. Tell the assistant ("the clothes toggles are backwards"), or let it find out: it flashes a switch and asks whether the item appeared or disappeared when it went on, or reads the animation files you attach (`m_IsActive: 0` for the ON state means backwards), then saves it per avatar. From then on it says "show" and "hide" for items, so "take everything off" works even in a folder that mixes both kinds. Plain "on" and "off" always mean the raw switch. Backwards switches are marked in the switch list.
+
 ## 5. Troubleshooting
 
 | Problem | Usual cause and fix |

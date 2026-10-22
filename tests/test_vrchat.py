@@ -217,7 +217,7 @@ def test_buttons_are_pressed_then_released(tmp_path):
 def test_tools_exist_only_when_vrchat_is_switched_on():
     assert build_vrchat_tools(Config()) == []
     names = [t.name for t in build_vrchat_tools(Config(vrchat_enabled=True))]
-    assert names == ["vrchat_say", "vrchat_set", "vrchat_set_group", "vrchat_set_many", "vrchat_parameters", "vrchat_press", "vrchat_remember", "vrchat_forget", "vrchat_notes", "vrchat_flash", "vrchat_import_menu"]
+    assert names == ["vrchat_say", "vrchat_set", "vrchat_set_group", "vrchat_set_many", "vrchat_parameters", "vrchat_press", "vrchat_remember", "vrchat_forget", "vrchat_notes", "vrchat_flash", "vrchat_switch_note", "vrchat_import_menu"]
     assert words("HatToggle") == "hat toggle" and words("Wing_Size2") == "wing size2" and "Voice" in BUILT_IN
 
 
