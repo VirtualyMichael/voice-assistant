@@ -4,13 +4,35 @@
   "version": "1.1.0",
   "description": "Lets the Voice Assistant app on this PC search and play songs in your signed-in YouTube Music. Talks only to the app on 127.0.0.1 and only touches music.youtube.com.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArbRh9glK83PMGAN2TJWuk6eLEWCyuqRUK68JyKxz7bCXogH8MvN9Hk8MypsdsSiJ9PBuW+8lnPJRvOH12OEQROA8F/mVlkvzOmgatBHL13XXXeUKun/5Pb8t31juywmb+Fe2p/Tc1t9HxjlqFiIjoyLlPlYw6dqc5o+OYay4+pOUdQeNx1E3xTTpp8wfY1V0eLiJ+J9ub1i7cNk8UA/2CqiaXFaLRv5oezolnz9Teve6EPs/gdkrGWpHsGk/R9Y6vSm1g886iAY3MOxWOpk1qJ98kZsGV8qEqEshO7jNHbxqzHxwQalLgqj4kwxiavViwrMTDM4sLpfoequ5AdEjpQIDAQAB",
-  "permissions": ["tabs", "scripting", "alarms"],
-  "host_permissions": ["https://music.youtube.com/*"],
-  "background": { "service_worker": "background.js" },
+  "permissions": [
+    "tabs",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://music.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
-      "matches": ["https://music.youtube.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://music.youtube.com/*"
+      ],
+      "js": [
+        "unload-guard.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://music.youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

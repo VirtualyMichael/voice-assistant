@@ -32,6 +32,14 @@ async function ask(tab, message) {
 }
 
 
+// Tell the page's "Leave site?" guard (unload-guard.js) that the extension is moving this tab on purpose, and add a fallback for a page that loaded before the extension did.
+async function quietUnload(tabId) {
+  await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", func: () => {
+    window.__ytmNavigating = true;
+    window.addEventListener("beforeunload", (e) => e.stopImmediatePropagation(), true);
+  } });
+}
+
 // Runs INSIDE the YouTube Music page (chrome.scripting, world MAIN), so it can use the page's own signed-in session the way the page itself does.
 // It lists your playlists and every track in them (titles and artists, plus the video id) and returns that to the app. Nothing leaves your PC.
 async function fetchLibrary() {
@@ -107,17 +115,16 @@ async function handle(msg) {
     if (msg.action === "open_playlist") {
       const id = String(msg.playlist || "");
       if (!/^[A-Za-z0-9_-]{2,64}$/.test(id)) return { ok: false, error: "That is not a playlist id." };
-      // The page asks "Leave site?" when it is playing; swallow that one question so the navigation is not blocked.
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: () => window.addEventListener("beforeunload", (e) => e.stopImmediatePropagation(), true) });
+      await quietUnload(tab.id);
       await chrome.tabs.update(tab.id, { url: "https://music.youtube.com/watch?list=" + encodeURIComponent(id) });
       return { ok: true, result: "opened" };
     }
     if (msg.action === "radio") {
       // "play more like this": YouTube Music's own radio for the playing song is the playlist RDAMVM<video id>
-      const [cur] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: () => new URL(location.href).searchParams.get("v") || "" });
+      const [cur] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: () => { const p = document.getElementById("movie_player"); const id = p && p.getVideoData ? (p.getVideoData() || {}).video_id : ""; return id || new URL(location.href).searchParams.get("v") || ""; } });
       const vid = cur && cur.result;
       if (!/^[A-Za-z0-9_-]{6,20}$/.test(vid || "")) return { ok: false, error: "No song is playing in the YouTube Music tab, so there is nothing to base a radio on." };
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: () => window.addEventListener("beforeunload", (e) => e.stopImmediatePropagation(), true) });
+      await quietUnload(tab.id);
       await chrome.tabs.update(tab.id, { url: "https://music.youtube.com/watch?v=" + encodeURIComponent(vid) + "&list=RDAMVM" + encodeURIComponent(vid) });
       return { ok: true, result: "opened" };
     }

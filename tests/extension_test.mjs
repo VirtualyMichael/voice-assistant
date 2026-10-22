@@ -135,6 +135,40 @@ await test("the message listener reports like status, the video and the list in 
   assert.equal(s.list, "RDAMVMabc123");
 });
 
+await test("the unload guard keeps the page's 'Leave site?' prompt, except while the extension is moving the tab", async () => {
+  class Target {
+    constructor() { this.l = {}; }
+    addEventListener(type, fn) { (this.l[type] = this.l[type] || []).push(fn); }
+    removeEventListener(type, fn) { this.l[type] = (this.l[type] || []).filter((f) => f !== fn); }
+    fire(type) { const e = { returnValue: "", prevented: false, preventDefault() { this.prevented = true; } }; for (const f of [...(this.l[type] || [])]) f.call(this, e); return e; }
+  }
+  const win = new Target();
+  const context = { EventTarget: Target, window: win, Object };
+  vm.createContext(context);
+  vm.runInContext(read("unload-guard.js"), context);
+  let asked = 0, removedRan = 0;
+  const pageHandler = (e) => { asked++; e.returnValue = "Leave?"; e.preventDefault(); };
+  win.addEventListener("beforeunload", pageHandler); // registered by the page after the guard
+  const removed = () => { removedRan++; };
+  win.addEventListener("beforeunload", removed);
+  win.removeEventListener("beforeunload", removed);
+  win.onbeforeunload = (e) => { asked += 10; return "again"; };
+  let ev = win.fire("beforeunload");
+  assert.equal(asked, 11); // the page's own prompt still works for the user closing the window
+  assert.equal(ev.prevented, true);
+  assert.equal(removedRan, 0);
+  win.__ytmNavigating = true; // the extension is opening a playlist or radio
+  asked = 0;
+  ev = win.fire("beforeunload");
+  assert.equal(asked, 0);
+  assert.equal(ev.prevented, false);
+  const other = new Target(); // other targets and other events are untouched
+  let clicks = 0;
+  other.addEventListener("click", () => clicks++);
+  other.fire("click");
+  assert.equal(clicks, 1);
+});
+
 // ---------- the background script with a fake browser --------------------------------------------
 function loadBackground({ tabs, windows = {}, failFirstSend = false }) {
   const sent = [], injected = [], sockets = [];
