@@ -268,3 +268,58 @@ def make_playlist_player(bridge: YtmBridge | None, library, open_tab=None):
             return str(e)
 
     return play
+
+
+ACTION_WORDS = {"like": "like", "unlike": "unlike", "shuffle": "shuffle", "radio": "radio", "more like this": "radio", "whats playing": "now", "now": "now"}
+
+
+def make_music_actions(bridge: YtmBridge | None, sleep=time.sleep, clock=time.time):
+    """act(action) for the song that is playing in the user's own tab: like, unlike, shuffle, radio ("play more like this") or now (what is playing).
+    Each one reports what the page itself showed afterwards, never just that a button was pressed."""
+
+    def now_text(state: dict) -> str:
+        return f"{state['title']}" + (f" by {state['by']}" if state.get("by") else "") if state.get("title") else "nothing"
+
+    def act(action: str) -> str:
+        what = ACTION_WORDS.get(action.strip().lower().replace("_", " "))
+        if what is None:
+            raise YtmError("action must be one of: like, unlike, shuffle, radio, now.")
+        if bridge is None:
+            raise YtmError("This needs the browser extension, and it is switched off in Settings > Apps.")
+        if not bridge.connected and bridge.extension_id:
+            bridge.wait_connected()
+        if not bridge.connected:
+            raise YtmError("This needs the browser extension, and it is not connected right now.")
+        state = bridge.request("state").get("state", {})
+        if what == "now":
+            return f"{'Paused' if state.get('paused') else 'Playing'}: {now_text(state)}." if state.get("title") else "Nothing is playing in your YouTube Music."
+        if not state.get("title"):
+            raise YtmError("Nothing is playing in your YouTube Music, so there is no song to do that with.")
+        if what == "radio":
+            bridge.request("radio", timeout=15)
+            end, last = clock() + 20, {}
+            while clock() < end:
+                sleep(1.0)
+                try:
+                    last = bridge.request("state", timeout=8).get("state", {})
+                except YtmError:
+                    continue
+                if str(last.get("list", "")).startswith("RDAMVM") and last.get("paused") is False and last.get("title"):
+                    return f"Playing more like {now_text(state)} (YouTube Music's radio for it), starting with {now_text(last)}."
+            raise YtmError(f"I opened the radio for {now_text(state)}, but it did not start playing.")
+        res = bridge.request("control", what=what, timeout=15)
+        result = res.get("result")
+        title = now_text(state)
+        if result == "liked":
+            return f"Liked {title}. (YouTube Music shows it as liked.)"
+        if result == "already liked":
+            return f"{title} was already liked; nothing changed."
+        if result == "like removed":
+            return f"Removed your like from {title}."
+        if result == "already not liked":
+            return f"{title} was not liked; nothing changed."
+        if result == "shuffle toggled":
+            return "Toggled shuffle; the queue order changed."
+        raise YtmError(f"I pressed the button for '{what}', but the page did not confirm that it changed ({result}).")
+
+    return act

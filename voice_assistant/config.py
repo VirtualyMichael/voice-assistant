@@ -115,6 +115,11 @@ class Config:
     govee_enabled: bool = False  # Govee lights over the local network (LAN Control must be on in the Govee Home app)
     light_names: dict = field(default_factory=dict)  # light ip -> friendly name, e.g. {"10.0.0.21": "desk lamp"}
     ha_url: str = ""  # Home Assistant address, e.g. http://homeassistant.local:8123 (token is in Credential Manager)
+    duck_music: bool = False  # lower the music apps' own volume while the assistant listens, thinks and speaks
+    duck_level: float = 0.25  # how loud the music stays while ducked (fraction of its level)
+    vrchat_enabled: bool = False  # chatbox, avatar switches and a few controls over VRChat's OSC (Action Menu > Options > OSC > Enabled in the game)
+    vrchat_host: str = "127.0.0.1"
+    vrchat_port: int = 9000
     routines: dict = field(default_factory=dict)  # e.g. {"good night": [{"tool": "set_lights", "args": {"on": false}}, {"tool": "set_volume", "args": {"action": "mute"}}]}
     confirm_routines: bool = True
     main_language: str = "English"  # translations and screen reading answer in this language

@@ -25,6 +25,7 @@ class Tool:
 class ToolRegistry:
     def __init__(self, tools: list[Tool]):
         self._tools = {t.name: t for t in tools}
+        self.log = None  # a diagnostics.CallLog: every call and its result is remembered there
 
     def add(self, tools: list[Tool]) -> None:
         self._tools.update({t.name: t for t in tools})
@@ -43,6 +44,12 @@ class ToolRegistry:
         ]
 
     def call(self, name: str, arguments: str) -> str:
+        result = self._call(name, arguments)
+        if self.log is not None and name != "what_went_wrong":
+            self.log.record(name, arguments, str(result))
+        return result
+
+    def _call(self, name: str, arguments: str) -> str:
         tool = self._tools.get(name)
         if tool is None:
             return f"Error: unknown tool {name!r}."

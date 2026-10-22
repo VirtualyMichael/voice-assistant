@@ -141,3 +141,26 @@ def test_announce_speaks_and_returns_to_rest():
     assert wait(lambda: len(played) == 1)
     assert wait(lambda: s.state is State.IDLE)
     s.close()
+
+
+def test_failures_are_remembered_so_the_assistant_can_explain_them():
+    import json as _json
+
+    from voice_assistant.diagnostics import CallLog, build_diagnostic_tools, looks_failed
+    from voice_assistant.tools import Tool, ToolRegistry
+
+    reg = ToolRegistry([Tool("ok_tool", "x", {"type": "object", "properties": {}}, lambda: "Done."),
+                        Tool("bad_tool", "x", {"type": "object", "properties": {}}, lambda: "Could not find a song for 'x'."),
+                        Tool("boom", "x", {"type": "object", "properties": {}}, lambda: 1 / 0)])
+    reg.log = CallLog(clock=lambda: 100.0)
+    why = {t.name: t.handler for t in build_diagnostic_tools(reg.log, lambda: ["hotkey ctrl+space unavailable: taken"], clock=lambda: 130.0)}["what_went_wrong"]
+    reg.call("ok_tool", "{}")
+    assert "At startup: hotkey" in why()  # only the startup problem so far
+    reg.call("bad_tool", "{}")
+    reg.call("boom", "{}")
+    reg.call("declined_tool", _json.dumps({}))
+    out = why()
+    assert "bad_tool" in out and "Could not find a song" in out and "ZeroDivisionError" in out and "30 s ago" in out and "ok_tool" not in out
+    assert not looks_failed("The user declined this action.") and looks_failed("Error: nope") and not looks_failed("Playing X.")
+    reg.call("what_went_wrong", "{}")  # asking is not itself recorded as a failure
+    assert all(i["tool"] != "what_went_wrong" for i in reg.log.items)

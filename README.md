@@ -113,6 +113,10 @@ Settings opens as a full page with a sidebar: **Voice** (voice picker, wake word
   `doctor` and Settings show your GPU tier (under 8 / 8-12 / 12-20 / 20+ GB) and a model-size suggestion after the
   VRAM reserve you set for games.
 
+## VRChat control (OSC)
+
+Say "tell VRChat I'll be right back", "turn my hat on" or "mute me in VRChat": the assistant types in the chatbox, flips avatar toggles and presses a few controls through VRChat's own OSC feature. Switch it on in Settings > VR and in VRChat (Action Menu > Options > OSC > Enabled). Full guide, including how avatar parameters work and troubleshooting: [docs/VRCHAT.md](docs/VRCHAT.md).
+
 ## VR auto-switch
 
 Settings → "Switch devices while SteamVR is running" reveals VR microphone/speaker pickers (hidden until enabled).

@@ -154,7 +154,7 @@ def play_in_ytm(video_id: str, windows, launch, close, wait=time.sleep, timeout:
 
 
 def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=resolve_song, close=close_window, wait=time.sleep,
-                      foreground=foreground_window, playing=is_playing, nudge=press_play, in_window=None, browser_play=None, playlist_play=None, playlist_for=None) -> list[Tool]:
+                      foreground=foreground_window, playing=is_playing, nudge=press_play, in_window=None, browser_play=None, playlist_play=None, playlist_for=None, music_act=None, pause=None, timer=None) -> list[Tool]:
     from .agent_tools import _obj, _str
 
     def play_music(query: str) -> str:
@@ -216,4 +216,36 @@ def build_music_tools(cfg, confirm, windows, launcher=app_launcher, resolver=res
     if playlist_play is not None:
         tools.append(Tool("play_playlist", "Play one of the user's own saved YouTube Music playlists by name, such as 'play my early morning playlist'. Only saved playlists can be played; if none has that name it says so and lists the closest ones, "
                           "then ask the user which they meant instead of playing a song search.", _obj({"name": _str}, ["name"]), play_playlist))
+    if music_act is not None:
+        def music_action(action: str) -> str:
+            try:
+                return music_act(action)
+            except Exception as e:
+                return f"Could not do that: {e}"
+
+        tools.append(Tool("music_action", "Do something with the song playing in the user's YouTube Music: like or unlike it, 'radio' (play more like this), shuffle, or 'now' (what is playing). Needs the browser extension. Reports what the page showed afterwards.",
+                          _obj({"action": _str}, ["action"]), music_action))
+    if pause is not None:
+        state = {"timer": None}
+
+        def sleep_timer(minutes: float = 0) -> str:
+            """minutes > 0 starts a sleep timer that pauses the music after that long; 0 cancels it."""
+            import threading
+
+            mins = float(minutes)
+            if state["timer"] is not None:
+                state["timer"].cancel()
+                state["timer"] = None
+            if mins <= 0:
+                return "Sleep timer cancelled."
+            if mins > 600:
+                return "Error: that is longer than 10 hours."
+            t = (timer or threading.Timer)(mins * 60, lambda: pause())
+            if hasattr(t, "daemon"):
+                t.daemon = True
+            t.start()
+            state["timer"] = t
+            return f"The music will pause in {mins:g} minute(s). Say 'cancel the sleep timer' to stop it."
+
+        tools.append(Tool("sleep_timer", "Pause the music after some minutes (a sleep timer). minutes 0 cancels it.", _obj({"minutes": {"type": "number"}}, ["minutes"]), sleep_timer))
     return tools

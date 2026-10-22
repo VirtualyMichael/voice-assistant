@@ -31,15 +31,19 @@ from .permissions import FolderPolicy
 from .routing import double_voice_warnings, listen_routes
 from .delegate import UsageLog, build_delegate_tools
 from .computer import build_computer_tools
-from .extras import build_extra_tools
+from .extras import Audio, build_extra_tools
 from .music import build_music_tools, open_users_youtube_music
-from .ytm_bridge import YtmBridge, extension_folder, make_player, make_playlist_player
+from .ytm_bridge import YtmBridge, extension_folder, make_music_actions, make_player, make_playlist_player
 from .ytm_library import Library
 from .ytm_browser import YtmBrowser, make_judge
 from .screen import list_windows
 from .profile import Profile, build_profile_tools
 from .screen import build_screen_tools
 from .smart_home import HOME_TOOL_NAMES, build_home_tools, make_govee
+from .diagnostics import CallLog, build_diagnostic_tools
+from .ducking import Ducker
+from .interpreter import Interpreter, build_interpreter_tools
+from .vrchat import VRCHAT_TOOL_NAMES, VRChat, build_vrchat_tools
 from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_for, needs_key, save_key, set_model
 from .session import Session, SessionEvents
 from .speaker import Speaker
@@ -102,13 +106,33 @@ class _Holder:
 class QtEvents(SessionEvents):
     def __init__(self, b: Bridge):
         self.b = b
+        self.on_state = self.on_delta = self.on_done = None  # optional taps: music ducking and interpreter mode
 
-    def state(self, s): self.b.state.emit(s.value)
+    def state(self, s):
+        self.b.state.emit(s.value)
+        if self.on_state:
+            self.on_state(s.value)
     def partial(self, t): self.b.partial.emit(t)
     def user_final(self, t): self.b.user.emit(t)
-    def assistant_delta(self, t): self.b.delta.emit(t)
-    def assistant_done(self, m: TurnMetrics): self.b.done.emit(m.describe())
+    def assistant_delta(self, t):
+        self.b.delta.emit(t)
+        if self.on_delta:
+            self.on_delta(t)
+
+    def assistant_done(self, m: TurnMetrics):
+        self.b.done.emit(m.describe())
+        if self.on_done:
+            self.on_done()
     def error(self, msg): self.b.error.emit(msg)
+
+
+def _init_com() -> None:
+    try:
+        import comtypes
+
+        comtypes.CoInitialize()
+    except Exception:
+        pass
 
 
 class TabbedForm:
@@ -340,6 +364,11 @@ class MainWindow(QMainWindow):
         form = TabbedForm(tabs, names)
         self._form = form
         form.use("Audio")
+        duck = QCheckBox("Lower my music while the assistant listens and speaks")
+        duck.setToolTip("Only music apps' own volume (browsers, Spotify, VLC...) is lowered, not the master volume, and it is restored afterwards")
+        duck.setChecked(cfg.duck_music)
+        duck.toggled.connect(lambda v: self._set_field("duck_music", v))
+        form.addRow(duck)
         self.dev = {}
         for key, label, kind, optional in (
             ("input_device", "Microphone", "input", False),
@@ -536,6 +565,11 @@ class MainWindow(QMainWindow):
         self.vr_box.setVisible(cfg.vr_autoswitch)
         form.addRow(self.vr_box)
         vr_on.toggled.connect(self._set_vr_autoswitch)
+        vrc = QCheckBox("Control VRChat by voice (chatbox and avatar switches over OSC)")
+        vrc.setChecked(cfg.vrchat_enabled)
+        vrc.toggled.connect(lambda v: self._set_home("vrchat_enabled", v))
+        form.addRow(vrc)
+        form.addRow(QLabel("Needs OSC switched on in VRChat: Action Menu > Options > OSC > Enabled. Setup and what you can say: docs/VRCHAT.md in the repository.", objectName="small", wordWrap=True))
         form.use("Skills")
         form.addRow(QLabel("Skills are folders with a SKILL.md (the Bionic/Claude format). Add a skill folder, or a folder of skills.", objectName="small", wordWrap=True))
         self.skills_list = QListWidget()
@@ -766,12 +800,18 @@ class MainWindow(QMainWindow):
         registry.add(build_agent_tools(cfg, self.policy, self._confirm, lambda t: self.session.announce(t), self.timers, self.catalog))
         self.govee = make_govee(cfg)
         registry.add(build_home_tools(cfg, self._confirm, self.govee))
+        self.vrchat = VRChat(cfg)
+        registry.add(build_vrchat_tools(cfg, self.vrchat))
+        self.interp = Interpreter(say=lambda t: self.vrchat.say(t), on_change=lambda: self._refresh_prompt(), chatbox_ok=lambda: self.cfg.vrchat_enabled)
+        registry.add(build_interpreter_tools(self.interp))
         registry.add(build_profile_tools(cfg, self.profile, self._confirm))
         if cfg.delegate_enabled:
             registry.add(build_delegate_tools(cfg, self.policy, self._confirm, self.usage))
-        registry.add(build_extra_tools(cfg, self._confirm, lambda name, args: registry.call(name, args)))
+        registry.add(build_extra_tools(cfg, self._confirm, lambda name, args: registry.call(name, args), known_tools=registry.names, persist=lambda: save_config(self.cfg)))
         registry.add(self._music_and_computer_tools())
         registry.add(build_screen_tools(cfg, self._confirm, lambda: self.session.agent.llm))
+        registry.log = CallLog()
+        registry.add(build_diagnostic_tools(registry.log, lambda: self.warnings))
         self.pdfs = PdfStore()
         registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))
         self._registry = registry
@@ -787,7 +827,12 @@ class MainWindow(QMainWindow):
         self.audio = AudioIO(cfg, lambda x: self.session.feed_audio(x), lambda m: self.bridge.error.emit(m))
         self.synth = parts["synth"]
         speaker = Speaker(parts["synth"], self.audio.player) if parts["synth"] else None
-        self.session = Session(cfg, agent, speaker, parts["recognizer"], parts["wake"], QtEvents(self.bridge), accurate=parts["accurate"])
+        events = QtEvents(self.bridge)
+        self.ducker = Ducker(Audio(), cfg.duck_level, enabled=lambda: self.cfg.duck_music, init_com=_init_com)
+        events.on_state = self.ducker.on_state
+        events.on_delta = self.interp.feed
+        events.on_done = self.interp.finish
+        self.session = Session(cfg, agent, speaker, parts["recognizer"], parts["wake"], events, accurate=parts["accurate"])
         self._add_voice_picker()
         self.mcp = None
         self._warm_pdfs()
@@ -800,7 +845,14 @@ class MainWindow(QMainWindow):
             self.session.start()
 
     def _system_prompt(self) -> str:
-        return self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + self.profile.prompt() + capabilities_prompt(self.cfg, self._registry.names()) + self.skills.prompt()
+        return (self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + self.profile.prompt() + capabilities_prompt(self.cfg, self._registry.names()) + self.skills.prompt()
+                + self.interp.prompt())
+
+    def _refresh_prompt(self) -> None:
+        try:
+            self.session.agent.messages[0]["content"] = self._system_prompt()
+        except Exception:
+            pass
 
     def _warm_pdfs(self) -> None:
         """Index the skills' PDFs in the background so the first question is quick (cached on disk afterwards)."""
@@ -1107,7 +1159,9 @@ class MainWindow(QMainWindow):
                                   judge=make_judge(lambda: self.session.agent.llm), library=self.library)
         playlist_play = make_playlist_player(self.ytm_bridge if self.cfg.ytm_extension else None, self.library, open_tab=open_users_youtube_music)
         return build_music_tools(self.cfg, self._confirm, list_windows, in_window=in_window, browser_play=browser_play, playlist_play=playlist_play,
-                                   playlist_for=self.library.playlist_intent) + ctools
+                                   playlist_for=self.library.playlist_intent,
+                                   music_act=make_music_actions(self.ytm_bridge if self.cfg.ytm_extension else None),
+                                   pause=lambda: self._registry.call("media_control", '{"action": "pause"}')) + ctools
 
     def _open_extension_folder(self) -> None:
         folder = extension_folder()
@@ -1161,14 +1215,15 @@ class MainWindow(QMainWindow):
     def _refresh_home_tools(self) -> None:
         """Apply smart-home settings now: swap the home tools in the live agent and tell it about them."""
         self.govee = make_govee(self.cfg)
-        self._registry.remove(HOME_TOOL_NAMES + ("delegate_task", "usage_report", "learn_about_user", "computer_task", "control_click", "control_type", "control_keys", "control_scroll", "control_focus", "play_music"))
+        self._registry.remove(VRCHAT_TOOL_NAMES + HOME_TOOL_NAMES + ("delegate_task", "usage_report", "learn_about_user", "computer_task", "control_click", "control_type", "control_keys", "control_scroll", "control_focus", "play_music", "play_playlist", "music_action", "sleep_timer"))
         self._registry.add(self._music_and_computer_tools())
         self._registry.add(build_profile_tools(self.cfg, self.profile, self._confirm))
         self._registry.add(build_home_tools(self.cfg, self._confirm, self.govee))
+        self._registry.add(build_vrchat_tools(self.cfg, self.vrchat))
         if self.cfg.delegate_enabled:
             self._registry.add(build_delegate_tools(self.cfg, self.policy, self._confirm, self.usage))
         self.session.agent.messages[0]["content"] = self._system_prompt()
-        have = [n for n in HOME_TOOL_NAMES + ("delegate_task",) if n in self._registry.names()]
+        have = [n for n in HOME_TOOL_NAMES + VRCHAT_TOOL_NAMES + ("delegate_task",) if n in self._registry.names()]
         self.chat.add("bubbleNote", "Tools ready: " + ", ".join(have) if have else "Home and delegation tools off.")
 
     def _find_lights(self) -> None:
@@ -1495,6 +1550,7 @@ class MainWindow(QMainWindow):
         save_config(self.cfg)
         self.timer.stop()
         self.timers.cancel_all()
+        self.ducker.restore()  # never leave the music quiet when the assistant closes
         if self.mcp:
             self.mcp.close()
         self.vr_watcher._stop.set()

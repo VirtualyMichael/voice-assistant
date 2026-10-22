@@ -172,8 +172,13 @@ class Notes:
         return f"Deleted: {gone['text']}"
 
 
-def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=press, session=media_session, audio=None) -> list[Tool]:
-    """call_tool(name, json_args) runs another registered tool (used by routines)."""
+ROUTINE_TOOL_NAMES = ("run_routine", "list_routines", "save_routine", "delete_routine")
+NOT_IN_ROUTINES = {"run_routine", "save_routine", "delete_routine", "list_routines", "run_powershell", "delegate_task", "computer_task", "control_click", "control_type",
+                   "control_keys", "control_scroll", "control_focus", "write_clipboard", "write_text_file"}  # a routine must not hide a shell command, a delegated job or a computer-control session in a phrase
+
+
+def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=press, session=media_session, audio=None, known_tools=lambda: [], persist=lambda: None) -> list[Tool]:
+    """call_tool(name, json_args) runs another registered tool (used by routines); known_tools() lists the tool names a routine step may use; persist() saves the settings."""
     from .agent_tools import _obj, _str
 
     notes = notes or Notes()
@@ -225,18 +230,67 @@ def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=
                 return {"up": "Volume up.", "down": "Volume down.", "mute": "Toggled mute."}[act]
         return "Error: give a percent (0-100), or an action: up, down or mute. Add app (e.g. YouTube Music) for one app's volume."
 
+    def find_routine(name: str) -> str | None:
+        """The saved routine this spoken name means ('goodnight', 'Good night!' and 'good night' are one), or None."""
+        from .ytm_browser import compact, similarity
+
+        want = compact(name)
+        for key in cfg.routines:
+            if compact(key) == want:
+                return key
+        near = sorted(((similarity(name, key), key) for key in cfg.routines), reverse=True)
+        return near[0][1] if near and near[0][0] >= 0.85 and (len(near) == 1 or near[1][0] < near[0][0] - 0.05) else None
+
     def run_routine(name: str) -> str:
-        steps = cfg.routines.get(name.strip().lower())
-        if steps is None:
+        key = find_routine(name)
+        if key is None:
             return "No such routine. Known routines: " + (", ".join(cfg.routines) or "none") + "."
-        if cfg.confirm_routines and not confirm(f"Run routine '{name}'?\n\n" + "\n".join(s.get("tool", "?") for s in steps)):
+        steps = cfg.routines[key]
+        if cfg.confirm_routines and not confirm(f"Run routine '{key}'?\n\n" + "\n".join(s.get("tool", "?") for s in steps)):
             return declined
         out = []
         for s in steps:
-            if s.get("tool") == "run_routine":
-                continue  # no routines calling routines
+            if s.get("tool") in NOT_IN_ROUTINES:
+                continue  # no routines calling routines, and nothing hidden inside one
             out.append(f"{s.get('tool')}: {call_tool(s.get('tool', ''), json.dumps(s.get('args', {})))}")
         return "\n".join(out) or "The routine has no steps."
+
+    def list_routines() -> str:
+        if not cfg.routines:
+            return "No routines saved yet. The user can ask you to save one, e.g. 'make a good night routine that turns the lights off and pauses the music'."
+        return "\n".join(f"{name}: " + ", ".join(f"{s.get('tool')}({json.dumps(s.get('args', {}))})" for s in steps) for name, steps in cfg.routines.items())
+
+    def save_routine(name: str, steps: str) -> str:
+        """steps: a JSON list like [{"tool": "set_lights", "args": {"on": false}}, {"tool": "media_control", "args": {"action": "pause"}}]."""
+        key = " ".join(name.lower().split())
+        if not key or len(key) > 60:
+            return "Error: give the routine a short name."
+        try:
+            parsed = json.loads(steps) if isinstance(steps, str) else steps
+            assert isinstance(parsed, list) and parsed and all(isinstance(s, dict) and isinstance(s.get("tool"), str) and isinstance(s.get("args", {}), dict) for s in parsed)
+        except Exception:
+            return 'Error: steps must be a JSON list like [{"tool": "set_lights", "args": {"on": false}}].'
+        known = set(known_tools())
+        bad = [s["tool"] for s in parsed if s["tool"] in NOT_IN_ROUTINES or (known and s["tool"] not in known)]
+        if bad:
+            return f"Error: these cannot be routine steps: {', '.join(dict.fromkeys(bad))}. Use tools such as set_lights, set_volume, media_control, play_music, vrchat_set, set_timer."
+        listing = "\n".join(f"{s['tool']} {json.dumps(s.get('args', {}))}" for s in parsed)
+        replacing = key in cfg.routines
+        if not confirm(f"{'Replace' if replacing else 'Save'} the routine '{key}'?\n\n{listing}"):
+            return declined
+        cfg.routines[key] = [{"tool": s["tool"], "args": s.get("args", {})} for s in parsed]
+        persist()
+        return f"Saved routine '{key}' with {len(parsed)} step(s). Say its name to run it."
+
+    def delete_routine(name: str) -> str:
+        key = find_routine(name)
+        if key is None:
+            return "No such routine. Known routines: " + (", ".join(cfg.routines) or "none") + "."
+        if not confirm(f"Delete the routine '{key}'?"):
+            return declined
+        del cfg.routines[key]
+        persist()
+        return f"Deleted routine '{key}'."
 
     tools = [
         Tool("media_control", "Control music/video playback on this PC: play, pause, play_pause, next, previous, stop. Reports what the player actually did.", _obj({"action": _str}, ["action"]), media),
@@ -245,8 +299,13 @@ def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=
         Tool("list_notes", "Search or list the user's saved notes.", _obj({"query": _str}), notes.listing),
         Tool("delete_note", "Delete a saved note by its number.", _obj({"number": {"type": "integer"}}, ["number"]), lambda number: notes.remove(int(number))),
     ]
-    if cfg.routines:
-        tools.append(Tool("run_routine", "Run one of the user's saved routines: " + ", ".join(cfg.routines) + ".", _obj({"name": _str}, ["name"]), run_routine))
+    tools += [
+        Tool("run_routine", "Run one of the user's saved routines (several actions under one phrase, like 'good night'). Call list_routines to see them.", _obj({"name": _str}, ["name"]), run_routine),
+        Tool("list_routines", "List the user's saved routines and their steps.", _obj({}), list_routines),
+        Tool("save_routine", "Save a routine the user describes ('make a gaming mode routine that dims the lights and sets YouTube Music to 20%'). steps is a JSON list of {\"tool\": name, \"args\": {...}} using the other tools "
+             "(set_lights, set_volume, media_control, play_music, vrchat_set, ...). The user confirms before it is saved.", _obj({"name": _str, "steps": _str}, ["name", "steps"]), save_routine),
+        Tool("delete_routine", "Delete a saved routine by name (the user confirms).", _obj({"name": _str}, ["name"]), delete_routine),
+    ]
     if cfg.allow_web:
         tools.append(Tool("get_weather", "Current weather and today's forecast for a place (city name).", _obj({"place": _str}, ["place"]), weather))
     return tools

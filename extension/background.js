@@ -112,6 +112,15 @@ async function handle(msg) {
       await chrome.tabs.update(tab.id, { url: "https://music.youtube.com/watch?list=" + encodeURIComponent(id) });
       return { ok: true, result: "opened" };
     }
+    if (msg.action === "radio") {
+      // "play more like this": YouTube Music's own radio for the playing song is the playlist RDAMVM<video id>
+      const [cur] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: () => new URL(location.href).searchParams.get("v") || "" });
+      const vid = cur && cur.result;
+      if (!/^[A-Za-z0-9_-]{6,20}$/.test(vid || "")) return { ok: false, error: "No song is playing in the YouTube Music tab, so there is nothing to base a radio on." };
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func: () => window.addEventListener("beforeunload", (e) => e.stopImmediatePropagation(), true) });
+      await chrome.tabs.update(tab.id, { url: "https://music.youtube.com/watch?v=" + encodeURIComponent(vid) + "&list=RDAMVM" + encodeURIComponent(vid) });
+      return { ok: true, result: "opened" };
+    }
     const res = await ask(tab, msg);
     return res || { ok: false, error: "The YouTube Music page did not answer." };
   } catch (e) {

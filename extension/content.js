@@ -34,7 +34,8 @@
     const v = document.querySelector("video");
     const t = document.querySelector("ytmusic-player-bar .title");
     const by = document.querySelector("ytmusic-player-bar .byline");
-    return { paused: v ? v.paused : null, time: v ? v.currentTime : null, title: t ? t.innerText : "", by: by ? norm(by.innerText) : "" };
+    const sp = new URL(location.href).searchParams;
+    return { paused: v ? v.paused : null, time: v ? v.currentTime : null, title: t ? t.innerText : "", by: by ? norm(by.innerText) : "", liked: likeStatus(), video: sp.get("v") || "", list: sp.get("list") || "" };
   }
 
   // Type into the page's own search box so its router handles it as a normal in-page search (no reload, no "Leave site?" prompt).
@@ -71,7 +72,36 @@
     return "clicked";
   }
 
-  function control(what) {
+  const likeStatus = () => { const r = document.querySelector("ytmusic-player-bar ytmusic-like-button-renderer"); return r ? r.getAttribute("like-status") : null; };
+  const queueTitles = () => [...document.querySelectorAll("ytmusic-player-queue-item .song-title")].slice(0, 8).map((x) => norm(x.innerText)).join("|");
+
+  // thumbs-up the song in the player bar (or take the thumbs-up away) and check the page's own like-status changed
+  async function setLike(want) {
+    const b = document.querySelector("ytmusic-player-bar ytmusic-like-button-renderer #button-shape-like button");
+    if (!b) return "missing";
+    if (likeStatus() === want) return want === "LIKE" ? "already liked" : "already not liked";
+    b.click();
+    for (let i = 0; i < 8; i++) { await sleep(250); if (likeStatus() === want) return want === "LIKE" ? "liked" : "like removed"; }
+    return "unconfirmed";
+  }
+
+  // press the player bar's shuffle button and check that the queue really changed order
+  async function shuffle() {
+    const b = document.querySelector("ytmusic-player-bar .shuffle button");
+    if (!b) return "missing";
+    const before = queueTitles();
+    b.click();
+    for (let i = 0; i < 10; i++) { await sleep(250); if (queueTitles() !== before) return "shuffle toggled"; }
+    return "unconfirmed";
+  }
+
+  async function control(what) {
+    if (what === "like") return setLike("LIKE");
+    if (what === "unlike") return setLike("INDIFFERENT");
+    if (what === "shuffle") return shuffle();
+    const v = document.querySelector("video");
+    if (v && ((what === "pause" && v.paused) || (what === "play" && !v.paused))) return "already " + (v.paused ? "paused" : "playing"); // never toggle the wrong way
+    if (what === "play" || what === "pause") what = "toggle";
     const sel = { toggle: ".play-pause-button", next: ".next-button", previous: ".previous-button" }[what];
     const b = sel && document.querySelector("ytmusic-player-bar " + sel);
     if (!b) return "missing";
@@ -85,7 +115,7 @@
       case "state": return { ok: true, state: playerState() };
       case "search": return { ok: true, cands: await search(String(msg.query || "")) };
       case "click": return { ok: true, result: click(msg.kind, msg.i), state: playerState() };
-      case "control": return { ok: true, result: control(msg.what), state: playerState() };
+      case "control": return { ok: true, result: await control(msg.what), state: playerState() };
       default: return { ok: false, error: "unknown action " + msg.action };
     }
   }

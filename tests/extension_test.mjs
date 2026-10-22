@@ -89,8 +89,47 @@ await test("message listener answers actions and reports unknown ones", async ()
   const page = makePage({ rows: ROWS });
   const { listeners } = loadContent(page);
   const ask = (msg) => new Promise((resolve) => { listeners[0](msg, {}, resolve); });
-  assert.deepEqual(plain((await ask({ action: "state" })).state), { paused: false, time: 3, title: "Eternity", by: "Stellardrone" });
+  assert.deepEqual(plain((await ask({ action: "state" })).state), { paused: false, time: 3, title: "Eternity", by: "Stellardrone", liked: null, video: "", list: "" });
   assert.equal((await ask({ action: "nope" })).ok, false);
+});
+
+await test("like, unlike and shuffle press the page's own buttons and check the page really changed", async () => {
+  const page = makePage({ rows: ROWS });
+  const st = { like: "INDIFFERENT", queue: ["A", "B", "C"], likeClicks: 0, shuffleClicks: 0, broken: false };
+  const base = page.document;
+  page.document = {
+    querySelector(sel) {
+      if (sel === "ytmusic-player-bar ytmusic-like-button-renderer") return { getAttribute: (n) => (n === "like-status" ? st.like : null) };
+      if (sel === "ytmusic-player-bar ytmusic-like-button-renderer #button-shape-like button") return { click() { st.likeClicks++; if (!st.broken) st.like = st.like === "LIKE" ? "INDIFFERENT" : "LIKE"; } };
+      if (sel === "ytmusic-player-bar .shuffle button") return { click() { st.shuffleClicks++; if (!st.broken) st.queue = [...st.queue].reverse(); } };
+      return base.querySelector(sel);
+    },
+    querySelectorAll(sel) {
+      if (sel === "ytmusic-player-queue-item .song-title") return st.queue.map((t) => ({ innerText: t }));
+      return base.querySelectorAll(sel);
+    },
+  };
+  const { api } = loadContent(page);
+  assert.equal(await api.control("like"), "liked");
+  assert.equal(await api.control("like"), "already liked");
+  assert.equal(st.likeClicks, 1); // already liked: not clicked again (that would remove it)
+  assert.equal(await api.control("unlike"), "like removed");
+  assert.equal(await api.control("unlike"), "already not liked");
+  assert.equal(await api.control("shuffle"), "shuffle toggled");
+  st.broken = true; // the page ignores the click: it must say so instead of claiming success
+  assert.equal(await api.control("like"), "unconfirmed");
+  assert.equal(await api.control("shuffle"), "unconfirmed");
+  assert.equal(plain(api.playerState()).liked, "INDIFFERENT");
+});
+
+await test("the message listener reports like status, the video and the list in the state", async () => {
+  const page = makePage({ rows: ROWS });
+  page.location.href = "https://music.youtube.com/watch?v=abc123&list=RDAMVMabc123";
+  const { listeners } = loadContent(page);
+  const ask = (msg) => new Promise((resolve) => { listeners[0](msg, {}, resolve); });
+  const s = plain((await ask({ action: "state" })).state);
+  assert.equal(s.video, "abc123");
+  assert.equal(s.list, "RDAMVMabc123");
 });
 
 // ---------- the background script with a fake browser --------------------------------------------

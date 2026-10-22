@@ -304,3 +304,82 @@ def test_a_closed_browser_is_started_with_the_users_youtube_music_then_waited_fo
 
     out = make_player(Br(), Own(), open_tab=lambda: events.append("opened"), sleep=lambda s: events.append(("sleep", s)))("Forever by Lowx")
     assert out.startswith("Playing Forever") and events == [("wait", 8.0), "opened", ("wait", 30), ("sleep", 4), ("play", "Forever by Lowx")]
+
+
+class ActBridge:
+    """A bridge double whose page answers like the real one: a song is playing, and control/radio behave as given."""
+    extension_id, connected = "x", True
+
+    def __init__(self, control_result="liked", state=None, after_radio=None):
+        self.control_result, self.sent = control_result, []
+        self.state = state if state is not None else {"paused": False, "title": "Dance With Me", "by": "Sam", "list": "PLx"}
+        self.after_radio = after_radio
+
+    def request(self, action, timeout=0, **kw):
+        self.sent.append((action, kw))
+        if action == "control":
+            return {"ok": True, "result": self.control_result, "state": self.state}
+        if action == "radio":
+            if self.after_radio is not None:
+                self.state = self.after_radio
+            return {"ok": True, "result": "opened"}
+        return {"ok": True, "state": self.state}
+
+
+def test_music_actions_report_what_the_page_showed_not_just_that_a_button_was_pressed():
+    from voice_assistant.ytm_bridge import make_music_actions
+
+    nosleep = dict(sleep=lambda s: None)
+    assert "Liked Dance With Me by Sam" in make_music_actions(ActBridge("liked"), **nosleep)("like")
+    assert "already liked" in make_music_actions(ActBridge("already liked"), **nosleep)("like")
+    assert "Removed your like" in make_music_actions(ActBridge("like removed"), **nosleep)("unlike")
+    assert "queue order changed" in make_music_actions(ActBridge("shuffle toggled"), **nosleep)("shuffle")
+    with pytest.raises(YtmError, match="did not confirm"):
+        make_music_actions(ActBridge("unconfirmed"), **nosleep)("like")
+    assert make_music_actions(ActBridge(), **nosleep)("now") == "Playing: Dance With Me by Sam."
+    with pytest.raises(YtmError, match="Nothing is playing"):
+        make_music_actions(ActBridge(state={"title": ""}), **nosleep)("like")
+    with pytest.raises(YtmError, match="extension"):
+        make_music_actions(None)("like")
+    with pytest.raises(YtmError, match="action must be"):
+        make_music_actions(ActBridge())("explode")
+
+
+def test_radio_opens_more_like_this_and_waits_for_the_radio_to_play():
+    from voice_assistant.ytm_bridge import make_music_actions
+
+    t = iter(range(10_000))
+    ok = ActBridge(after_radio={"paused": False, "title": "Again", "by": "Other", "list": "RDAMVMabc"})
+    out = make_music_actions(ok, sleep=lambda s: None, clock=lambda: next(t))("more like this")
+    assert out.startswith("Playing more like Dance With Me by Sam") and "starting with Again by Other" in out and ("radio", {}) in ok.sent
+    t = iter(range(10_000))
+    stuck = ActBridge(after_radio={"paused": False, "title": "Dance With Me", "by": "Sam", "list": "PLx"})  # the page never moved to a radio
+    with pytest.raises(YtmError, match="did not start playing"):
+        make_music_actions(stuck, sleep=lambda s: None, clock=lambda: next(t))("radio")
+
+
+def test_sleep_timer_pauses_after_the_time_and_can_be_cancelled():
+    from voice_assistant.config import Config
+    from voice_assistant.music import build_music_tools
+
+    made, paused = [], []
+
+    class FakeTimer:
+        def __init__(self, secs, fn):
+            self.secs, self.fn, self.cancelled = secs, fn, False
+            made.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            self.cancelled = True
+
+    tools = {t.name: t.handler for t in build_music_tools(Config(), lambda m: True, lambda: [], music_act=lambda a: f"did {a}", pause=lambda: paused.append(1), timer=FakeTimer)}
+    assert "30 minute" in tools["sleep_timer"](30) and made[0].secs == 1800
+    tools["sleep_timer"](10)  # a new timer replaces the old one
+    assert made[0].cancelled and made[1].secs == 600
+    made[1].fn()
+    assert paused == [1]
+    assert tools["sleep_timer"](0) == "Sleep timer cancelled." and made[1].cancelled and tools["sleep_timer"](999).startswith("Error")
+    assert tools["music_action"]("like") == "did like"

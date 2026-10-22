@@ -80,7 +80,7 @@ def test_routine_runs_steps_and_skips_nesting():
     t = tools(cfg, calls=calls)
     t["run_routine"]("Good Night")
     assert calls == [("set_lights", json.dumps({"on": False}))]
-    assert "run_routine" not in tools()
+    assert "run_routine" not in [c[0] for c in calls]  # the nested step was skipped
 
 
 def test_weather_parses_open_meteo():
@@ -125,3 +125,37 @@ def test_volume_falls_back_to_keys_when_audio_api_fails():
     pressed = []
     t = tools(keys=lambda k, n=1: pressed.append((k, n)), audio=Broken())
     assert "about 40%" in t["set_volume"](percent=40) and pressed == [("volume_down", 50), ("volume_up", 20)]
+
+
+def routine_tools(cfg, answers=True, saved=None):
+    calls = []
+    ts = build_extra_tools(cfg, lambda p: answers, lambda n, a: calls.append((n, json.loads(a))) or "ok", None, lambda k, n=1: None, lambda a: None, FakeAudio(),
+                           known_tools=lambda: ["set_lights", "set_volume", "media_control", "play_music", "run_powershell", "vrchat_set"], persist=lambda: (saved.append(1) if saved is not None else None))
+    return {t.name: t.handler for t in ts}, calls
+
+
+def test_a_routine_can_be_saved_by_voice_then_run_by_a_loosely_spoken_name():
+    cfg, saved = Config(confirm_routines=False), []
+    t, calls = routine_tools(cfg, saved=saved)
+    out = t["save_routine"]("Good Night", json.dumps([{"tool": "set_lights", "args": {"on": False}}, {"tool": "media_control", "args": {"action": "pause"}}]))
+    assert out.startswith("Saved routine 'good night' with 2 step") and saved == [1] and list(cfg.routines) == ["good night"]
+    for spoken in ("goodnight", "Good night!", "good night"):
+        calls.clear()
+        t["run_routine"](spoken)
+        assert [c[0] for c in calls] == ["set_lights", "media_control"]
+    assert "good night" in t["list_routines"]() and t["run_routine"]("gaming mode").startswith("No such routine")
+    assert t["delete_routine"]("goodnight").startswith("Deleted") and cfg.routines == {} and saved == [1, 1]
+
+
+def test_routines_cannot_hide_a_shell_command_or_unknown_tools_and_need_the_users_ok():
+    cfg = Config()
+    t, calls = routine_tools(cfg)
+    assert "cannot be routine steps" in t["save_routine"]("x", json.dumps([{"tool": "run_powershell", "args": {"command": "del *"}}]))
+    assert "cannot be routine steps" in t["save_routine"]("x", json.dumps([{"tool": "made_up", "args": {}}]))
+    assert t["save_routine"]("x", "not json").startswith("Error") and cfg.routines == {}
+    declined, _ = routine_tools(cfg, answers=False)
+    assert declined["save_routine"]("x", json.dumps([{"tool": "set_lights", "args": {}}])) == "The user declined this action." and cfg.routines == {}
+    cfg.routines["sneaky"] = [{"tool": "run_powershell", "args": {"command": "x"}}, {"tool": "set_volume", "args": {"action": "mute"}}]  # even a hand-edited settings file cannot run it
+    cfg.confirm_routines = False
+    t["run_routine"]("sneaky")
+    assert [c[0] for c in calls] == ["set_volume"]

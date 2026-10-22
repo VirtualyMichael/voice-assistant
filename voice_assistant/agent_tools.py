@@ -300,4 +300,9 @@ def capabilities_prompt(cfg, names: list[str]) -> str:
         "never type passwords or payment details. "
         "launch_app switches to an app that is already open instead of starting a second copy. To look at or translate what is in an app or game, call look_at_screen with its window name; "
         "if no window matches, ask the user whether to open it, and open it only if they agree."
+        " If the user asks why something did not work or says it did not work, call what_went_wrong and explain what it returns in plain words; never claim a failed task worked. "
+        "Routines: when the user describes several actions under one phrase ('make a good night routine that ...'), call save_routine; run_routine and list_routines run and show them. "
+        "music_action likes or unlikes the playing song, plays more like it ('radio') or shuffles; sleep_timer pauses the music later; start_interpreter translates everything the user says into another language until they say stop. "
+        + (" VRChat: vrchat_say types in the chatbox (only words the user asked you to say), vrchat_set switches an avatar toggle, outfit piece or emote by the name the user says (act immediately, do not ask which avatar), "
+           "vrchat_press mutes or jumps. VRChat never confirms; report what was sent, not that it worked." if "vrchat_say" in names else "")
     )
