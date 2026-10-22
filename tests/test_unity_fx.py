@@ -168,3 +168,35 @@ def test_the_settings_list_each_avatars_file_and_edit_opens_it(win, tmp_path, mo
     win._edit_avatar_file()
     win._open_avatar_folder()
     assert opened[0][0].endswith("Nawtesy [avtr_1].json") and opened[1] == (tmp_path / "avatars",)
+
+
+def test_attaching_only_the_controllers_folder_still_finds_the_clips_and_a_missing_clip_is_explained(tmp_path):
+    from voice_assistant.unity_fx import analyze_roots
+
+    folder = build(tmp_path)
+    names = {"hatToggle", "shirtToggle", "socksToggle"}
+    found, note = analyze_roots([folder / "Controllers"], names)  # clips live elsewhere in the project: found through the project root
+    assert found["shirtToggle"]["inverted"] is True and note == ""
+    loose = tmp_path / "Loose"
+    loose.mkdir()
+    (loose / "Avatar FX.controller").write_text((folder / "Controllers" / "Avatar FX.controller").read_text(encoding="utf-8"), encoding="utf-8")  # copied out of the project: no clips beside it
+    found, note = analyze_roots([loose / "Avatar FX.controller"], names)
+    assert not found and "animation clips" in note and "Animations" in note
+    assert analyze_roots([tmp_path / "Loose" / "nothing"], names)[1].startswith("No FX controller")
+
+
+def test_import_uses_everything_attached_and_an_id_is_not_a_switch(tmp_path):
+    from voice_assistant.attachments import Inbox
+
+    params = {"hatToggle": ("T", False, 3), "shirtToggle": ("T", False, 3), "socksToggle": ("T", False, 3), "wolfToggle": ("T", False, 3), "tailSway": ("T", False, 3), "CatEarTwitch": ("i", 0, 3)}
+    vrc = FakeVRChat(params=params)
+    vr, sent, now = make(tmp_path, vrc=vrc)
+    assert "Nothing to read yet" in vr.import_menu()
+    proj = project(tmp_path)
+    inbox = Inbox()
+    vr.resolve_path, vr.attached = inbox.resolve, lambda: [i["path"] for i in inbox.items.values()]
+    inbox.add(proj / "Assets" / "Menus")
+    inbox.add(build(tmp_path.parent / (tmp_path.name + "_g")) / "Controllers")
+    out = vr.import_menu()  # no folder given: the menus and the controllers attached separately are read together
+    assert "Imported" in out and "work backwards" in out
+    assert "That is an id" in vr.set_param("avtr_85b9f336-5651-481a-94d5-f9284b9bd4ab", "toggle")

@@ -323,14 +323,32 @@ def flatten(menus: dict, root: str, depth: int = 0, seen: tuple = (), prefix: st
     return out
 
 
-def import_project(folder: Path, live_params: set[str]) -> tuple[list[dict], str]:
-    """(entries, a note) from the menu in a Unity project folder that fits the worn avatar best (most of its parameters are ones the avatar really has). Raises ValueError with a reason."""
-    folder = Path(folder)
-    if not folder.is_dir():
-        raise ValueError(f"'{folder}' is not a folder.")
-    menus = find_menus(folder)
+def menus_in(roots) -> dict[str, tuple[Path, list[dict]]]:
+    """Menus from folders (searched whole) and single .asset files, together, so a sub-menu in one place is found from a menu in another."""
+    menus: dict[str, tuple[Path, list[dict]]] = {}
+    for r in roots:
+        r = Path(r)
+        if r.is_dir():
+            menus.update(find_menus(r))
+        elif r.suffix.lower() == ".asset":
+            try:
+                controls = parse_menu(r.read_text(encoding="utf-8", errors="ignore")) if r.stat().st_size <= MAX_FILE else None
+            except OSError:
+                continue
+            guid = _guid_of(r)
+            if controls and guid:
+                menus[guid] = (r, controls)
+    return menus
+
+
+def import_project(folder, live_params: set[str]) -> tuple[list[dict], str]:
+    """(entries, a note) from the menu among a Unity project folder, or several folders and files, that fits the worn avatar best (most of its parameters are ones the avatar really has). Raises ValueError with a reason."""
+    roots = [Path(folder)] if isinstance(folder, (str, Path)) else [Path(r) for r in folder]
+    if not roots or not any(r.exists() for r in roots):
+        raise ValueError(f"'{roots[0] if roots else ''}' does not exist.")
+    menus = menus_in(roots)
     if not menus:
-        raise ValueError("No avatar menu (VRCExpressionsMenu .asset files) found in that folder. Point at the Unity project folder (the one that holds 'Assets').")
+        raise ValueError("No avatar menu (VRCExpressionsMenu .asset files, with their .meta files) found. Give the avatar's folder or the Unity project folder (the one that holds 'Assets').")
     referenced = {c["sub"] for _, (_, controls) in menus.items() for c in controls if c["sub"]}
     roots = [g for g in menus if g not in referenced] or list(menus)
     scored = []

@@ -75,7 +75,7 @@ def clip_active(path: Path) -> dict[str, bool]:
     return out
 
 
-def analyze_controller(path: Path, clips: dict[str, Path], params: set[str] | None = None) -> dict[str, dict]:
+def analyze_controller(path: Path, clips: dict[str, Path], params: set[str] | None = None, stats: dict | None = None) -> dict[str, dict]:
     """{parameter: {'inverted': True|False|None, 'on': {...}, 'off': {...}}} for the bool parameters this controller switches things with.
     'on' / 'off' are the GameObjects (path -> shown) the clips reached when the parameter is true / false set."""
     try:
@@ -89,7 +89,7 @@ def analyze_controller(path: Path, clips: dict[str, Path], params: set[str] | No
         if cls == 1102:  # AnimatorState
             g = re.search(r"m_Motion: \{fileID: \d+, guid: ([0-9a-f]{32})", body)
             n = re.search(r"m_Name: (.*)", body)
-            states[fid] = {"name": (n.group(1).strip() if n else ""), "clip": clips.get(g.group(1)) if g else None}
+            states[fid] = {"name": (n.group(1).strip() if n else ""), "clip": clips.get(g.group(1)) if g else None, "guid": g.group(1) if g else ""}
     by_param: dict[str, dict[str, set]] = {}
     for fid, (cls, body) in docs.items():
         if cls != 1101:  # AnimatorStateTransition
@@ -110,6 +110,10 @@ def analyze_controller(path: Path, clips: dict[str, Path], params: set[str] | No
         for side, ids in sides.items():
             for sid in ids:
                 clip = states[sid]["clip"]
+                if stats is not None and states[sid]["guid"]:
+                    stats.setdefault("used", set()).add(states[sid]["guid"])
+                    if not clip:
+                        stats.setdefault("missing", set()).add(states[sid]["guid"])
                 if clip:
                     for obj, active in clip_active(clip).items():
                         shown[side][obj] = (shown[side][obj] and active) if obj in shown[side] else active
@@ -143,26 +147,61 @@ def project_root(folder: Path) -> Path:
     return folder
 
 
-def analyze_project(folder: Path, params: set[str]) -> dict[str, dict]:
-    """Backwards-switch evidence from the avatar's FX controller under a folder, for the parameters the worn avatar has: {parameter: {'inverted': bool, 'why': str}} for the switches the animations settle.
-    Only FX controllers count (the only layer that can show and hide objects), and when a project holds several avatars the FX controller that uses the most of this avatar's parameters is the one read.
-    Animation clips are looked up in the whole project, since the folder given is often just the avatar's own."""
-    root = project_root(folder)
-    clips = clip_index(root / "Assets" if (root / "Assets").is_dir() else root)
-    best: tuple[int, str, dict] | None = None
-    for dirpath, dirnames, filenames in os.walk(folder):
-        dirnames[:] = [d for d in dirnames if d.lower() not in ("library", "temp", "obj", "logs", ".git")]
-        for fn in filenames:
-            if not (fn.endswith(".controller") and "fx" in fn.lower()):
-                continue
-            found = {n: i for n, i in analyze_controller(Path(dirpath) / fn, clips, params).items() if i["inverted"] is not None}
-            if found and (best is None or len(found) > best[0]):
-                best = (len(found), fn, found)
-    if best is None:
-        return {}
+def _descendant(p: Path, of: Path) -> bool:
+    try:
+        p.relative_to(of)
+        return p != of
+    except ValueError:
+        return False
+
+
+def analyze_roots(roots: list[Path], params: set[str]) -> tuple[dict[str, dict], str]:
+    """Backwards-switch evidence from the avatar's FX controller found in what was given (folders and/or files, e.g. what the user attached): ({parameter: {'inverted': bool, 'why': str}}, a note about what was missing).
+    Only FX controllers count (the only layer that can show and hide objects); when several are given, the one that uses the most of this avatar's parameters is read.
+    Animation clips are looked up in the whole Unity project each item sits in, so attaching only the Controllers folder is enough as long as it is still where Unity keeps it."""
+    roots = [Path(r) for r in roots if Path(r).exists()]
+    bases: list[Path] = []
+    for r in roots:
+        d = r if r.is_dir() else r.parent
+        pr = project_root(d)
+        bases += [(pr / "Assets") if (pr / "Assets").is_dir() else d, d]
+    bases = [b for b in dict.fromkeys(bases) if not any(_descendant(b, o) for o in bases)]
+    clips: dict[str, Path] = {}
+    for b in bases:
+        clips.update(clip_index(b))
+    controllers: list[Path] = []
+    for r in roots:
+        if r.is_file():
+            if r.suffix.lower() == ".controller" and "fx" in r.name.lower():
+                controllers.append(r)
+            continue
+        for dirpath, dirnames, filenames in os.walk(r):
+            dirnames[:] = [d for d in dirnames if d.lower() not in ("library", "temp", "obj", "logs", ".git")]
+            controllers += [Path(dirpath) / fn for fn in filenames if fn.endswith(".controller") and "fx" in fn.lower()]
+    if not controllers:
+        return {}, "No FX controller (a file named like FX.controller) was among them."
+    best = None
+    for c in dict.fromkeys(controllers):
+        stats: dict = {}
+        found = {n: i for n, i in analyze_controller(c, clips, params, stats).items() if i["inverted"] is not None}
+        if best is None or len(found) > best[0]:
+            best = (len(found), c.name, found, stats)
+    count, name, found, stats = best
+    note = ""
+    used, missing = len(stats.get("used", ())), len(stats.get("missing", ()))
+    if missing:
+        note = (f"{missing} of the {used} animation clips {name} uses were not found, so those switches are unknown. Attach the folder that holds the .anim files "
+                "(for example Assets/<avatar>/Animations) or the whole avatar folder, with the .anim.meta files, and import again.")
+    elif not count:
+        note = f"{name} was read, but none of its animations hide or show things for this avatar's switches."
     out = {}
-    for name, info in best[2].items():
+    for pname, info in found.items():
         objs = info["on"] or info["off"]
         names = ", ".join(sorted({(o.split(": ", 1)[1] if ": " in o else o.rsplit("/", 1)[-1]) for o in objs})[:3])
-        out[name] = {"inverted": info["inverted"], "why": (f"ON {'hides' if info['inverted'] else 'shows'} {names}" if info["on"] else f"OFF {'shows' if info['inverted'] else 'hides'} {names}") + f" (read from {best[1]})"}
-    return out
+        out[pname] = {"inverted": info["inverted"], "why": (f"ON {'hides' if info['inverted'] else 'shows'} {names}" if info["on"] else f"OFF {'shows' if info['inverted'] else 'hides'} {names}") + f" (read from {name})"}
+    return out, note
+
+
+def analyze_project(folder: Path, params: set[str]) -> dict[str, dict]:
+    """analyze_roots for one folder, without the note."""
+    return analyze_roots([folder], params)[0]

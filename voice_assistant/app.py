@@ -875,6 +875,7 @@ class MainWindow(QMainWindow):
         self.vrchat = VRChat(cfg)
         registry.add(build_vrchat_tools(cfg, self.vrchat))
         self.vrchat.resolve_path = self.inbox.resolve  # 'import the menu from the folder I attached'
+        self.vrchat.attached = lambda: [it["path"] for it in self.inbox.items.values()]
         registry.add(build_attachment_tools(self.inbox, lambda: self.session.agent.llm, lambda: cfg.main_language))
         self.interp = Interpreter(say=lambda t: self.vrchat.say(t), on_change=lambda: self._refresh_prompt(), chatbox_ok=lambda: self.cfg.vrchat_enabled)
         registry.add(build_interpreter_tools(self.interp))
@@ -1043,6 +1044,9 @@ class MainWindow(QMainWindow):
         for p in paths:
             name, err = self.inbox.add(p)
             self.chat.add("bubbleNote", f"Attached {name}." if name else err)
+            looks_unity = Path(p).suffix.lower() in (".asset", ".controller", ".anim") or (Path(p).is_dir() and any(k in Path(p).name.lower() for k in ("menu", "controller", "animation")))
+            if name and looks_unity and self.cfg.vrchat_enabled:
+                self.chat.add("bubbleNote", "Looks like Unity avatar files. With the avatar worn in VRChat, say \"import this avatar\" and I will read everything attached.")
 
     def _attach_picture(self, png: bytes) -> None:
         name, err = self.inbox.add_image_bytes(png)

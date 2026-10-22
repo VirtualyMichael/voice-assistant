@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .tools import Tool
-from .unity_fx import analyze_project, project_root
+from .unity_fx import analyze_roots
 from .vrchat_menu import AvatarNotes, import_project, match_entries
 from .ytm_browser import similarity
 
@@ -93,6 +93,7 @@ class VRChat:
         self._last_chat = 0.0
         self._lock = threading.Lock()
         self.resolve_path = lambda name: None  # an attachment's name -> its path (the app sets this)
+        self.attached = lambda: []  # the paths of everything attached to the chat (the app sets this)
         self.state: dict[str, object] = {}  # what this program last set (used only when VRChat cannot be asked)
 
     def _udp_send(self, data: bytes) -> None:
@@ -256,6 +257,9 @@ class VRChat:
         if live is not None:
             who = f"your current avatar{' (' + live['name'] + ')' if live['name'] else ''}"
             switches = [p for p in live["params"].values() if p["writable"]]
+            if re.fullmatch(r"(avtr|wrld|usr)_[0-9a-f-]{36}", name.strip()):
+                return ("That is an id, not a switch. The avatar id needs no typing: it is read from VRChat. To learn the avatar's menu names and backwards switches, call vrchat_import_menu "
+                        "(it uses whatever Unity folders and files the user attached).")
             if not any(words(q["name"]) == words(name) for q in switches):  # a menu name or nickname the avatar's notes know ('Animal Parts')
                 entry, unclear = self._noted(live, name)
                 if unclear:
@@ -646,39 +650,49 @@ class VRChat:
         return (f"Saved for {live['name'] or 'this avatar'}: {', '.join(found)} " + ("work BACKWARDS (on hides the item, off shows it). " if inverted else "work normally (on shows the item). ")
                 + "Use value 'show' or 'hide' for items so this is handled for you; 'on'/'off' always mean the raw switch.")
 
-    def import_menu(self, folder: str) -> str:
-        """Read the avatar's real menu (every label and what it flips) from the Unity project it was built in."""
+    def import_menu(self, folder: str = "") -> str:
+        """Read the avatar's real menu and which switches work backwards from its Unity files: the folder or attachment named, plus everything attached to the chat."""
         live, err = self._need_avatar()
         if live is None:
             return err
-        path = self.resolve_path(str(folder)) or Path(str(folder).strip().strip('"'))
-        if path.is_file():  # a menu file was attached: its neighbours (the sub-menus and .meta files) are in the same folder
-            path = path.parent
+        roots: list[Path] = []
+        given = str(folder or "").strip().strip('"')
+        if given:
+            p = self.resolve_path(given) or Path(given)
+            roots.append(p.parent if p.is_file() and p.suffix.lower() in (".asset", ".meta") else p)  # a menu file's neighbours are its sub-menus
+        for p in self.attached():
+            p = Path(p)
+            p = p.parent if p.is_file() and p.suffix.lower() in (".asset", ".meta") else p
+            if p not in roots:
+                roots.append(p)
+        if not roots:
+            return "Nothing to read yet. Attach the avatar's Unity folder (the one holding its Menus, Controllers and Animations folders) with the paperclip, or give its folder path, then call this again."
         menu_error = ""
         try:
-            entries, note = import_project(path, {n for n in live["params"]})
+            entries, note = import_project(roots, {n for n in live["params"]})
         except ValueError as e:
             entries, note, menu_error = [], "", str(e)
         except OSError as e:
-            return f"Error: could not read that folder ({e})."
+            return f"Error: could not read that ({e})."
         writable = {n for n, p in live["params"].items() if p["writable"]}
         try:
-            polarity = analyze_project(path, writable)
-        except Exception:
-            polarity = {}
+            polarity, fx_note = analyze_roots(roots, writable)
+        except Exception as e:
+            polarity, fx_note = {}, f"The animations could not be read ({e.__class__.__name__})."
         if not entries and not polarity:
-            return f"Error: {menu_error or 'nothing usable found there.'}"
-        conflicts = self.notes.replace_imported(live["id"], live["name"], entries, str(path), polarity)
+            return f"Error: {menu_error or 'nothing usable found there.'} {fx_note}".strip()
+        conflicts = self.notes.replace_imported(live["id"], live["name"], entries, "; ".join(str(r) for r in roots[:3]), polarity)
         folders = [e["label"] for e in entries if e["kind"] == "folder"]
         back = sorted(n for n, i in polarity.items() if i["inverted"])
         who = live["name"] or "the avatar"
         out = (f"Imported {who}'s menu: {note}. Folders: {', '.join(folders[:25]) or 'none'}. Menu names now work by voice for this avatar. " if entries
                else f"No menu was read ({menu_error}). ")
-        out += (f"Its animations say {len(back)} switch(es) work backwards (on hides the item): {', '.join(back)}; {len(polarity) - len(back)} others work normally. " if polarity else
-                "No animator controller (FX) was found there, so which switches work backwards is not known: teach it with vrchat_switch_note, or attach the project folder. ")
+        out += (f"Its animations say {len(back)} switch(es) work backwards (on hides the item): {', '.join(back)}; {len(polarity) - len(back)} others work normally. " if polarity else "No backwards-switch information yet. ")
+        if fx_note:
+            out += fx_note + " "
         if conflicts:
             out += "The Unity files disagree with what was taught for: " + "; ".join(conflicts) + ". What was taught is kept: ask the user which is right."
-        return out
+        return out.strip()
 
     # ---- game controls -------------------------------------------------------------------
     def press(self, action: str) -> str:
@@ -732,6 +746,6 @@ def build_vrchat_tools(cfg, vr: VRChat | None = None) -> list[Tool]:
         Tool("vrchat_switch_note", "Save how switches behave on the worn avatar. inverted=true means turning the switch ON HIDES the item (clothes toggles are often like this: off = worn); names are exact switch names, note is an optional short reminder. "
              "After that, use value 'show' or 'hide' (not on/off) when the user talks about an ITEM, and the backwards switches are handled for you, even inside folders mixing both kinds.",
              _obj({"names": _str, "inverted": {"type": "boolean"}, "note": _str}, ["names"]), vr.note_switch),
-        Tool("vrchat_import_menu", "Read the worn avatar's real menu (every label and what it switches) from the Unity project the avatar was built in. folder is the Unity project folder the user gives (the one holding 'Assets'), or the name of a folder or menu file they attached to the chat. Only for avatars the user made.",
-             _obj({"folder": _str}, ["folder"]), vr.import_menu),
+        Tool("vrchat_import_menu", "Read the worn avatar's real menu (every label and what it switches) from the Unity project the avatar was built in. Leave folder empty to use EVERYTHING the user attached (their avatar's Menus, Controllers and Animations folders, or the whole avatar/project folder); or give a folder path or the name of one attachment. Only for avatars the user made.",
+             _obj({"folder": _str}), vr.import_menu),
     ]
