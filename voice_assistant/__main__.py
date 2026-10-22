@@ -75,6 +75,9 @@ def fetch_models(args: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
+    from .quiet import hide_child_consoles
+
+    hide_child_consoles()
     cmd = argv[0] if argv else "run"
     if cmd == "--selftest":
         from pathlib import Path
