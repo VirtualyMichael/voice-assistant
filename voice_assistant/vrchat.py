@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .tools import Tool
+from .vrchat_menu import AvatarNotes, import_project, match_entries
 from .ytm_browser import similarity
 
 CHATBOX_MAX = 144  # VRChat's limit for one chatbox message
@@ -25,6 +26,12 @@ BUTTONS = {"mute": "Voice", "unmute": "Voice", "toggle mute": "Voice", "voice": 
 # Parameters VRChat itself fills in; they are not switches the user can flip.
 SEARCH_FILLER = {"all", "the", "my", "every", "of", "a", "an", "and", "to", "in", "on", "please"}  # words that say nothing about which switch is meant ('color' and 'toggle' do: avatars name switches shirtColor, hatToggle)
 GROUP_FILLER = {"all", "the", "my", "every", "toggle", "toggles", "switch", "switches", "color", "colors", "colour", "colours", "folder", "group", "of"}
+# Spoken menu names that avatars spell as a different word in their switch names; only tried when nothing matches the words as spoken.
+RELATED = {"animal": ["wolf", "cat", "fox", "dog", "bunny", "tail", "ear", "paw"], "animals": ["wolf", "cat", "fox", "dog", "bunny", "tail", "ear", "paw"],
+           "ears": ["ear"], "clothes": ["shirt", "shorts", "top", "pants", "skirt", "dress", "socks", "panties"], "clothing": ["shirt", "shorts", "top", "pants", "skirt", "dress", "socks", "panties"],
+           "outfit": ["shirt", "shorts", "top", "pants", "skirt", "dress", "socks"], "jewelry": ["ring", "choker", "chain", "necklace", "earring", "bracelet"],
+           "jewellery": ["ring", "choker", "chain", "necklace", "earring", "bracelet"], "accessories": ["choker", "ring", "glasses", "chain", "strap", "warmer", "bone", "garter"],
+           "straps": ["strap", "harness"], "socks": ["sock", "stocking", "thigh"], "wings": ["wing"], "horns": ["horn"], "tail": ["tail"]}
 BUILT_IN = {"IsLocal", "Viseme", "Voice", "GestureLeft", "GestureRight", "GestureLeftWeight", "GestureRightWeight", "AngularY", "VelocityX", "VelocityY", "VelocityZ",
             "VelocityMagnitude", "Upright", "Grounded", "Seated", "AFK", "TrackingType", "VRMode", "MuteSelf", "InStation", "Earmuffs", "IsOnFriendsList", "AvatarVersion",
             "ScaleModified", "ScaleFactor", "ScaleFactorInverse", "EyeHeightAsMeters", "EyeHeightAsPercent", "IsAnimatorEnabled", "PreviewMode", "VisemeLevel"}
@@ -64,7 +71,7 @@ def words(name: str) -> str:
 
 
 class VRChat:
-    def __init__(self, cfg, send=None, config_root: Path | None = None, clock=time.time, sleep=time.sleep, get=None, ports=None):
+    def __init__(self, cfg, send=None, config_root: Path | None = None, clock=time.time, sleep=time.sleep, get=None, ports=None, notes_path: Path | None = None):
         """get(url) -> parsed JSON from VRChat's OSCQuery web page (raises when unreachable); ports() -> the TCP ports VRChat is listening on (tests replace both)."""
         self.cfg, self.clock, self.sleep = cfg, clock, sleep
         self._get = get or self._http_get
@@ -72,6 +79,11 @@ class VRChat:
         self._query_port: int | None = None
         self._dest: tuple[str, int] | None = None
         self.root = config_root if config_root is not None else default_config_root()
+        if notes_path is None:
+            from .config import config_dir
+
+            notes_path = (config_dir() if config_root is None else self.root.parent) / "vrchat_avatars.json"
+        self.notes = AvatarNotes(notes_path)  # what each avatar's menu calls things, per avatar id
         self._send = send or self._udp_send
         self._sock: socket.socket | None = None
         self._last_chat = 0.0
@@ -239,10 +251,17 @@ class VRChat:
         if live is not None:
             who = f"your current avatar{' (' + live['name'] + ')' if live['name'] else ''}"
             switches = [p for p in live["params"].values() if p["writable"]]
+            if not any(words(q["name"]) == words(name) for q in switches):  # a menu name or nickname the avatar's notes know ('Animal Parts')
+                entry, unclear = self._noted(live, name)
+                if unclear:
+                    return unclear
+                if entry:
+                    return self._set_entry(live, entry, val, who)
             p, closest = self.find_param(name, switches)
             if p is None:
                 if closest:
-                    return f"{who[0].upper() + who[1:]} has no switch that matches '{name}'. Its closest are: {', '.join(closest)}. Ask the user which one, or call vrchat_parameters."
+                    return (f"{who[0].upper() + who[1:]} has no switch that matches '{name}'. Its closest are: {', '.join(closest)}. "
+                            "Menu names are not visible to OSC: call vrchat_parameters to read every switch, work out which the user means (or flash candidates with vrchat_flash and ask), then save it with vrchat_remember.")
                 return f"{who[0].upper() + who[1:]} has no switchable parameters that VRChat reports. Make sure OSC is enabled (Action Menu > Options > OSC > Enabled)."
             sent, err = self._target(p, val, p["value"])
             if err:
@@ -376,10 +395,16 @@ class VRChat:
         if live is None:
             return "Setting a whole group needs VRChat to be running with OSC enabled, so it can list the avatar's switches and check the result. Start VRChat and enable OSC (Action Menu > Options > OSC > Enabled)."
         who = f"your current avatar{' (' + live['name'] + ')' if live['name'] else ''}"
+        entry, unclear = self._noted(live, group)
+        if unclear:
+            return unclear
+        if entry:
+            return self._set_entry(live, entry, val, who)
         members, how = self.group_members(live, group)
         if not members:
             folders = sorted({"/".join(p["name"].split("/")[:-1]) for p in live["params"].values() if p["writable"] and p["type"] == "Bool" and "/" in p["name"]})
-            return f"No folder of switches called '{group}' on {who}. Its folders are: {', '.join(folders[:30]) or 'none (its switches are not in folders)'}."
+            return (f"No folder of switches called '{group}' on {who}, and no remembered menu name matches. Its folders are: {', '.join(folders[:30]) or 'none (its switches are not in folders)'}. "
+                    "Menu names are not visible to OSC: call vrchat_parameters to read the switches, work out which the user means, then save the name with vrchat_remember.")
         if len(members) > 120:
             return f"'{group}' holds {len(members)} switches, which is too many to change at once. Name a smaller folder."
         plan = []
@@ -399,6 +424,43 @@ class VRChat:
         if failed:
             return base + f" VRChat did not change {len(failed)}: {', '.join(failed[:8])}{'...' if len(failed) > 8 else ''}. Check that OSC is enabled, or the avatar may drive those itself."
         return base + " VRChat confirms every one."
+
+    def _noted(self, live: dict, query: str) -> tuple[dict | None, str]:
+        """(the remembered or imported menu entry a spoken name means, a message when it is unclear)."""
+        entries = self.notes.entries(live["id"]) if live.get("id") else []
+        entry, labels = match_entries(entries, query)
+        if labels:
+            return None, f"'{query}' could mean more than one thing in this avatar's menu: {', '.join(labels)}. Ask the user which."
+        return entry, ""
+
+    def _set_entry(self, live: dict, entry: dict, val: str, who: str) -> str:
+        """Set every switch a menu entry covers, checked against what VRChat reports."""
+        have = [live["params"][n] for n in entry["params"] if n in live["params"] and live["params"][n]["writable"]]
+        missing = [n for n in entry["params"] if n not in {p["name"] for p in have}]
+        if not have:
+            return f"'{entry['label']}' is saved as {', '.join(entry['params'])}, but {who} reports none of those as a switch (is it a different avatar?)."
+        plan = []
+        for p in have:
+            sent, err = self._target(p, val, p["value"])
+            if err:
+                return err
+            menu_value = (entry.get("values") or {}).get(p["name"])
+            if p["type"] == "Int" and sent == 1 and menu_value is not None:
+                sent = int(menu_value)  # the menu's own number for this item (an Int parameter often means 'item 3 chosen')
+            plan.append((p, sent))
+        failed = self._apply(plan)
+        ons = sum(1 for p, sent in plan if sent)
+        what = f"toggled each (now {ons} on, {len(plan) - ons} off)" if val == "toggle" else ("on" if plan[0][1] else "off")
+        out = f"Set '{entry['label']}' ({', '.join(p['name'] for p, _ in plan)}): {what} on {who}."
+        if missing:
+            out += f" Not on this avatar, skipped: {', '.join(missing)}."
+        return out + (f" VRChat did not change {len(failed)}: {', '.join(failed[:8])}." if failed else " VRChat confirms every one.")
+
+    @staticmethod
+    def related_switches(live: dict, query: str) -> list[dict]:
+        """Switches whose names fit related words ('animal parts' -> wolf, tail, ear...), used only when the words as spoken match nothing."""
+        wanted = {r for w in words(query).split() for r in RELATED.get(w, RELATED.get(w.rstrip("s"), []))}
+        return [p for p in live["params"].values() if p["writable"] and any(r in words(p["name"]) for r in wanted)] if wanted else []
 
     @staticmethod
     def search_switches(live: dict, query: str) -> list[dict]:
@@ -422,15 +484,33 @@ class VRChat:
         if live is not None:
             rows = self.search_switches(live, query) if query else [p for p in live["params"].values() if p["writable"]]
             who = f"your current avatar{' (' + live['name'] + ')' if live['name'] else ''}"
+            note = ""
+            known = self.notes.entries(live["id"]) if live.get("id") else []
+            if query and known:
+                entry, labels = match_entries(known, query)
+                hits = [entry["label"]] if entry else labels
+                if hits:
+                    byname = {e["label"]: e for e in known}
+                    note = "Remembered menu names that fit: " + "; ".join(f"{h} = {', '.join(byname[h]['params'])}" for h in hits if h in byname) + ". "
+            elif known:
+                note = "Remembered menu names: " + "; ".join(f"{e['label']} = {', '.join(e['params'][:4])}" for e in known[:30] if e["kind"] != "toggle")[:1500] + ". "
+            if query and not rows:
+                rows = self.related_switches(live, query)
+                if rows:
+                    note += f"No switch is named like '{query}', so these are guesses from related words (menu names are not visible to OSC): confirm with the user, flash them with vrchat_flash if unsure, then save the name with vrchat_remember. "
+                else:
+                    rows = [p for p in live["params"].values() if p["writable"]]
+                    note += (f"No switch is named like '{query}'. VRChat does not report the menu's labels, only the raw switch names, so here is EVERY switch: pick the likely ones from the names, "
+                             "flash candidates with vrchat_flash if unsure, and save the name once the user confirms with vrchat_remember. ")
             if not rows:
-                return f"VRChat reports no switches on {who} that fit '{query}'. Try other words, or call vrchat_parameters with no words to see all of them."
+                return f"VRChat reports no switches on {who}."
             folders: dict[str, list[str]] = {}
             for p in rows:
                 folder, _, leaf = p["name"].rpartition("/")
                 label = leaf if p["type"] == "Bool" else f"{leaf} ({p['type'].lower()})"
                 folders.setdefault(folder, []).append(f"{label} {self._shown(p['value'])}")
             shown = [f"[{f or 'no folder'}] " + ", ".join(v) for f, v in folders.items()]
-            text = f"{len(rows)} switch(es) on {who}{' that fit ' + repr(query) if query else ''}, by folder with current values: " + "; ".join(shown)
+            text = f"{note}{len(rows)} switch(es) on {who}{' that fit ' + repr(query) if query and not note.count('EVERY') else ''}, by folder with current values: " + "; ".join(shown)
             return text[:6000] + (" ... (more not shown; ask with fewer words)" if len(text) > 6000 else "")
         names = [p["name"] + ("" if p["type"] == "Bool" else f" ({p['type'].lower()})") for p in self.parameters() if not query or words(query) in words(p["name"])]
         if not names:
@@ -438,6 +518,112 @@ class VRChat:
                     "then try again. You can still name a parameter exactly.")
         return (f"VRChat could not be asked which avatar is worn, so these are the parameters of every avatar saved on this PC ({len(names)}): "
                 + ", ".join(names[:80]) + ("..." if len(names) > 80 else ""))
+
+    # ---- what this avatar's menu calls things ----------------------------------------------
+    def _need_avatar(self):
+        live = self.live()
+        if live is None:
+            return None, "This needs VRChat running with OSC enabled (Action Menu > Options > OSC > Enabled), so it knows which avatar is worn."
+        if not live.get("id"):
+            return None, "VRChat did not say which avatar is worn."
+        return live, ""
+
+    def _resolve_names(self, live: dict, names) -> tuple[list[str], list[str]]:
+        asked = [n.strip() for n in re.split(r"[;\n]|,(?!\s*\d)", names if isinstance(names, str) else ",".join(map(str, names))) if n.strip()]
+        switches = [p for p in live["params"].values() if p["writable"]]
+        found, unknown = [], []
+        for n in asked:
+            p, _ = self.find_param(n, switches)
+            (found if p else unknown).append(p["name"] if p else n)
+        return list(dict.fromkeys(found)), unknown
+
+    def remember(self, label: str, names: str) -> str:
+        """Save what the avatar's menu calls something: label is the menu name the user says ('Animal Parts'), names the exact switches it flips."""
+        live, err = self._need_avatar()
+        if live is None:
+            return err
+        label = " ".join(str(label).split())
+        if not label or len(label) > 80:
+            return "Error: give a short menu name to remember."
+        found, unknown = self._resolve_names(live, names)
+        if unknown or not found:
+            return f"Not saved. These are not switches on this avatar: {', '.join(unknown) or names}. Call vrchat_parameters for the real names."
+        self.notes.remember(live["id"], live["name"], label, found)
+        return f"Remembered for {live['name'] or 'this avatar'}: '{label}' = {', '.join(found)}. It will work next time without asking."
+
+    def forget(self, label: str) -> str:
+        live, err = self._need_avatar()
+        if live is None:
+            return err
+        n = self.notes.forget(live["id"], str(label).strip())
+        return f"Forgot '{label}' for {live['name'] or 'this avatar'}." if n else f"Nothing taught under '{label}' for this avatar (names imported from a Unity project are replaced by importing again)."
+
+    def notes_report(self) -> str:
+        """What is remembered for the worn avatar and which switches still have no name."""
+        live, err = self._need_avatar()
+        if live is None:
+            return err
+        rec = self.notes.get(live["id"])
+        entries = rec.get("entries") or []
+        covered = {n for e in entries for n in e["params"]}
+        loose = [p["name"] for p in live["params"].values() if p["writable"] and p["name"] not in covered and not p["name"].startswith("Go/") and not p["name"].startswith("_")]
+        taught = [f"{e['label']} = {', '.join(e['params'])}" for e in entries if e.get("source") == "taught"]
+        menu = [e["label"] for e in entries if e.get("source") == "unity" and e["kind"] == "folder"]
+        out = f"{live['name'] or 'This avatar'}: {len(taught)} taught name(s)" + (f" ({'; '.join(taught[:30])})" if taught else "")
+        out += f"; menu imported from {rec['imported_from']} with folders {', '.join(menu[:20])}" if rec.get("imported_from") else "; no menu imported"
+        return out + f". {len(loose)} switch(es) have no menu name yet: {', '.join(loose[:60])}{'...' if len(loose) > 60 else ''}."
+
+    def flash(self, names: str, seconds: float = 3) -> str:
+        """Turn switches the other way for a few seconds and put them back, so the user can see (and say) what they are."""
+        live, err = self._need_avatar()
+        if live is None:
+            return err
+        found, unknown = self._resolve_names(live, names)
+        if not found:
+            return f"None of those are switches on this avatar: {', '.join(unknown) or names}."
+        try:
+            hold = min(max(float(seconds), 1.0), 8.0)
+        except (TypeError, ValueError):
+            hold = 3.0
+        plan, back, skipped = [], [], []
+        for n in found[:12]:
+            p = live["params"][n]
+            if p["type"] == "Float":
+                skipped.append(n)  # a slider has no obvious 'other way'
+                continue
+            now = p["value"]
+            sent, _ = self._target(p, "toggle", now)
+            plan.append((p, sent))
+            back.append((p, bool(now) if p["type"] == "Bool" else int(now or 0)))
+        if not plan:
+            return f"Those are sliders ({', '.join(skipped)}), which cannot be flashed. Set one to a number with vrchat_set instead."
+        failed = self._apply(plan)
+        self.sleep(hold)
+        failed_back = self._apply(back)
+        out = f"Flashed {', '.join(p['name'] for p, _ in plan)} the other way for {hold:g} seconds and back."
+        if failed:
+            out += f" VRChat did not change: {', '.join(failed)}."
+        if failed_back:
+            out += f" WARNING: could not confirm these returned to how they were: {', '.join(failed_back)}."
+        if skipped:
+            out += f" Skipped sliders: {', '.join(skipped)}."
+        return out + " Ask the user what changed on their avatar."
+
+    def import_menu(self, folder: str) -> str:
+        """Read the avatar's real menu (every label and what it flips) from the Unity project it was built in."""
+        live, err = self._need_avatar()
+        if live is None:
+            return err
+        path = Path(str(folder).strip().strip('"'))
+        try:
+            entries, note = import_project(path, {n for n in live["params"]})
+        except ValueError as e:
+            return f"Error: {e}"
+        except OSError as e:
+            return f"Error: could not read that folder ({e})."
+        self.notes.replace_imported(live["id"], live["name"], entries, str(path))
+        folders = [e["label"] for e in entries if e["kind"] == "folder"]
+        return f"Imported {live['name'] or 'the avatar'}'s menu: {note}. Folders: {', '.join(folders[:25]) or 'none'}. Menu names now work by voice for this avatar."
 
     # ---- game controls -------------------------------------------------------------------
     def press(self, action: str) -> str:
@@ -462,7 +648,7 @@ class VRChat:
         return f"Pressed {button} in VRChat."
 
 
-VRCHAT_TOOL_NAMES = ("vrchat_say", "vrchat_set", "vrchat_set_group", "vrchat_set_many", "vrchat_parameters", "vrchat_press")
+VRCHAT_TOOL_NAMES = ("vrchat_say", "vrchat_set", "vrchat_set_group", "vrchat_set_many", "vrchat_parameters", "vrchat_press", "vrchat_remember", "vrchat_forget", "vrchat_notes", "vrchat_flash", "vrchat_import_menu")
 
 
 def build_vrchat_tools(cfg, vr: VRChat | None = None) -> list[Tool]:
@@ -473,7 +659,7 @@ def build_vrchat_tools(cfg, vr: VRChat | None = None) -> list[Tool]:
     vr = vr or VRChat(cfg)
     return [
         Tool("vrchat_say", "Type a message in the user's VRChat chatbox (other players see it; 144 characters). Use it only for words the user asked you to say there.", _obj({"text": _str}, ["text"]), vr.say),
-        Tool("vrchat_set", "Switch a VRChat avatar parameter: a toggle, outfit piece, emote or slider, by the name the user says ('hat', 'wings', 'dance'). value is on, off, toggle or a number.",
+        Tool("vrchat_set", "Switch a VRChat avatar parameter: a toggle, outfit piece, emote or slider, by the name the user says ('hat', 'wings', 'dance'). value is on, off, toggle or a number. Prefer the item's Toggle switch (shirtToggle) over its Color switch (shirtColor) unless the user talks about colour.",
              _obj({"name": _str, "value": _str}, ["name"]), vr.set_param),
         Tool("vrchat_set_group", "Switch EVERY on/off switch in a folder of the worn avatar's switches in one go, e.g. group 'Stylization/Clothing' (spoken 'stylization clothing') with value on, off, or toggle (flips each one from its own state). "
              "If the user names colours such as white or black, you do not know which one is 'on': use vrchat_parameters to look, or ask once.", _obj({"group": _str, "value": _str}, ["group", "value"]), vr.set_group),
@@ -482,4 +668,12 @@ def build_vrchat_tools(cfg, vr: VRChat | None = None) -> list[Tool]:
         Tool("vrchat_parameters", "Search the worn avatar's switches with their current values, grouped by folder. query may be several words such as 'clothing color white' (any word can match anywhere in the switch name); no query lists everything. "
              "Read the names and decide which switches the user means; the folder and switch names usually say (Clothing, Color, White, Black, Invert, Hue...).", _obj({"query": _str}), vr.listing),
         Tool("vrchat_press", "Press a VRChat control: 'mute' (toggles the microphone) or 'jump'.", _obj({"action": _str}, ["action"]), vr.press),
+        Tool("vrchat_remember", "Save what the avatar's MENU calls something, for this avatar only: label is the menu name the user says ('Animal Parts'), names the exact switch names it flips (comma separated). Saved names work in vrchat_set and vrchat_set_group from then on.",
+             _obj({"label": _str, "names": _str}, ["label", "names"]), vr.remember),
+        Tool("vrchat_forget", "Forget a menu name that was saved with vrchat_remember for the worn avatar.", _obj({"label": _str}, ["label"]), vr.forget),
+        Tool("vrchat_notes", "What is remembered for the worn avatar and which of its switches still have no menu name (use it to run 'learn this avatar').", _obj({}), vr.notes_report),
+        Tool("vrchat_flash", "Flip some switches the other way for a few seconds, then put them back, so the user can see what they do. names are exact switch names (comma separated); seconds 1-8.",
+             _obj({"names": _str, "seconds": {"type": "number"}}, ["names"]), vr.flash),
+        Tool("vrchat_import_menu", "Read the worn avatar's real menu (every label and what it switches) from the Unity project the avatar was built in. folder is the Unity project folder the user gives (the one holding 'Assets'). Only for avatars the user made.",
+             _obj({"folder": _str}, ["folder"]), vr.import_menu),
     ]

@@ -63,6 +63,16 @@ You can see the same list by asking "what can I toggle?" It shows every switch o
 - **Mute is a toggle,** not "mute" and "unmute" separately, because VRChat only exposes a toggle for it. The assistant reads your mute state before and after and tells you which state you are in; it only works with VRChat's "Toggle Voice" setting on.
 - **Public text:** `vrchat_say` posts text other players read. The assistant is told to say only what you asked it to; check what it heard before you rely on it in a crowded room.
 
+## 4a. Menu names: teaching it what your avatar's menu calls things
+
+VRChat only tells other programs the raw switch names (`wolfToggle`), never the labels in the Action Menu ("Animal Parts"). The avatar's menu is stored in VRChat's encrypted cache, so it cannot be read from there. Three ways around it, all kept **per avatar** (in `%APPDATA%\VoiceAssistantrchat_avatars.json`):
+
+- **Say it once.** "Turn off animal parts" - if nothing matches, the assistant reads your switch list, picks likely ones (or flashes candidates for a few seconds and asks what you saw), and once you confirm it saves the name. From then on "animal parts" just works for that avatar.
+- **Learn this avatar.** Say "learn this avatar". It lists the switches that have no name yet, flashes a few at a time (each is put back as it was) and asks what changed; each answer is saved. Stop any time. A few minutes once per avatar.
+- **Import the menu from your Unity project (avatars you made).** Say "import the menu for this avatar from <the Unity project folder>" (the folder that contains `Assets`). It reads the VRCExpressionsMenu files, picks the menu whose parameters match the worn avatar, and saves every label, folder and what each flips - including the menu's own value for Int toggles.
+
+Names you taught win over imported ones, and importing again never deletes them. Exact switch names always work as before, and a name that could mean two things makes it ask instead of guessing.
+
 ## 5. Troubleshooting
 
 | Problem | Usual cause and fix |

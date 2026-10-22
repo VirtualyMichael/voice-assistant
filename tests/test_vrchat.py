@@ -217,7 +217,7 @@ def test_buttons_are_pressed_then_released(tmp_path):
 def test_tools_exist_only_when_vrchat_is_switched_on():
     assert build_vrchat_tools(Config()) == []
     names = [t.name for t in build_vrchat_tools(Config(vrchat_enabled=True))]
-    assert names == ["vrchat_say", "vrchat_set", "vrchat_set_group", "vrchat_set_many", "vrchat_parameters", "vrchat_press"]
+    assert names == ["vrchat_say", "vrchat_set", "vrchat_set_group", "vrchat_set_many", "vrchat_parameters", "vrchat_press", "vrchat_remember", "vrchat_forget", "vrchat_notes", "vrchat_flash", "vrchat_import_menu"]
     assert words("HatToggle") == "hat toggle" and words("Wing_Size2") == "wing size2" and "Voice" in BUILT_IN
 
 
@@ -301,7 +301,7 @@ def test_a_loose_request_is_searched_across_the_whole_name_and_ranked(tmp_path):
     live = vr.live()
     assert [p["name"] for p in vr.search_switches(live, "shirt")] == ["shirtToggle", "shirtColor"]
     assert [p["name"] for p in vr.search_switches(live, "all the hat toggles")] == ["hatToggle"]  # filler words are ignored, 'toggle' is not
-    assert "no switches" in vr.listing("zebra")
+    assert "EVERY switch" in vr.listing("zebra")  # never a dead end: the whole list is given
 
 
 def test_several_chosen_switches_are_set_together_and_checked(tmp_path):
