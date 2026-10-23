@@ -523,6 +523,18 @@ class MainWindow(QMainWindow):
         own_voice.setToolTip("A folder with a sherpa-onnx VITS/Piper voice: model .onnx, tokens.txt and espeak-ng-data. Restart to apply.")
         own_voice.clicked.connect(self._pick_voice_folder)
         clear_voice.clicked.connect(lambda: self._set_field("custom_voice_dir", ""))
+        clone = QCheckBox("Speak in my cloned voice (Chatterbox, restart to apply)")
+        clone.setToolTip("Uses a local Chatterbox server with your own voice clip. If it can't be reached, the built-in voices are used.")
+        clone.setChecked(bool(cfg.chatterbox_url))
+        clone.toggled.connect(lambda v: self._set_field("chatterbox_url", "http://127.0.0.1:8123" if v else ""))
+        clone_file = QPushButton("Choose Chatterbox start file…")
+        clone_file.setToolTip("Start-Chatterbox-Server.bat: the app starts it (hidden) when the server isn't running and stops it when you quit.")
+        clone_file.clicked.connect(self._pick_chatterbox_launch)
+        self._clone_status = QLabel(self._clone_text(), objectName="small")
+        self._clone_status.setWordWrap(True)
+        clone.toggled.connect(lambda _v: self._clone_status.setText(self._clone_text()))
+        clone_check = QPushButton("Check the cloned voice server")
+        clone_check.clicked.connect(self._check_chatterbox)
         persona = QCheckBox("Jarvis-style butler personality")
         persona.setToolTip("Calm, dry-witted British butler manner. Pair it with the George or Lewis (UK) voice.")
         persona.setChecked(cfg.persona_jarvis)
@@ -537,7 +549,11 @@ class MainWindow(QMainWindow):
         form.addRow(vapprove)
         form.addRow(own_voice)
         form.addRow(clear_voice)
-        sens = QSlider(Qt.Horizontal, minimum=0, maximum=100, value=self._sens_from_threshold(cfg.wake_threshold))
+        form.addRow(clone)
+        form.addRow(clone_file)
+        form.addRow(clone_check)
+        form.addRow(self._clone_status)
+        sens =QSlider(Qt.Horizontal, minimum=0, maximum=100, value=self._sens_from_threshold(cfg.wake_threshold))
         sens.setToolTip("Right: reacts more easily (but may wake on other sounds)")
         sens.valueChanged.connect(self._set_wake_sensitivity)
         test_wake = QPushButton("Test wake word (10 seconds)")
@@ -1261,6 +1277,28 @@ class MainWindow(QMainWindow):
         if d:
             self._set_field("custom_voice_dir", d)
             self.chat.add("bubbleNote", f"Custom voice set: {d}. Restart the app to use it.")
+
+    def _clone_text(self) -> str:
+        c = self.cfg
+        if not c.chatterbox_url:
+            return "Cloned voice: off (built-in voices)."
+        start = Path(c.chatterbox_launch).name if c.chatterbox_launch else "none chosen: start the server yourself"
+        return f"Cloned voice: on, server {c.chatterbox_url}. Start file: {start}."
+
+    def _pick_chatterbox_launch(self) -> None:
+        f, _ = QFileDialog.getOpenFileName(self, "Start-Chatterbox-Server.bat", "", "Batch files (*.bat *.cmd)")
+        if f:
+            self._set_field("chatterbox_launch", f)
+            self._clone_status.setText(self._clone_text())
+
+    def _check_chatterbox(self) -> None:
+        from .models import _chatterbox_up
+
+        if not self.cfg.chatterbox_url:
+            self._clone_status.setText("Tick “Speak in my cloned voice” first.")
+            return
+        up = _chatterbox_up(self.cfg.chatterbox_url, timeout=1.5)
+        self._clone_status.setText(self._clone_text() + (" The server is running." if up else " The server is not running right now (it starts with the app if a start file is chosen)."))
 
     def _apply_jarvis_preset(self) -> None:
         """One click: British male voice, butler manner, "Jarvis" wake phrase (the wake phrase applies after a restart)."""

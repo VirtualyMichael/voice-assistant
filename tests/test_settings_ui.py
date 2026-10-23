@@ -203,3 +203,15 @@ def test_ask_first_switches_are_in_settings_and_change_the_config(win):
         assert getattr(win.cfg, "confirm_" + key) is False
         box.setChecked(True)
         assert getattr(win.cfg, "confirm_" + key) is True
+
+
+def test_voice_tab_has_cloned_voice_controls(win):
+    tabs, content = tab_text(win)
+    assert "Speak in my cloned voice (Chatterbox, restart to apply)" in content["Voice"]
+    assert win._clone_text().startswith("Cloned voice: off")
+    clone = next(c for c in tabs.widget(0).widget().findChildren(QCheckBox) if c.text().startswith("Speak in my cloned voice"))
+    clone.setChecked(True)
+    assert win.cfg.chatterbox_url == "http://127.0.0.1:8123"
+    assert "on, server http://127.0.0.1:8123" in win._clone_status.text()
+    clone.setChecked(False)
+    assert win.cfg.chatterbox_url == ""
