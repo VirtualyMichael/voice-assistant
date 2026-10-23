@@ -41,6 +41,8 @@ class Config:
     voice_approval: bool = False  # confirmations are also read aloud and can be answered by saying yes or no
     profile_learning: bool = True  # the assistant may propose facts about you for the profile (you confirm each)
     custom_voice_dir: str = ""  # folder with your own sherpa-onnx VITS/Piper voice (model .onnx, tokens.txt, espeak-ng-data); empty = built-in voices
+    check_updates: bool = True  # look for a newer release on GitHub at start-up (it always asks before installing)
+    last_update_check: float = 0.0  # when that last happened (unix time)
     delegate_enabled: bool = False  # hand coding tasks to Claude Code / Codex (their CLIs, your logins)
     delegate_cmd_claude: str = "claude"
     delegate_cmd_codex: str = "codex"

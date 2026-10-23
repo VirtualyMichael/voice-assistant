@@ -142,6 +142,7 @@ Everything below is built in. Items marked *(off by default)* need switching on 
 
 **Installing and trust**
 - A guided first-run setup, an installer with a self-test gate, models downloaded only after you tick them, no analytics or tracking, and your audio never saved. Actions that change things ask first.
+- **Updates:** the version is shown in the top bar. At start-up (switch off in Settings > General) the app checks this project's GitHub releases; when a newer one exists it asks, then downloads the installer, verifies its published SHA-256 and reinstalls over itself, keeping your settings. Nothing about you is sent.
 - Windows 10/11 (frosted glass needs Windows 11). The installer is not code-signed yet.
 
 ## Using the assistant
@@ -406,4 +407,4 @@ so add that when comparing with total perceived delay. `MetricsLog.summary()` gi
 ## Notices
 
 Speech, voice and language models are downloaded only when you tick them and keep their own licences; see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). No analytics or tracking, and your audio is never saved.
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). No analytics or tracking, and your audio is never saved. The only automatic network call is the optional update check against this project's public GitHub releases.

@@ -63,6 +63,8 @@ QPushButton {{ background: {card}; border: 1px solid {line}; border-radius: 16px
 QPushButton:hover {{ border-color: {accent}; }}
 QPushButton:checked {{ background: {accent}; color: {ink}; border-color: {accent}; }}
 QPushButton#talk {{ background: {accent}; color: {ink}; border: none; font-weight: 600; padding: 8px 20px; }}
+QPushButton#version {{ background: transparent; border: none; color: {MUTED}; font-size: 11px; padding: 2px 4px; text-align: left; }}
+QPushButton#version[update="true"] {{ color: {accent}; font-weight: 600; text-decoration: underline; }}
 QPushButton#icon {{ font-family: {ICON_FONT}; font-size: 15px; padding: 0; min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px; border-radius: 17px; }}
 QPushButton#swatch {{ padding: 0; min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px; border-radius: 13px; border: 2px solid transparent; }}
 QPushButton#swatch:checked {{ border-color: {TEXT}; }}

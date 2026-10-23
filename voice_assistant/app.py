@@ -22,7 +22,7 @@ from .audio_io import AudioIO, list_devices
 from .hardware import detect_gpus, recommend
 from .config import INTERRUPT_MODES, LISTEN_MODES, Config, config_dir, load_config, save_config
 from .mcp_client import McpHub, read_mcp_json
-from . import odysseus
+from . import __version__, odysseus, updater
 from .memory import ConversationStore
 from .pdf_tools import PdfStore
 from .skill_tools import build_skill_tools
@@ -80,6 +80,8 @@ class Bridge(QObject):
     note = Signal(str)
     apps_count = Signal(int)
     route = Signal(str, bool)
+    update_found = Signal(object, bool)  # (updater.Release, asked_by_user)
+    update_ready = Signal(str)  # path of a downloaded, verified installer
 
 
 def icon_button(glyph: str, tip: str, checkable: bool = False) -> QPushButton:
@@ -270,7 +272,7 @@ class MainWindow(QMainWindow):
     def __init__(self, cfg: Config):
         super().__init__()
         self.setAttribute(Qt.WA_TranslucentBackground)  # lets the frosted backdrop show through
-        self.setWindowTitle("Voice Assistant")
+        self.setWindowTitle(f"Voice Assistant {__version__}")
         self.resize(*(cfg.window_size or [440, 700]))
         self.cfg, self.bridge, self.policy = cfg, Bridge(), FolderPolicy(cfg.approved_folders)
         self.warnings: list[str] = []
@@ -289,8 +291,14 @@ class MainWindow(QMainWindow):
         self.mute.setVisible(cfg.mic_forward)
         gear = self._gear = icon_button("\uE713", "Settings", checkable=True)
         head = QHBoxLayout()
-        head.addWidget(self.status)
+        head.addWidget(QLabel("Voice Assistant", objectName="status"))
+        self.version_btn = QPushButton(f"v{__version__}", objectName="version", flat=True)
+        self.version_btn.setToolTip("Your version. Click to check for updates")
+        self.version_btn.setCursor(Qt.PointingHandCursor)
+        self.version_btn.clicked.connect(lambda: self._check_updates(manual=True))
+        head.addWidget(self.version_btn)
         head.addStretch(1)
+        head.addWidget(self.status)
         head.addWidget(self.mute)
         head.addWidget(new_chat)
         head.addWidget(self.pin)
@@ -365,10 +373,13 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self, interval=100)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
+        QTimer.singleShot(8000, self._auto_check_updates)  # after start-up has settled
 
         b.vr.connect(self._on_vr)
         b.vr_note.connect(self._on_vr_note)
         b.note.connect(lambda m: self.chat.add("bubbleNote", m))
+        b.update_found.connect(self._on_update_found)
+        b.update_ready.connect(self._install_update)
         b.apps_count.connect(self._on_apps_count)
         b.route.connect(self._on_route)
         b.tool.connect(lambda m: self.chat.add("bubbleNote", "\u2699 " + m[:140]))
@@ -473,6 +484,14 @@ class MainWindow(QMainWindow):
         orow.addWidget(QLabel("Whole window opacity"))
         orow.addWidget(opacity, 1)
         form.use("General")
+        upd = QCheckBox("Check for updates when the app starts")
+        upd.setToolTip("Contacts the project's public GitHub release page only. It always asks before installing anything.")
+        upd.setChecked(cfg.check_updates)
+        upd.toggled.connect(lambda v: self._set_field("check_updates", v))
+        upd_btn = QPushButton(f"Check for updates (you have {__version__})")
+        upd_btn.clicked.connect(lambda: self._check_updates(manual=True))
+        form.addRow(upd)
+        form.addRow(upd_btn)
         lang = QLineEdit(cfg.main_language)
         lang.setToolTip("Screen translations are given in this language")
         lang.editingFinished.connect(lambda: self._set_field("main_language", lang.text().strip() or "English"))
@@ -1563,6 +1582,81 @@ class MainWindow(QMainWindow):
             why = odysseus.problem(self.cfg) or odysseus.ensure_running(self.cfg) or odysseus.OdysseusClient(self.cfg).check()
             self.bridge.note.emit("Odysseus: connected." if not why else f"Odysseus: {why}.")
         threading.Thread(target=work, daemon=True).start()
+
+    # ---- updates -----------------------------------------------------------------------
+    def _auto_check_updates(self) -> None:
+        if self.cfg.check_updates and time.time() - self.cfg.last_update_check > 6 * 3600:
+            self._check_updates(manual=False)
+
+    def _check_updates(self, manual: bool) -> None:
+        def work() -> None:
+            try:
+                rel = updater.check()
+            except updater.UpdateError as e:
+                if manual:
+                    self.bridge.error.emit(str(e))
+                return
+            self.cfg.last_update_check = time.time()
+            save_config(self.cfg)
+            if rel:
+                self.bridge.update_found.emit(rel, manual)
+            elif manual:
+                self.bridge.note.emit(f"You are on the latest version ({__version__}).")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_found(self, rel, asked: bool) -> None:
+        self.version_btn.setText(f"v{__version__} → v{rel.version} available")
+        self.version_btn.setProperty("update", True)
+        self.version_btn.style().unpolish(self.version_btn)
+        self.version_btn.style().polish(self.version_btn)
+        self.version_btn.clicked.disconnect()
+        self.version_btn.clicked.connect(lambda: self._offer_update(rel))
+        if asked or getattr(self, "_offered", "") != rel.version:
+            self._offered = rel.version
+            self._offer_update(rel)
+
+    def _offer_update(self, rel) -> None:
+        notes = rel.notes.strip().replace("\r", "")[:700]
+        why_not = updater.can_self_update()
+        box = QMessageBox(self)
+        box.setWindowTitle("Update available")
+        box.setText(f"Version {rel.version} is available (you have {__version__}).")
+        if why_not:
+            tail = "\n\n" + why_not.capitalize() + "."
+        else:
+            tail = "\n\nInstall it now? The app closes, updates and reopens. Your settings stay."
+        box.setInformativeText(notes + tail)
+        go = box.addButton("Open the release page" if why_not else "Install now", QMessageBox.AcceptRole)
+        box.addButton("Later", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not go:
+            return
+        if why_not:
+            import webbrowser
+
+            if rel.page_url.startswith("https://github.com/"):
+                webbrowser.open(rel.page_url)
+            return
+        self.chat.add("bubbleNote", f"Downloading version {rel.version}\u2026")
+
+        def work() -> None:
+            try:
+                path = updater.download(rel, config_dir() / "updates")
+            except updater.UpdateError as e:
+                self.bridge.error.emit(f"Update not installed: {e}")
+                return
+            self.bridge.update_ready.emit(str(path))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _install_update(self, path: str) -> None:
+        self.chat.add("bubbleNote", "Update verified. Installing and restarting\u2026")
+        try:
+            updater.launch_installer(Path(path))
+        except OSError as e:
+            self._on_error(f"Could not start the installer: {e}")
+            return
+        self.close()
+        QApplication.quit()
 
     # ---- skills ------------------------------------------------------------------------
     def _fill_skills(self) -> None:

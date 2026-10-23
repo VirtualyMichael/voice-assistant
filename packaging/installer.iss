@@ -48,8 +48,15 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\VoiceAssistant.exe"; Description: "Start Voice Assistant now"; Flags: nowait postinstall skipifsilent
+; The in-app updater runs this installer silently with /RELAUNCH=1 and expects the app to come back.
+Filename: "{app}\VoiceAssistant.exe"; Flags: nowait; Check: Relaunch
 
 [Code]
+function Relaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;

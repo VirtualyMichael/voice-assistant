@@ -20,4 +20,8 @@ $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFile
 if (-not $iscc) { throw "Inno Setup 6 not found (https://jrsoftware.org/isinfo.php)" }
 & $iscc /Q "/DAppVersion=$Version" packaging\installer.iss
 if ($LASTEXITCODE) { throw "Inno Setup failed" }
+# Checksum published next to the installer: the in-app updater refuses a download that does not match it.
+$setup = "dist\installer\VoiceAssistant-Setup-$Version.exe"
+$hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+[IO.File]::WriteAllText("$setup.sha256", "$hash  VoiceAssistant-Setup-$Version.exe`n")
 Get-ChildItem dist\installer | Select-Object Name, @{n = "MB"; e = { [math]::Round($_.Length / 1MB) } }
