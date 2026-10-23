@@ -856,7 +856,7 @@ class MainWindow(QMainWindow):
         for name, factory in (
             ("recognizer", lambda: SherpaRecognizer(models / "asr", end_silence_s=cfg.end_of_speech_s)),
             ("accurate", lambda: AccurateRecognizer(models / "asr2", cfg.tts_threads) if cfg.accurate_asr and (models / "asr2").is_dir() else None),
-            ("synth", lambda: load_synth(models, cfg.tts_speed, cfg.tts_threads, cfg.tts_voice, cfg.custom_voice_dir)),
+            ("synth", lambda: load_synth(models, cfg.tts_speed, cfg.tts_threads, cfg.tts_voice, cfg.custom_voice_dir, cfg.chatterbox_url, cfg.chatterbox_launch)),
             ("wake", lambda: SherpaWakeWord(models / "kws", cfg.wake_phrase, threshold=cfg.wake_threshold) if cfg.wake_word_enabled else None),
         ):
             try:

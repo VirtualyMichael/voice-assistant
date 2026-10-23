@@ -4,6 +4,7 @@ Layout under models_dir:  asr/  tts/  kws/   (each holds one extracted model's f
 """
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import tarfile
@@ -14,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
+log = logging.getLogger(__name__)
 REL = "https://github.com/k2-fsa/sherpa-onnx/releases/download"
 
 
@@ -293,6 +295,60 @@ class SupertonicSynth:
         return np.asarray(audio.samples, dtype=np.float32), audio.sample_rate
 
 
+def _chatterbox_up(url: str, timeout: float = 2) -> bool:
+    try:
+        urllib.request.urlopen(f"{url.rstrip('/')}/health", timeout=timeout).read()  # noqa: S310 - user-configured local URL
+        return True
+    except OSError:
+        return False
+
+
+def ensure_chatterbox_server(url: str, launch: str, wait_s: float = 150.0) -> None:
+    """Start the Chatterbox server (launch = path to its .bat) if it is not already answering; stop it on exit if we started it."""
+    import atexit
+    import subprocess
+    import time
+
+    if _chatterbox_up(url) or not launch or not Path(launch).is_file():
+        return
+    log.info("Starting Chatterbox server: %s", launch)
+    proc = subprocess.Popen(  # noqa: S603 - path comes from the user's own config
+        ["cmd", "/c", launch], cwd=str(Path(launch).parent), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    atexit.register(lambda: subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True))
+    deadline = time.time() + wait_s
+    while time.time() < deadline and proc.poll() is None and not _chatterbox_up(url):
+        time.sleep(2)
+
+
+class ChatterboxSynth:
+    """Your cloned voice from a local Chatterbox server (see chatterbox_server.py); stdlib HTTP only, no torch in this app."""
+
+    engine = "chatterbox"
+
+    def __init__(self, url: str, speed: float = 1.0):
+        self.url, self.speed = url.rstrip("/"), speed  # Chatterbox has no speed control; kept for the engine interface
+        self.voices = [Voice("clone", "My voice (Chatterbox)", "male", 0)]
+        try:
+            urllib.request.urlopen(f"{self.url}/health", timeout=3).read()  # noqa: S310 - user-configured local URL
+        except OSError as e:
+            raise ModelsMissing(f"Chatterbox server not reachable at {self.url}. Start it with Start-Chatterbox-Server.bat") from e
+
+    def set_voice(self, voice_id: str) -> Voice:
+        return self.voices[0]
+
+    def __call__(self, text: str) -> tuple[np.ndarray, int]:
+        import io
+        import json
+        import wave
+
+        req = urllib.request.Request(f"{self.url}/tts", json.dumps({"text": text}).encode(), {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as r, wave.open(io.BytesIO(r.read())) as w:  # noqa: S310
+            pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
+            return pcm.astype(np.float32) / 32768.0, w.getframerate()
+
+
 class MultiSynth:
     """Several voice engines behind one voice list; picking a voice switches to its engine."""
 
@@ -325,8 +381,14 @@ class MultiSynth:
         return self._cur(text)
 
 
-def load_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_dir: str = ""):
-    """The user's own voice folder if set, else the Kokoro model (models_dir/kokoro), else the Piper voice (models_dir/tts)."""
+def load_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_dir: str = "", chatterbox_url: str = "", chatterbox_launch: str = ""):
+    """A Chatterbox server (your cloned voice) if chatterbox_url is set and reachable, else the user's own voice folder, else Kokoro (models_dir/kokoro), else Piper (models_dir/tts)."""
+    if chatterbox_url:
+        ensure_chatterbox_server(chatterbox_url, chatterbox_launch)
+        try:
+            return ChatterboxSynth(chatterbox_url, speed)
+        except ModelsMissing as e:
+            log.warning("%s - falling back to built-in voices", e)
     if custom_dir and Path(custom_dir).is_dir():
         return SherpaSynth(Path(custom_dir), speed, threads, voice, custom=True)
     engines = []

@@ -74,6 +74,8 @@ class Config:
     tts_speed: float = 1.0
     tts_voice: str = ""  # voice id, e.g. "am_michael"; empty = the model's first voice
     tts_threads: int = 6
+    chatterbox_launch: str = ""  # path to Start-Chatterbox-Server.bat: started automatically (hidden) when the server is not running, and stopped on exit
+    chatterbox_url: str = ""  # e.g. "http://127.0.0.1:8123": speak with your cloned voice from a local Chatterbox server; empty = built-in voices
     tts_pronunciations: dict = field(default_factory=dict)  # extra word -> spoken form, e.g. {"Gibson": "Gibb son"}
     vram_reserve_gb: float = 4.0  # VRAM kept free for games and other workloads
     always_on_top: bool = False
