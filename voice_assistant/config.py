@@ -8,6 +8,7 @@ from pathlib import Path
 
 INTERRUPT_MODES = ("voice", "hotkey", "ignore")
 LISTEN_MODES = ("push", "always")
+ODYSSEUS_MODES = ("off", "assist", "only")
 
 
 def config_dir() -> Path:
@@ -76,7 +77,7 @@ class Config:
     tts_threads: int = 6
     chatterbox_launch: str = ""  # path to Start-Chatterbox-Server.bat: started automatically (hidden) when the server is not running, and stopped on exit
     chatterbox_url: str = ""  # e.g. "http://127.0.0.1:8123": speak with your cloned voice from a local Chatterbox server; empty = built-in voices
-    tts_pronunciations: dict = field(default_factory=dict)  # extra word -> spoken form, e.g. {"Gibson": "Gibb son"}
+    tts_pronunciations: dict = field(default_factory=dict)  # extra word -> spoken form, e.g. {"Nguyen": "Win"}
     vram_reserve_gb: float = 4.0  # VRAM kept free for games and other workloads
     always_on_top: bool = False
     opacity: float = 1.0
@@ -97,6 +98,12 @@ class Config:
     anthropic_key_env: str = "ANTHROPIC_API_KEY"
     cloud_ack: bool = False  # user has accepted that cloud providers receive the conversation
     mcp_servers: dict = field(default_factory=dict)  # see mcp_client.py
+    odysseus_mode: str = "off"  # off: assistant alone | assist: also hands big jobs to Odysseus | only: voice only, every action goes through Odysseus
+    odysseus_url: str = "http://127.0.0.1:7000"  # your Odysseus server; the API token is kept in Windows Credential Manager
+    odysseus_endpoint_id: str = ""  # a model endpoint id from your Odysseus (Settings > models)
+    odysseus_model: str = ""  # a model name served by that endpoint
+    odysseus_launch: str = ""  # optional .bat/.cmd/.ps1 that starts Odysseus; run (hidden) when the server is not answering
+    odysseus_auto_approve: bool = False  # false = ask before each hand-off to Odysseus
     llm_api_key_env: str = ""  # e.g. "OPENAI_API_KEY" for cloud endpoints
     system_prompt: str = (
         "You are a concise voice assistant. Reply in short spoken sentences without "
@@ -136,6 +143,8 @@ class Config:
             raise ValueError(f"interrupt_mode must be one of {INTERRUPT_MODES}")
         if self.listen_mode not in LISTEN_MODES:
             raise ValueError(f"listen_mode must be one of {LISTEN_MODES}")
+        if self.odysseus_mode not in ODYSSEUS_MODES:
+            raise ValueError(f"odysseus_mode must be one of {ODYSSEUS_MODES}")
 
     def device(self, key: str, vr: bool = False) -> str:
         """Device name for `key` (input_device / output_device), honouring the VR profile when vr is True."""

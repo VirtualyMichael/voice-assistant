@@ -22,6 +22,7 @@ from .audio_io import AudioIO, list_devices
 from .hardware import detect_gpus, recommend
 from .config import INTERRUPT_MODES, LISTEN_MODES, Config, config_dir, load_config, save_config
 from .mcp_client import McpHub, read_mcp_json
+from . import odysseus
 from .memory import ConversationStore
 from .pdf_tools import PdfStore
 from .skill_tools import build_skill_tools
@@ -508,6 +509,38 @@ class MainWindow(QMainWindow):
         shell = QCheckBox("Let the agent run PowerShell (asks each time)")
         shell.setChecked(cfg.allow_shell)
         shell.toggled.connect(lambda v: self._set_field("allow_shell", v))
+        ody_mode = QComboBox()
+        for m in odysseus.MODES:
+            ody_mode.addItem(odysseus.MODE_LABELS[m], m)
+        ody_mode.setCurrentIndex(max(ody_mode.findData(cfg.odysseus_mode), 0))
+        ody_mode.setToolTip("Odysseus is a separate agent workspace that you install and run yourself. Off unless you choose otherwise.")
+        ody_mode.currentIndexChanged.connect(lambda _i: self._set_field("odysseus_mode", ody_mode.currentData()))
+        ody_url, ody_ep, ody_model = QLineEdit(cfg.odysseus_url), QLineEdit(cfg.odysseus_endpoint_id), QLineEdit(cfg.odysseus_model)
+        ody_ep.setPlaceholderText("model endpoint id from your Odysseus")
+        ody_model.setPlaceholderText("model name served by that endpoint")
+        ody_url.editingFinished.connect(lambda: self._set_field("odysseus_url", ody_url.text().strip() or "http://127.0.0.1:7000"))
+        ody_ep.editingFinished.connect(lambda: self._set_field("odysseus_endpoint_id", ody_ep.text().strip()))
+        ody_model.editingFinished.connect(lambda: self._set_field("odysseus_model", ody_model.text().strip()))
+        ody_token = QPushButton("Set Odysseus token…")
+        ody_token.setToolTip("An API token with the chat scope. Stored in Windows Credential Manager, never in the settings file")
+        ody_token.clicked.connect(self._ask_odysseus_token)
+        ody_launch = QPushButton("Choose start file…")
+        ody_launch.setToolTip("Optional .bat, .cmd or .ps1 that starts Odysseus. The app runs it (hidden) when the server is not answering")
+        ody_launch.clicked.connect(self._pick_odysseus_launch)
+        ody_test = QPushButton("Test the connection")
+        ody_test.clicked.connect(self._test_odysseus)
+        ody_ask = QCheckBox("Ask before each hand-off to Odysseus")
+        ody_ask.setChecked(not cfg.odysseus_auto_approve)
+        ody_ask.toggled.connect(lambda v: self._set_field("odysseus_auto_approve", not v))
+        form.addRow(QLabel("Odysseus (restart to apply):", objectName="small"))
+        form.addRow(ody_mode)
+        form.addRow("Odysseus address", ody_url)
+        form.addRow("Endpoint id", ody_ep)
+        form.addRow("Model", ody_model)
+        form.addRow(ody_token)
+        form.addRow(ody_launch)
+        form.addRow(ody_test)
+        form.addRow(ody_ask)
         form.addRow(QLabel("Agent abilities (restart to apply):", objectName="small"))
         form.addRow(web)
         form.addRow(shell)
@@ -905,6 +938,10 @@ class MainWindow(QMainWindow):
         registry.add(build_diagnostic_tools(registry.log, lambda: self.warnings))
         self.pdfs = PdfStore()
         registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))
+        if odysseus.active(cfg):
+            registry.add(odysseus.build_odysseus_tools(cfg, self._confirm))
+            threading.Thread(target=odysseus.ensure_running, args=(cfg,), daemon=True).start()  # warm up so the first hand-off is quick
+        odysseus.restrict_tools(registry, cfg.odysseus_mode)  # 'only': ask_odysseus is the only tool
         self._registry = registry
         agent = Agent(
             llm, self._system_prompt(), registry, max(cfg.max_tool_rounds, 16 if cfg.computer_control else 0),
@@ -927,7 +964,7 @@ class MainWindow(QMainWindow):
         self._add_voice_picker()
         self.mcp = None
         self._warm_pdfs()
-        if cfg.mcp_servers:
+        if cfg.mcp_servers and cfg.odysseus_mode != "only":
             threading.Thread(target=self._start_mcp, daemon=True).start()
         if parts["recognizer"]:
             if not self.audio.start_input():
@@ -936,8 +973,10 @@ class MainWindow(QMainWindow):
             self.session.start()
 
     def _system_prompt(self) -> str:
-        return (self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + self.profile.prompt() + capabilities_prompt(self.cfg, self._registry.names()) + self.skills.prompt()
-                + self.interp.prompt() + self.inbox.prompt())
+        only = self.cfg.odysseus_mode == "only"
+        return (self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + self.profile.prompt()
+                + ("" if only else capabilities_prompt(self.cfg, self._registry.names()) + self.skills.prompt() + self.interp.prompt() + self.inbox.prompt())
+                + odysseus.mode_prompt(self.cfg.odysseus_mode))
 
     def _refresh_prompt(self) -> None:
         try:
@@ -1503,6 +1542,27 @@ class MainWindow(QMainWindow):
                 self._on_error(f"Could not save the key: {e}")
                 return
             self._rebuild_llm()
+
+    def _ask_odysseus_token(self) -> None:
+        key, ok = QInputDialog.getText(self, "Odysseus token", "Paste an Odysseus API token with the chat scope:", QLineEdit.Password)
+        if ok and key.strip():
+            try:
+                odysseus.save_token(key)
+            except Exception as e:
+                self._on_error(f"Could not save the token: {e}")
+                return
+            self.chat.add("bubbleNote", "Odysseus token saved.")
+
+    def _pick_odysseus_launch(self) -> None:
+        f, _ = QFileDialog.getOpenFileName(self, "Choose the file that starts Odysseus", "", "Start files (*.bat *.cmd *.ps1 *.exe)")
+        if f:
+            self._set_field("odysseus_launch", f)
+
+    def _test_odysseus(self) -> None:
+        def work() -> None:
+            why = odysseus.problem(self.cfg) or odysseus.ensure_running(self.cfg) or odysseus.OdysseusClient(self.cfg).check()
+            self.bridge.note.emit("Odysseus: connected." if not why else f"Odysseus: {why}.")
+        threading.Thread(target=work, daemon=True).start()
 
     # ---- skills ------------------------------------------------------------------------
     def _fill_skills(self) -> None:
