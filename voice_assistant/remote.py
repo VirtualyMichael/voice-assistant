@@ -56,6 +56,7 @@ MAX_MESSAGE_BYTES = 2 * 1024 * 1024  # a photo arrives as one base64 message; th
 MAX_PHOTO_BYTES = 1_400_000
 CAMERA_WAIT_S = 90.0
 ACTION_WAIT_S = 60.0  # how long the phone has for the user to agree to an action
+MAX_ACTION_REPLY_CHARS = 8000  # room for a list of notifications
 MAX_VIDEO_FRAMES = 500
 MAX_VIDEO_FRAME_BYTES = 600_000
 MAX_VIDEO_TOTAL_BYTES = 80_000_000
@@ -689,7 +690,7 @@ class RemoteServer:
             if reply is not None:
                 client.send(reply)
         elif kind == "phone_action_result":
-            client.resolve_action(str(msg.get("id", "")), bool(msg.get("ok")), str(msg.get("message", ""))[:300])
+            client.resolve_action(str(msg.get("id", "")), bool(msg.get("ok")), str(msg.get("message", ""))[:MAX_ACTION_REPLY_CHARS])
         elif kind == "forget_me":  # the phone removed this PC: take the phone off the paired list too
             self.devices.revoke(client.device_id)
             client.close(1000, "forgotten")
