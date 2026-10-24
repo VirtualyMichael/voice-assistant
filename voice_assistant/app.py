@@ -64,6 +64,7 @@ from .phone_camera import build_phone_camera_tools
 from .phone_actions import PHONE_ACTIONS_PROMPT, build_phone_action_tools
 from .phone_share import ShareReceiver
 from .answer_cards import CardCollector, build_image_tools, fetch_thumbnail
+from .research import RESEARCH_PROMPT, build_research_tools
 from .setup_wizard import run_wizard
 from . import glass
 from .theme import ACCENTS, ICON_FONT, STATE_COLORS, STYLE, build_style, window_tint
@@ -1220,6 +1221,7 @@ class MainWindow(QMainWindow):
         registry.add(build_agent_tools(cfg, self.policy, self._confirm, lambda t: self.session.announce(t), self.timers, self.catalog))
         if cfg.allow_web:
             registry.add(build_image_tools())
+            registry.add(build_research_tools())
         # what each answer was based on (pages, pictures, settings), shown under the reply on the phone
         self.cards = CardCollector(fetch_thumbnail if cfg.allow_web else None)
         registry.listeners.append(self.cards.tool)
@@ -1314,7 +1316,8 @@ class MainWindow(QMainWindow):
         only = self.cfg.odysseus_mode == "only"
         return (self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + self.profile.prompt()
                 + ("" if only else capabilities_prompt(self.cfg, self._registry.names()) + SETTINGS_PROMPT
-                                 + (PHONE_ACTIONS_PROMPT if "phone_set_alarm" in self._registry.names() else "") + self.skills.prompt() + self.interp.prompt() + self.inbox.prompt())
+                                 + (PHONE_ACTIONS_PROMPT if "phone_set_alarm" in self._registry.names() else "")
+                                 + (RESEARCH_PROMPT if "research" in self._registry.names() else "") + self.skills.prompt() + self.interp.prompt() + self.inbox.prompt())
                 + odysseus.mode_prompt(self.cfg.odysseus_mode))
 
     def _refresh_prompt(self) -> None:

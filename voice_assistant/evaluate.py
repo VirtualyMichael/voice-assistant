@@ -21,7 +21,7 @@ from .config import config_dir, load_config
 
 CASES_FILE = Path(__file__).resolve().parent.parent / "evals" / "cases.json"
 READ_ONLY = {"get_time", "system_status", "web_search", "fetch_page", "find_setting", "read_attachment", "search_attachment", "look_at_attachment",
-             "list_timers", "list_apps", "list_routines", "find_images",
+             "list_timers", "list_apps", "list_routines", "find_images", "research",
              # these run for real too: here they only reach a pretend phone and a settings copy that is never saved
              "change_setting", "phone_set_alarm", "phone_set_timer", "phone_add_calendar_event"}
 
@@ -149,15 +149,21 @@ def check(case: dict, answer: str, calls: list) -> list[str]:
     for word in expect.get("all", []):
         if word.lower() not in text:
             problems.append(f"the answer should mention '{word}'")
-    anyof = expect.get("any", [])
-    if anyof and not any(w.lower() in text for w in anyof):
-        problems.append("the answer should mention one of: " + ", ".join(anyof))
+    for key in ("any", "any2"):
+        anyof = expect.get(key, [])
+        if anyof and not any(w.lower() in text for w in anyof):
+            problems.append("the answer should mention one of: " + ", ".join(anyof))
+    pages = case.get("read_pages", 0)
+    read = sum(1 for c in calls if c[0] == "fetch_page" and not str(c[2] if len(c) > 2 else "").startswith("Error")) + sum(
+        len(re.findall(r"^\[\d+\] ", str(c[2]), re.M)) for c in calls if c[0] == "research" and len(c) > 2)
+    if pages and read < pages:
+        problems.append(f"it should have read at least {pages} page(s), not only search snippets")
     for word in expect.get("none", []):
         if word.lower() in text:
             problems.append(f"the answer should not say '{word}'")
     for want in case.get("tools", []):
         name, args = want["name"], want.get("args", {})
-        found = [c for c in calls if c[0] == name]
+        found = [c for c in calls if re.fullmatch(name, c[0])]  # "web_search|research": either tool will do
         if not found:
             problems.append(f"it should have called {name}")
             continue
@@ -191,8 +197,9 @@ def _registry(cfg, inbox, llm, record):
     tools = build_agent_tools(cfg, FolderPolicy([]), no, lambda _t: None)
     if cfg.allow_web:
         from .answer_cards import build_image_tools
+        from .research import build_research_tools
 
-        tools += build_image_tools()
+        tools += build_image_tools() + build_research_tools()
     tools += build_attachment_tools(inbox, lambda: llm, lambda: cfg.main_language)
     from dataclasses import replace
 
@@ -202,10 +209,10 @@ def _registry(cfg, inbox, llm, record):
         real = t.handler
 
         def handler(_real=real, _name=t.name, **kw):
-            record.append((_name, kw))
-            if _name in READ_ONLY:
-                return _real(**kw)
-            return "Done (test run: nothing was really done)."
+            entry = [_name, kw, ""]
+            record.append(entry)
+            entry[2] = str(_real(**kw)) if _name in READ_ONLY else "Done (test run: nothing was really done)."
+            return entry[2]
 
         t.handler = handler
     return ToolRegistry(tools)
@@ -228,7 +235,10 @@ def run_case(case: dict, cfg, llm, assets: Path, timeout_s: float = 180) -> Resu
         inbox.add(assets / name)
     calls: list = []
     registry = _registry(cfg, inbox, llm, calls)
-    prompt = (cfg.system_prompt + capabilities_prompt(cfg, registry.names()) + SETTINGS_PROMPT + PHONE_ACTIONS_PROMPT + inbox.prompt())
+    from .research import RESEARCH_PROMPT
+
+    prompt = (cfg.system_prompt + capabilities_prompt(cfg, registry.names()) + SETTINGS_PROMPT + PHONE_ACTIONS_PROMPT
+              + (RESEARCH_PROMPT if "research" in registry.names() else "") + inbox.prompt())
     agent = Agent(llm, prompt, registry, max(cfg.max_tool_rounds, 6), max_messages=40)
     cancel, parts, started = threading.Event(), [], time.monotonic()
     worker = threading.Thread(target=lambda: parts.extend(agent.respond(case["question"], cancel)), daemon=True)
@@ -265,7 +275,7 @@ def main(argv: list[str]) -> int:
         if verbose or (not r.ok and not r.skipped):
             print("        answer: " + r.answer.replace("\n", " ")[:300])
             if r.calls:
-                print("        tools:  " + "; ".join(f"{n}({json.dumps(a)[:80]})" for n, a in r.calls))
+                print("        tools:  " + "; ".join(f"{c[0]}({json.dumps(c[1])[:80]})" for c in r.calls))
     ran = [r for r in results if not r.skipped]
     passed = sum(r.ok for r in ran)
     by_cat: dict[str, list] = {}

@@ -65,6 +65,11 @@ class CardCollector(SessionEvents):
                         self._source(m.group(1), m.group(2), read=False)
             elif name == "fetch_page" and not str(result).startswith("Error"):
                 self._source("", str(args.get("url", "")), read=True)
+            elif name == "research":
+                from .research import parse_sources
+
+                for s in parse_sources(result):
+                    self._source(s["title"], s["url"], read=True)
             elif name == "find_images":
                 for line in str(result).splitlines():
                     parts = [p.strip() for p in line.split(" | ")]
@@ -131,13 +136,13 @@ def fetch_thumbnail(url: str, resolver=None) -> bytes | None:
     """A small JPEG of a picture on a public website, or None. Only public addresses are fetched and only a few MB are read."""
     import httpx
 
-    from .agent_tools import public_host
+    from .agent_tools import USER_AGENT, public_host
 
     resolver = resolver or public_host
     u = urlparse(url)
     if u.scheme not in ("http", "https") or not u.hostname or not resolver(u.hostname):
         return None
-    with httpx.Client(timeout=6, follow_redirects=False, headers={"User-Agent": "VoiceAssistant/0.1"}) as client, client.stream("GET", url) as r:
+    with httpx.Client(timeout=6, follow_redirects=False, headers={"User-Agent": USER_AGENT}) as client, client.stream("GET", url) as r:
         if r.status_code >= 300 or not r.headers.get("content-type", "").startswith("image/"):
             return None
         data = b""

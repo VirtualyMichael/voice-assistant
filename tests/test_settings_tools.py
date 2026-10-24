@@ -34,6 +34,11 @@ def test_everyday_words_find_the_right_setting():
         assert key in [s.key for s in rs.search_catalog(query)[:3]], query
 
 
+def test_word_endings_do_not_matter():
+    assert rs.search_catalog("open links without confirmation")[0].key == "confirm_links"
+    assert rs.search_catalog("remember my chats")[0].key == "remember_conversation"
+
+
 def test_ask_does_not_match_inside_other_words():
     assert "scheduled_tasks_enabled" not in [s.key for s in rs.search_catalog("ask")]
 

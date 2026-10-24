@@ -119,39 +119,50 @@ def html_to_text(html: str) -> str:
     return "\n".join(line.strip() for line in text.splitlines() if line.strip())
 
 
-def fetch_url(url: str, client: httpx.Client | None = None, resolver=public_host) -> str:
+# who is asking: sites such as Wikipedia refuse programs that do not say what they are and where to find out more
+USER_AGENT = "VoiceAssistant/0.14 (personal voice assistant; +https://github.com/VirtualyMichael/voice-assistant)"
+
+
+def fetch_raw(url: str, client: httpx.Client | None = None, resolver=public_host, timeout: float = 10) -> tuple[str, str, str]:
+    """(page body, content type, "") for a public text page, or ("", "", why not). Every redirect hop is checked to be a public website."""
     own = client is None
-    client = client or httpx.Client(timeout=10, follow_redirects=False, headers={"User-Agent": "VoiceAssistant/0.1"})
+    client = client or httpx.Client(timeout=timeout, follow_redirects=False, headers={"User-Agent": USER_AGENT})
     try:
         for _ in range(4):  # follow a few redirects manually so every hop is checked
             u = urlparse(url)
             if u.scheme not in ("http", "https") or not u.hostname:
-                return "Error: only http(s) URLs are allowed."
+                return "", "", "Error: only http(s) URLs are allowed."
             if not resolver(u.hostname):
-                return "Error: that address is not a public website."
+                return "", "", "Error: that address is not a public website."
             with client.stream("GET", url) as r:
                 if r.is_redirect:
                     url = urljoin(url, r.headers.get("location", ""))
                     continue
                 if r.status_code >= 400:
-                    return f"Error: HTTP {r.status_code}"
+                    return "", "", f"Error: HTTP {r.status_code}"
                 ctype = r.headers.get("content-type", "")
                 if not ("text" in ctype or "json" in ctype or "xml" in ctype):
-                    return f"Error: not a text page ({ctype or 'unknown type'})."
+                    return "", "", f"Error: not a text page ({ctype or 'unknown type'})."
                 raw = b""
                 for chunk in r.iter_bytes():
                     raw += chunk
                     if len(raw) > MAX_PAGE_BYTES:
                         break
-            text = raw.decode("utf-8", errors="replace")
-            text = html_to_text(text) if "html" in ctype else text
-            return UNTRUSTED + text[:MAX_PAGE_CHARS] + ("\n... truncated" if len(text) > MAX_PAGE_CHARS else "")
-        return "Error: too many redirects."
+            return raw.decode("utf-8", errors="replace"), ctype, ""
+        return "", "", "Error: too many redirects."
     except httpx.HTTPError as e:
-        return f"Error: could not fetch the page ({e.__class__.__name__})."
+        return "", "", f"Error: could not fetch the page ({e.__class__.__name__})."
     finally:
         if own:
             client.close()
+
+
+def fetch_url(url: str, client: httpx.Client | None = None, resolver=public_host) -> str:
+    body, ctype, err = fetch_raw(url, client, resolver)
+    if err:
+        return err
+    text = html_to_text(body) if "html" in ctype else body
+    return UNTRUSTED + text[:MAX_PAGE_CHARS] + ("\n... truncated" if len(text) > MAX_PAGE_CHARS else "")
 
 
 def web_search(query: str, max_results: int = 5) -> str:

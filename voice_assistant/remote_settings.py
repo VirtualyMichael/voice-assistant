@@ -415,7 +415,16 @@ _WORDS = {
 }
 
 
+def _stem(word: str) -> str:
+    """The word without a common ending, so "links" finds "link" and "confirmation" finds "confirm"."""
+    for end in ("ations", "ation", "ings", "ing", "ions", "ion", "ers", "es", "ed", "s"):
+        if word.endswith(end) and len(word) - len(end) >= 4:
+            return word[: -len(end)]
+    return word
+
+
 def _variants(word: str) -> set[str]:
+    word = _stem(word)
     out = {word}
     for head, alts in _WORDS.items():
         if word == head or word in alts:
