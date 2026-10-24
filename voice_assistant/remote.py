@@ -31,6 +31,7 @@ import threading
 import time
 import uuid
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -73,14 +74,39 @@ def tailscale_ip(run=subprocess.run) -> str | None:
     return None
 
 
+PAIR_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I/L: easy to read out or type
+PAIR_CODE_LENGTH = 10
+PAIR_TTL_S = 300.0
+PAIR_MAX_TRIES = 5
+
+
+def normalize_code(code: str) -> str:
+    return "".join(ch for ch in str(code).upper() if ch.isalnum())
+
+
+def format_code(code: str) -> str:
+    """ABCDEFGHJK -> ABCD-EFGH-JK, for showing to a person."""
+    return "-".join([code[:4], code[4:8], code[8:]]).strip("-")
+
+
+@dataclass(frozen=True)
+class PairingOffer:
+    code: str
+    expires_at: float
+
+
 class PairedDevices:
     """Phones allowed to connect. Only a hash of each token is kept, so the file alone cannot be used to connect."""
 
-    def __init__(self, path: str | Path | None = None):
+    def __init__(self, path: str | Path | None = None, clock=time.time):
         self.path = Path(path) if path else config_dir() / "remote-devices.json"
         self._lock = threading.Lock()
+        self._clock = clock
         self._devices: dict = {}
         self._stamp: int | None = None
+        # a pairing offer lives in memory only: it is never written to disk, works once, and expires
+        self._offer: PairingOffer | None = None
+        self._tries = 0
         self._sync()
 
     def _sync(self) -> None:
@@ -119,6 +145,49 @@ class PairedDevices:
             self._save()
         return device_id, token
 
+    # ---- one-time pairing codes ----
+    def begin_pairing(self, ttl: float = PAIR_TTL_S) -> PairingOffer:
+        """Open a pairing: a short code the phone scans or types within `ttl` seconds. A new offer replaces any earlier one."""
+        code = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(PAIR_CODE_LENGTH))
+        with self._lock:
+            self._offer = PairingOffer(code, self._clock() + ttl)
+            self._tries = 0
+            return self._offer
+
+    def pairing_seconds_left(self) -> int:
+        with self._lock:
+            offer = self._offer
+            return max(0, int(offer.expires_at - self._clock())) if offer is not None else 0
+
+    def cancel_pairing(self) -> None:
+        with self._lock:
+            self._offer = None
+
+    def redeem(self, code: str, name: str) -> tuple[str, str] | None:
+        """Exchange the one-time code for a phone's own token: (device id, token), or None. Wrong guesses cancel the offer after a few tries."""
+        with self._lock:
+            offer = self._offer
+            if offer is None or self._clock() >= offer.expires_at:
+                self._offer = None
+                return None
+            if not hmac.compare_digest(offer.code, normalize_code(code)):
+                self._tries += 1
+                if self._tries >= PAIR_MAX_TRIES:
+                    self._offer = None
+                return None
+            self._offer = None  # single use
+        return self.pair(name)
+
+    def touch(self, device_id: str) -> None:
+        """Remember when a phone last connected (written at most once a minute)."""
+        with self._lock:
+            self._sync()
+            info = self._devices.get(device_id)
+            now = int(self._clock())
+            if info is not None and now - int(info.get("last_seen", 0)) >= 60:
+                info["last_seen"] = now
+                self._save()
+
     def verify(self, token: str) -> str | None:
         digest = self._hash(token)
         with self._lock:
@@ -140,7 +209,7 @@ class PairedDevices:
     def list(self) -> list[dict]:
         with self._lock:
             self._sync()
-            return [{"id": i, "name": d.get("name", ""), "created": d.get("created", 0)} for i, d in self._devices.items()]
+            return [{"id": i, "name": d.get("name", ""), "created": d.get("created", 0), "last_seen": d.get("last_seen", 0)} for i, d in self._devices.items()]
 
 
 def _device_names(kind: str) -> list[str]:
@@ -281,6 +350,7 @@ class RemoteServer:
         self.client: _Client | None = None
         self._server = None
         self._lock = threading.Lock()
+        self.listeners: list = []  # called with {"event": "paired" | "connected" | "disconnected", ...} from the server's threads
         self._phone_events = _PhoneEvents(self)
         self.settings = SettingsService(cfg, lambda: bool(getattr(cfg, "remote_allow_safety_changes", False)), device_names or _device_names, settings_save)
         # Developer aid, off unless set: keep each utterance the phone sends as a WAV in this folder to judge microphone quality.
@@ -334,7 +404,21 @@ class RemoteServer:
     def status(self) -> dict:
         client = self.client
         return {"running": self.running, "host": self.bound_host, "port": self.port, "error": self.error,
-                "connected": client is not None and client.alive, "device": client.device_id if client else ""}
+                "connected": client is not None and client.alive, "device": client.device_id if client else "",
+                "pairing_seconds": self.devices.pairing_seconds_left()}
+
+    def notify(self, event: dict) -> None:
+        for listener in list(self.listeners):
+            try:
+                listener(event)
+            except Exception:
+                log.debug("a phone-link listener failed", exc_info=True)
+
+    def begin_pairing(self) -> tuple[PairingOffer, str]:
+        """Open a pairing and return it with the text for the QR code (the phone also accepts it pasted)."""
+        offer = self.devices.begin_pairing()
+        payload = {"v": 2, "host": self.bound_host, "port": self.port, "code": offer.code, "name": platform.node()}
+        return offer, json.dumps(payload, separators=(",", ":"))
 
     def pairing_payload(self, name: str = "") -> dict:
         """What the pairing QR code carries. The token inside is shown once; only its hash is kept."""
@@ -342,29 +426,44 @@ class RemoteServer:
         return {"v": PROTOCOL, "host": self.bound_host, "port": self.port, "token": token, "id": device_id, "name": platform.node()}
 
     # ---- connection -------------------------------------------------------------
-    def _authenticate(self, ws) -> str | None:
+    def _authenticate(self, ws) -> tuple[str | None, str | None]:
         try:
             if ws.request.headers.get("Origin"):  # a web page, not the phone app
                 ws.close(1008, "origin not allowed")
-                return None
+                return None, None
         except Exception:
             pass
+        token = code = None
+        name = "Phone"
         try:
             hello = json.loads(ws.recv(timeout=HELLO_TIMEOUT_S))
-            token = hello.get("token") if isinstance(hello, dict) and hello.get("type") == "hello" else None
+            if isinstance(hello, dict) and hello.get("type") == "hello":
+                token, code = hello.get("token"), hello.get("pair_code")
+                name = str(hello.get("device") or "Phone")[:40]
         except Exception:
-            token = None
-        device_id = self.devices.verify(token) if isinstance(token, str) and token else None
+            pass
+        device_id, minted = None, None
+        if isinstance(code, str) and code:
+            made = self.devices.redeem(code, name)
+            if made is not None:
+                device_id, minted = made
+                self.notify({"event": "paired", "name": name})
+            failure = ("bad_pair_code", "That pairing code is not valid or has expired. Show a new one on the PC.")
+        else:
+            device_id = self.devices.verify(token) if isinstance(token, str) and token else None
+            failure = ("not_paired", "This phone is not paired with this PC.")
         if device_id is None:
             try:
-                ws.send(json.dumps({"type": "error", "message": "This phone is not paired with this PC."}))
-                ws.close(1008, "not paired")
+                ws.send(json.dumps({"type": "error", "code": failure[0], "message": failure[1]}))
+                ws.close(1008, failure[0])
             except Exception:
                 pass
-        return device_id
+            return None, None
+        self.devices.touch(device_id)
+        return device_id, minted
 
     def _handler(self, ws) -> None:
-        device_id = self._authenticate(ws)
+        device_id, minted = self._authenticate(ws)
         if device_id is None:
             return
         client = _Client(ws, device_id)
@@ -372,6 +471,9 @@ class RemoteServer:
             old, self.client = self.client, client
         if old is not None:
             old.close(1000, "replaced by a newer connection")
+        if minted is not None:  # first connection of a newly paired phone: hand over its own permanent token
+            client.send({"type": "paired", "token": minted, "device_id": device_id, "name": platform.node()})
+        self.notify({"event": "connected", "device_id": device_id})
         client.send({"type": "ready", "protocol": PROTOCOL, "state": self.session.state.value, "name": platform.node(),
                      "output": self.cfg.remote_output})
         try:
@@ -380,6 +482,7 @@ class RemoteServer:
         except Exception:
             log.debug("phone connection ended", exc_info=True)
         finally:
+            self.notify({"event": "disconnected", "device_id": device_id})
             with self._lock:
                 if self.client is client:
                     self.client = None
@@ -421,6 +524,9 @@ class RemoteServer:
                 self.session.announce("Tap the notification on your phone to take the photo.")
         elif kind == "text":
             self.session.submit_text(str(msg.get("text", ""))[:2000])
+        elif kind == "forget_me":  # the phone removed this PC: take the phone off the paired list too
+            self.devices.revoke(client.device_id)
+            client.close(1000, "forgotten")
         elif kind == "get_keywords":
             self._send_keywords(client, msg)
         elif kind == "get_settings":
@@ -531,3 +637,32 @@ class RemoteServer:
                 break
         if not cancelled():
             client.send({"type": "audio_end"})
+
+
+def phone_link_checks(cfg, server: "RemoteServer | None", find_ip=tailscale_ip) -> list[dict]:
+    """What the Phone page shows: each line says whether something works, and what to do when it does not. ok is True, False, or None (not applicable yet)."""
+    ip = find_ip()
+    checks = [{
+        "id": "tailscale", "title": "Tailscale",
+        "ok": ip is not None,
+        "detail": f"Running, this PC is {ip}" if ip else "Not running on this PC.",
+        "fix": "" if ip else "Install Tailscale from tailscale.com/download, sign in, then come back here.",
+    }]
+    running = server is not None and server.running
+    if running:
+        checks.append({"id": "link", "title": "Phone link", "ok": True, "detail": f"On, waiting at {server.bound_host}:{server.port}", "fix": ""})
+    else:
+        why = server.error if server is not None and server.error else "Off."
+        checks.append({"id": "link", "title": "Phone link", "ok": False, "detail": why,
+                       "fix": "Press \"Turn on the phone link\"." if ip else "Fix Tailscale first, then turn the phone link on."})
+    if running:
+        paired = len(server.devices.list())
+        client = server.client
+        if client is not None and client.alive:
+            who = next((d["name"] for d in server.devices.list() if d["id"] == client.device_id), "A phone")
+            checks.append({"id": "phone", "title": "Phone", "ok": True, "detail": f"{who} is connected.", "fix": ""})
+        else:
+            checks.append({"id": "phone", "title": "Phone", "ok": None,
+                           "detail": ("No phone connected right now." if paired else "No phone paired yet."),
+                           "fix": "" if paired else "Press \"Pair a new phone\" and scan the code with the app."})
+    return checks
