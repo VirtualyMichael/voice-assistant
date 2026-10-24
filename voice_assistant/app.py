@@ -50,7 +50,8 @@ from .vrchat_menu import AvatarNotes
 from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_for, needs_key, save_key, set_model
 from .session import MultiEvents, Session, SessionEvents
 from .speaker import Speaker
-from .remote import RemoteServer
+from .remote import PairedDevices, RemoteServer
+from .phone_page import PhonePanel
 from .phone_camera import build_phone_camera_tools
 from .setup_wizard import run_wizard
 from . import glass
@@ -84,6 +85,7 @@ class Bridge(QObject):
     route = Signal(str, bool)
     update_found = Signal(object, bool)  # (updater.Release, asked_by_user)
     update_ready = Signal(str)  # path of a downloaded, verified installer
+    phone_event = Signal(object)  # the phone link: a phone paired, connected or disconnected
 
 
 def icon_button(glyph: str, tip: str, checkable: bool = False) -> QPushButton:
@@ -278,6 +280,9 @@ class MainWindow(QMainWindow):
         self.resize(*(cfg.window_size or [440, 700]))
         self.cfg, self.bridge, self.policy = cfg, Bridge(), FolderPolicy(cfg.approved_folders)
         self.warnings: list[str] = []
+        self.remote = None  # the running phone link, if any
+        self._remote_attempt = None  # the last one we tried to start, even if it failed, so the Phone page can show why
+        self.phone_devices = PairedDevices()
         self.skills = SkillLibrary(cfg.skill_folders, cfg.disabled_skills)  # needed by the settings tabs built below
         self.profile, self.usage = Profile(), UsageLog()
         self._vr_gen = 0
@@ -406,7 +411,7 @@ class MainWindow(QMainWindow):
         panel = QFrame(objectName="panel")
         tabs = QTabWidget()
         tabs.tabBar().hide()  # the sidebar list below drives the pages
-        names = ["Voice", "Audio", "VR", "AI", "Skills", "Apps", "Home", "Memory", "Delegate", "Look", "General"]
+        names = ["Voice", "Phone", "Audio", "VR", "AI", "Skills", "Apps", "Home", "Memory", "Delegate", "Look", "General"]
         nav = QListWidget(objectName="nav")
         nav.setFixedWidth(96)
         nav.addItems(names)
@@ -420,6 +425,10 @@ class MainWindow(QMainWindow):
         side.addWidget(tabs, 1)
         form = TabbedForm(tabs, names)
         self._form = form
+        form.use("Phone")
+        self.phone_panel = PhonePanel(cfg, lambda: self.remote or self._remote_attempt, self._start_remote, self._stop_remote, self._set_field, self.phone_devices)
+        self.bridge.phone_event.connect(self.phone_panel.on_phone_event)
+        form.addRow(self.phone_panel)
         form.use("Audio")
         duck = QCheckBox("Lower my music while the assistant listens and speaks")
         duck.setToolTip("Only music apps' own volume (browsers, Spotify, VLC...) is lowered, not the master volume, and it is restored afterwards")
@@ -901,15 +910,6 @@ class MainWindow(QMainWindow):
             setattr(self, "ask_" + key.removeprefix("confirm_"), box)
             form.addRow(box)
         form.addRow(QLabel("Opening apps has its own box in the Apps tab. Shell commands, writing files, handing jobs to Claude/Codex, controlling windows and MCP tools always ask.", objectName="small", wordWrap=True))
-        form.addRow(QLabel("Phone app", objectName="small"))
-        phone_safety = QCheckBox("Let my phone change safety settings")
-        phone_safety.setToolTip(
-            "Off: settings that widen what the assistant may do (shell commands, web access, the 'ask me first' questions, cloud models, folders...) are locked in the phone app. "
-            "On: they can be changed from your paired phone, which still asks for your fingerprint or PIN first.")
-        phone_safety.setChecked(bool(cfg.remote_allow_safety_changes))
-        phone_safety.toggled.connect(lambda v: self._set_field("remote_allow_safety_changes", v))
-        self.phone_safety = phone_safety
-        form.addRow(phone_safety)
         cfg_btn, setup_btn = QPushButton("Open settings file"), QPushButton("Run setup again")
         cfg_btn.clicked.connect(self._open_config)
         setup_btn.clicked.connect(self._rerun_setup)
@@ -927,6 +927,28 @@ class MainWindow(QMainWindow):
         if getattr(self, "remote", None) is not None:  # a connected phone can answer too; the first answer wins
             threading.Thread(target=self._phone_answer, args=(prompt, h), daemon=True).start()
         return h.event.wait(60) and h.result
+
+    def _start_remote(self) -> bool:
+        """Start the phone link (at start-up, or when the Phone page turns it on). True when it is running."""
+        if self.remote is not None:
+            return True
+        remote = RemoteServer(self.session, self._events, self.cfg, self.phone_devices)
+        remote.listeners.append(lambda event: self.bridge.phone_event.emit(event))
+        self._remote_attempt = remote
+        if not remote.start():
+            return False
+        self.remote = remote
+        camera = build_phone_camera_tools(self.cfg, lambda: self.remote, self._confirm, lambda: self.session.agent.llm)
+        visible = [] if self.cfg.odysseus_mode == "only" else [self._registry]  # 'only' mode shows the model just ask_odysseus
+        for reg in {id(r): r for r in [*visible, self._full]}.values():  # the model's tools, and the full set routines use
+            reg.add(camera)
+        self._refresh_prompt()
+        return True
+
+    def _stop_remote(self) -> None:
+        remote, self.remote = self.remote, None
+        if remote is not None:
+            remote.stop()
 
     def _phone_answer(self, prompt: str, h: "_Holder") -> None:
         answer = self.remote.ask(prompt, stop=h.event)
@@ -1022,17 +1044,9 @@ class MainWindow(QMainWindow):
         qt_events.on_delta = self.interp.feed
         qt_events.on_done = self.interp.finish
         self.session = Session(cfg, agent, speaker, parts["recognizer"], parts["wake"], events, accurate=parts["accurate"])
-        if cfg.remote_enabled:
-            remote = RemoteServer(self.session, events, cfg)
-            if remote.start():
-                self.remote = remote
-                camera = build_phone_camera_tools(cfg, lambda: self.remote, self._confirm, lambda: self.session.agent.llm)
-                visible = [] if cfg.odysseus_mode == "only" else [self._registry]  # 'only' mode shows the model just ask_odysseus
-                for reg in {id(r): r for r in [*visible, self._full]}.values():  # the model's tools, and the full set routines use
-                    reg.add(camera)
-                self._refresh_prompt()
-            else:
-                self.warnings.append(f"phone link off: {remote.error}")
+        self._events = events
+        if cfg.remote_enabled and not self._start_remote():
+            self.warnings.append(f"phone link off: {self._remote_attempt.error}")
         self._add_voice_picker()
         self.mcp = None
         self._warm_pdfs()
