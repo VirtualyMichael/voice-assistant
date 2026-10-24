@@ -105,6 +105,14 @@ def main(argv: list[str]) -> int:
 
     hide_child_consoles()
     cmd = argv[0] if argv else "run"
+    if cmd == "--extract-audio":  # helper process of video_look: decodes a video's sound track
+        from .video_look import extract_audio_main
+
+        return extract_audio_main(argv[1:])
+    if cmd == "--extract-frames":  # helper process of video_look: decodes a video into a few pictures, see there
+        from .video_look import extract_main
+
+        return extract_main(argv[1:])
     if cmd == "--selftest":
         from pathlib import Path
 

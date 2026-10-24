@@ -22,6 +22,10 @@ Odysseus is bundled or installed by this app; you install and run it yourself, a
 5. Optional: **Choose start file...** points at a `.bat`, `.cmd` or `.ps1` that starts Odysseus. The app runs it hidden
    when the server is not answering and the assistant needs it.
 
+## Long jobs, progress and background work
+
+Hand-offs stream: while Odysseus works, short spoken progress lines ("Searching online.", "Checking your email.") are given at most once every 12 seconds, and each tool it starts appears as a note in the chat. If a job takes longer than about 25 seconds the conversation carries on and the result is announced when it finishes. The assistant can also start a job in the background on purpose, list jobs (`check_odysseus`) or stop one (`cancel_odysseus`). One job runs at a time, and if Odysseus asks a question the assistant relays it to you and sends your answer on.
+
 ## Letting Odysseus use this app's tools (optional)
 
 In **Voice only** mode the assistant has no tools of its own, so Odysseus needs them. Tick **Let Odysseus use this app's

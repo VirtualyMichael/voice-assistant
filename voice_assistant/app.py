@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPainter
 from PySide6.QtWidgets import (
@@ -22,8 +23,11 @@ from .audio_io import AudioIO, list_devices
 from .hardware import detect_gpus, recommend
 from .config import INTERRUPT_MODES, LISTEN_MODES, Config, config_dir, load_config, save_config
 from .mcp_client import McpHub, read_mcp_json
-from . import __version__, deep_look, odysseus, tool_share, updater
-from .memory import ConversationStore
+from . import __version__, deep_look, odysseus, scheduler, tool_share, updater, video_look
+from .history_panel import PANEL_WIDTH, HistoryPanel
+from .schedule_ui import TasksPage
+from .video_ui import VideoDetailBox
+from .memory import ChatLibrary
 from .pdf_tools import PdfStore
 from .skill_tools import build_skill_tools
 from .skills import SkillLibrary
@@ -62,6 +66,10 @@ from .tools import build_file_tools
 from .vr import VrWatcher
 
 
+SCHEDULED_PROMPT = (
+    "\n\nThis is a scheduled task running by itself, so the user may be away. Carry it out with your tools and reply with a short spoken "
+    "summary of the result. Do not ask questions: anything that needs the user's approval is declined automatically, so say what you could not do."
+)
 JARVIS_PERSONA = (
     " Personality: a calm, composed, dry-witted British butler AI in the spirit of a classic fictional assistant. Polite and precise, "
     "with understated humour, never gushing. Keep replies short and spoken."
@@ -83,6 +91,8 @@ class Bridge(QObject):
     note = Signal(str)
     apps_count = Signal(int)
     route = Signal(str, bool)
+    tasks_changed = Signal()  # a scheduled task ran or changed: refresh the Tasks tab
+    chats_changed = Signal()  # a chat was saved from the assistant's thread: refresh the sidebar
     update_found = Signal(object, bool)  # (updater.Release, asked_by_user)
     update_ready = Signal(str)  # path of a downloaded, verified installer
     phone_event = Signal(object)  # the phone link: a phone paired, connected or disconnected
@@ -280,6 +290,7 @@ class MainWindow(QMainWindow):
         self.resize(*(cfg.window_size or [440, 700]))
         self.cfg, self.bridge, self.policy = cfg, Bridge(), FolderPolicy(cfg.approved_folders)
         self.warnings: list[str] = []
+        self._unattended = threading.local()  # set while a scheduled job runs by itself: approvals are declined, not waited for
         self.remote = None  # the running phone link, if any
         self._remote_attempt = None  # the last one we tried to start, even if it failed, so the Phone page can show why
         self.phone_devices = PairedDevices()
@@ -297,7 +308,9 @@ class MainWindow(QMainWindow):
         new_chat = icon_button("\uE8F2", "New chat: forget the conversation so far and start fresh")
         self.mute.setVisible(cfg.mic_forward)
         gear = self._gear = icon_button("\uE713", "Settings", checkable=True)
+        self.history_btn = icon_button("\uE81C", "Chat history: open the list of your saved chats", checkable=True)
         head = QHBoxLayout()
+        head.addWidget(self.history_btn)
         head.addWidget(QLabel("Voice Assistant", objectName="status"))
         self.version_btn = QPushButton(f"v{__version__}", objectName="version", flat=True)
         self.version_btn.setToolTip("Your version. Click to check for updates")
@@ -352,8 +365,16 @@ class MainWindow(QMainWindow):
         page.addWidget(self.latency)
         col.addWidget(self.settings, 1)
         col.addWidget(self.chat_page, 1)
+        self.history_panel = HistoryPanel(cfg.remember_conversation)
+        self.history_panel.setContentsMargins(14, 12, 0, 12)
+        self.history_panel.setVisible(False)
+        outer = QHBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(self.history_panel)
+        outer.addLayout(col, 1)
         root = QWidget()
-        root.setLayout(col)
+        root.setLayout(outer)
         self.setCentralWidget(root)
 
         self._build_session()
@@ -385,6 +406,17 @@ class MainWindow(QMainWindow):
         b.vr.connect(self._on_vr)
         b.vr_note.connect(self._on_vr_note)
         b.note.connect(lambda m: self.chat.add("bubbleNote", m))
+        b.chats_changed.connect(self._refresh_history)
+        b.tasks_changed.connect(self.tasks_page.refresh)
+        hp = self.history_panel
+        self.history_btn.toggled.connect(self._show_history)
+        hp.new_chat.connect(self._new_chat)
+        hp.open_chat.connect(self._open_chat)
+        hp.delete_chat.connect(self._delete_chat)
+        hp.rename_chat.connect(self._rename_chat)
+        hp.delete_all.connect(self._delete_all_chats)
+        hp.remember_toggled.connect(self._set_remember)
+        hp.query_changed.connect(lambda _q: self._refresh_history())
         b.update_found.connect(self._on_update_found)
         b.update_ready.connect(self._install_update)
         b.apps_count.connect(self._on_apps_count)
@@ -399,6 +431,9 @@ class MainWindow(QMainWindow):
             self.pin.setChecked(True)
         self._apply_look()
         self._restore_chat()
+        self._refresh_history()
+        self.tasks_page.bind(self.task_store, self.scheduler, cfg.scheduled_tasks_enabled, lambda v: self._set_field("scheduled_tasks_enabled", v))
+        self.scheduler.start()  # also catches up on tasks that came due while the app was closed
         threading.Thread(target=self._check_routes, daemon=True).start()
         for w in self.warnings:
             self.chat.add("bubbleNote", w)
@@ -411,7 +446,7 @@ class MainWindow(QMainWindow):
         panel = QFrame(objectName="panel")
         tabs = QTabWidget()
         tabs.tabBar().hide()  # the sidebar list below drives the pages
-        names = ["Voice", "Phone", "Audio", "VR", "AI", "Skills", "Apps", "Home", "Memory", "Delegate", "Look", "General"]
+        names = ["Voice", "Phone", "Audio", "VR", "AI", "Skills", "Apps", "Home", "Tasks", "Memory", "Delegate", "Look", "General"]
         nav = QListWidget(objectName="nav")
         nav.setFixedWidth(96)
         nav.addItems(names)
@@ -529,13 +564,15 @@ class MainWindow(QMainWindow):
         self._show_url()
         form.addRow(key_btn)
         form.addRow(self.prov_status)
-        remember = QCheckBox("Remember our conversation between sessions")
+        remember = self._remember_cb = QCheckBox("Save my chats (history)")
+        remember.setToolTip("On: every chat is kept on this PC and listed in the history sidebar. Off: new conversations are not kept.")
         remember.setChecked(cfg.remember_conversation)
         remember.toggled.connect(self._set_remember)
         form.addRow(remember)
         web = QCheckBox("Let the agent search/read the web")
         web.setChecked(cfg.allow_web)
         web.toggled.connect(lambda v: self._set_field("allow_web", v))
+        self.video_box = VideoDetailBox(cfg, self._set_field)
         deep = QCheckBox("Research photos online for better answers (needs web access)")
         deep.setToolTip("For photos you drop in or take with your phone: the assistant studies details, searches the web and public plant/animal databases, and checks reference photos. Only short text searches go online, never the photo.")
         deep.setChecked(cfg.deep_vision)
@@ -591,6 +628,8 @@ class MainWindow(QMainWindow):
         form.addRow(ody_ask)
         form.addRow(QLabel("Agent abilities (restart to apply):", objectName="small"))
         form.addRow(web)
+        form.addRow(QLabel("Video detail:", objectName="small"))
+        form.addRow(self.video_box)
         form.addRow(deep)
         form.addRow(plantnet)
         form.addRow(plantnet_key)
@@ -844,6 +883,9 @@ class MainWindow(QMainWindow):
         form.addRow("Address", ha_url)
         form.addRow(ha_key)
         form.addRow(ha_test)
+        form.use("Tasks")
+        self.tasks_page = TasksPage()
+        form.addRow(self.tasks_page)
         form.use("Memory")
         form.addRow(QLabel("Tell the assistant about yourself: name, job, interests, how you like answers, your personality. It uses this to personalise replies and choices. Stays on this PC; sent to your AI model (the cloud one, if you chose one).", objectName="small", wordWrap=True))
         self.profile_edit = QPlainTextEdit(self.profile.load())
@@ -933,6 +975,9 @@ class MainWindow(QMainWindow):
 
     # ---- wiring ----------------------------------------------------------------
     def _confirm(self, prompt: str) -> bool:
+        if getattr(self._unattended, "on", False):  # a scheduled job runs while you may be away: never wait for, or assume, a yes
+            self._unattended.declined = [*getattr(self._unattended, "declined", []), prompt.splitlines()[0][:90]]
+            return False
         h = _Holder()
         self.bridge.confirm.emit(prompt, h)
         if self.cfg.voice_approval and getattr(self, "session", None) is not None:
@@ -951,7 +996,7 @@ class MainWindow(QMainWindow):
         if not remote.start():
             return False
         self.remote = remote
-        camera = build_phone_camera_tools(self.cfg, lambda: self.remote, self._confirm, lambda: self.session.agent.llm, deep=self.deep.run)
+        camera = build_phone_camera_tools(self.cfg, lambda: self.remote, self._confirm, lambda: self.session.agent.llm, deep=self.deep.run, video=self.video)
         visible = [] if self.cfg.odysseus_mode == "only" else [self._registry]  # 'only' mode shows the model just ask_odysseus
         for reg in {id(r): r for r in [*visible, self._full]}.values():  # the model's tools, and the full set routines use
             reg.add(camera)
@@ -997,6 +1042,8 @@ class MainWindow(QMainWindow):
         llm = make_llm(cfg)
         registry = build_file_tools(self.policy, self._confirm)
         self.deep = deep_look.DeepLook(cfg, lambda: self.session.agent.llm, notify=lambda m: self.bridge.note.emit(m), plantnet_key=lambda: get_key("plantnet"))
+        self.video = video_look.VideoLook(cfg, lambda: self.session.agent.llm, notify=lambda m: self.bridge.note.emit(m), confirm=self._confirm,
+                                          transcribe=self._video_transcriber(parts["accurate"]), web=self.deep.web)
         self._full = registry  # every tool of this app, even when the model only sees ask_odysseus
         self.timers = Timers(lambda text: self.session.announce(text))
         self.catalog = AppCatalog()
@@ -1008,7 +1055,7 @@ class MainWindow(QMainWindow):
         registry.add(build_vrchat_tools(cfg, self.vrchat))
         self.vrchat.resolve_path = self.inbox.resolve  # 'import the menu from the folder I attached'
         self.vrchat.attached = lambda: [it["path"] for it in self.inbox.items.values()]
-        registry.add(build_attachment_tools(self.inbox, lambda: self.session.agent.llm, lambda: cfg.main_language, deep=self.deep.run))
+        registry.add(build_attachment_tools(self.inbox, lambda: self.session.agent.llm, lambda: cfg.main_language, deep=self.deep.run, video=self.video.look_file))
         self.interp = Interpreter(say=lambda t: self.vrchat.say(t), on_change=lambda: self._refresh_prompt(), chatbox_ok=lambda: self.cfg.vrchat_enabled)
         registry.add(build_interpreter_tools(self.interp))
         registry.add(build_profile_tools(cfg, self.profile, self._confirm))
@@ -1022,15 +1069,19 @@ class MainWindow(QMainWindow):
         self.pdfs = PdfStore()
         registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))
         if odysseus.active(cfg):
-            registry.add(odysseus.build_odysseus_tools(cfg, self._confirm))
+            registry.add(odysseus.build_odysseus_tools(cfg, self._confirm, speak=lambda t: self.session.announce(t), note=lambda m: self.bridge.note.emit(m)))
             threading.Thread(target=odysseus.ensure_running, args=(cfg,), daemon=True).start()  # warm up so the first hand-off is quick
+        self.task_store = scheduler.TaskStore(config_dir() / "tasks.json")
+        self.scheduler = scheduler.Scheduler(self.task_store, self._run_scheduled, enabled=lambda: self.cfg.scheduled_tasks_enabled,
+                                             on_change=lambda: self.bridge.tasks_changed.emit(), note=lambda m: self.bridge.note.emit(m))
+        registry.add(scheduler.build_schedule_tools(self.task_store, self.scheduler, self._confirm))
         if cfg.odysseus_mode == "only":
             self._full = registry.copy()  # routines and Odysseus keep the full set while the model sees only ask_odysseus
-        odysseus.restrict_tools(registry, cfg.odysseus_mode)  # 'only': ask_odysseus is the only tool
+        odysseus.restrict_tools(registry, cfg.odysseus_mode, keep=scheduler.TOOL_NAMES)  # 'only': ask_odysseus is the only tool
         self._share = None
         if odysseus.active(cfg) and cfg.odysseus_share_tools:
             try:
-                self._share = tool_share.ToolShare(self._full, config_dir(), exclude=(odysseus.TOOL_NAME,), init_com=_init_com)
+                self._share = tool_share.ToolShare(self._full, config_dir(), exclude=odysseus.TOOL_NAMES, init_com=_init_com)
                 self._share.start()
             except OSError as e:
                 self.warnings.append(f"sharing tools with Odysseus failed: {e}")
@@ -1040,10 +1091,13 @@ class MainWindow(QMainWindow):
             max_messages=cfg.history_messages,
             on_tool=lambda m: self.bridge.tool.emit(m),
         )
-        self.store = ConversationStore(max_messages=cfg.history_messages)
-        self.history = self.store.load() if cfg.remember_conversation else []
-        agent.load_history(self.history)
-        agent.on_update = self.store.save if cfg.remember_conversation else None
+        self.chats = ChatLibrary(config_dir() / "chats", legacy=config_dir() / "conversation.json")
+        self.chats.migrate_legacy()  # the old single saved conversation becomes the first chat
+        latest = self.chats.list()[:1]
+        self.chat_id = latest[0].id if (cfg.remember_conversation and latest) else None
+        self.history = self.chats.load(self.chat_id) if self.chat_id else []
+        agent.load_history(self.history[-cfg.history_messages:])
+        agent.on_update = self._save_chat if cfg.remember_conversation else None
         self.audio = AudioIO(cfg, lambda x: self.session.feed_audio(x), lambda m: self.bridge.error.emit(m))
         self.synth = parts["synth"]
         self.remote = None
@@ -1689,6 +1743,51 @@ class MainWindow(QMainWindow):
             self.bridge.note.emit("Odysseus: connected." if not why else f"Odysseus: {why}.")
         threading.Thread(target=work, daemon=True).start()
 
+    def _video_transcriber(self, accurate):
+        """Words from a stretch of a video's sound: the accurate recognizer when it is installed, else the fast one. None when neither is (no sound is read)."""
+        lock = threading.Lock()
+        fast: dict = {}
+
+        def transcribe(samples) -> str:
+            with lock:
+                if accurate is not None:
+                    return accurate.transcribe(samples)
+                if "rec" not in fast:
+                    fast["rec"] = SherpaRecognizer(Path(self.cfg.models_dir) / "asr")
+                rec = fast["rec"]
+                rec.reset()
+                rec.accept(samples)
+                rec.accept(np.zeros(8000, np.float32))  # half a second of quiet lets the last word finish
+                return rec.text()
+
+        if accurate is not None or (Path(self.cfg.models_dir) / "asr" / "tokens.txt").exists():
+            return transcribe
+        return None
+
+    # ---- scheduled tasks ---------------------------------------------------------------
+    def _run_scheduled(self, task) -> tuple[str, str]:
+        """Runs on the scheduler's thread. A reminder is just spoken; a job is carried out by the assistant on its own."""
+        if task.mode == "remind":
+            self.session.announce(f"Reminder: {task.prompt}")
+            self.bridge.note.emit(f"\u23f0 {task.name}: {task.prompt}")
+            return "done", f"Said: {task.prompt}"
+        self._unattended.on, self._unattended.declined = True, []
+        try:
+            agent = Agent(self.session.agent.llm, self._system_prompt() + SCHEDULED_PROMPT, self._registry, max(self.cfg.max_tool_rounds, 6),
+                          max_messages=self.cfg.history_messages)
+            text = "".join(agent.respond(task.prompt, threading.Event())).strip() or "The task finished without a reply."
+            skipped = list(self._unattended.declined)
+        except Exception as e:
+            self.bridge.note.emit(f"\u23f0 {task.name} failed: {e.__class__.__name__}: {e}")
+            return "failed", f"{e.__class__.__name__}: {e}"
+        finally:
+            self._unattended.on = False
+        if skipped:
+            text += " (Skipped because it needed your approval: " + "; ".join(skipped[:3]) + ".)"
+        self.session.announce(f"{task.name}. {text[:500]}")
+        self.bridge.note.emit(f"\u23f0 {task.name}: {text[:600]}")
+        return "done", text
+
     # ---- updates -----------------------------------------------------------------------
     def _auto_check_updates(self) -> None:
         if self.cfg.check_updates and time.time() - self.cfg.last_update_check > 6 * 3600:
@@ -1903,27 +2002,96 @@ class MainWindow(QMainWindow):
     def _restore_chat(self) -> None:
         if not self.history:
             return
-        self.chat.add("bubbleNote", f"Continuing our last conversation ({len(self.history)} messages). Press New chat to start over.")
-        for m in self.history:
+        self.chat.add("bubbleNote", f"Continuing your last chat ({len(self.history)} messages). Press New chat to start another; older chats are in the history list.")
+        self._show_messages(self.history)
+
+    def _show_messages(self, messages: list[dict]) -> None:
+        for m in messages:
             self.chat.add("bubbleUser" if m["role"] == "user" else "bubbleAI", m["content"])
         self.chat.end_stream()
 
+    def _save_chat(self, messages: list[dict]) -> None:
+        """Called after every turn (on the assistant's thread): add the new messages to the current chat."""
+        if not self.cfg.remember_conversation:
+            return
+        if self.chat_id is None:
+            self.chat_id = self.chats.new_id()
+        if self.chats.save(self.chat_id, messages):
+            self.bridge.chats_changed.emit()
+
     def _new_chat(self) -> None:
+        """Start a fresh chat. The one you leave stays in the history list."""
         self.session.stop()
         self.session.agent.reset()
-        self.store.clear()
+        self.chat_id, self.history = None, []
         self.inbox.clear()
         self.chat.clear()
         self.chat.add("bubbleNote", "New conversation started.")
+        self._refresh_history()
+
+    def _open_chat(self, chat_id: str) -> None:
+        if chat_id == self.chat_id:
+            return
+        msgs = self.chats.load(chat_id)
+        if not msgs:
+            self._refresh_history()
+            return
+        self.session.stop()
+        agent = self.session.agent
+        agent.reset()
+        agent.load_history(msgs[-self.cfg.history_messages:])
+        self.chat_id, self.history = chat_id, msgs
+        self.inbox.clear()
+        self.chat.clear()
+        self._show_messages(msgs)
+        self._refresh_history()
+
+    def _delete_chat(self, chat_id: str) -> None:
+        title = next((c.title for c in self.chats.list() if c.id == chat_id), "this chat")
+        if QMessageBox.question(self, "Delete chat", f"Delete \u201c{title}\u201d from this PC? This cannot be undone.") != QMessageBox.Yes:
+            return
+        self.chats.delete(chat_id)
+        if chat_id == self.chat_id:
+            self._new_chat()
+        else:
+            self._refresh_history()
+
+    def _delete_all_chats(self) -> None:
+        count = len(self.chats.list())
+        if not count:
+            return
+        if QMessageBox.question(self, "Delete all history", f"Delete all {count} saved chats from this PC? This cannot be undone.") != QMessageBox.Yes:
+            return
+        self.chats.delete_all()
+        self._new_chat()
+
+    def _rename_chat(self, chat_id: str, title: str) -> None:
+        self.chats.rename(chat_id, title)
+        self._refresh_history()
+
+    def _refresh_history(self) -> None:
+        self.history_panel.refresh(self.chats.list(self.history_panel.search.text()), self.chat_id)
+
+    def _show_history(self, on: bool) -> None:
+        self.history_panel.setVisible(on)
+        if on:
+            self._refresh_history()
+        if not (self.isMaximized() or self.isFullScreen()):
+            self.resize(max(self.width() + (PANEL_WIDTH if on else -PANEL_WIDTH), 300), self.height())
 
     def _set_remember(self, on: bool) -> None:
         self._set_field("remember_conversation", on)
+        self.history_panel.set_remember(on)
+        cb = getattr(self, "_remember_cb", None)
+        if cb is not None and cb.isChecked() != on:
+            cb.blockSignals(True)
+            cb.setChecked(on)
+            cb.blockSignals(False)
         if on:
-            self.session.agent.on_update = self.store.save
-            self.store.save(self.session.agent.messages)
+            self.session.agent.on_update = self._save_chat
+            self._save_chat(self.session.agent.messages)  # keep what has been said so far
         else:
-            self.session.agent.on_update = None
-            self.store.clear()  # turning it off erases what was saved
+            self.session.agent.on_update = None  # chats already saved stay until you delete them
 
     def _set_mode(self, mode: str) -> None:
         self.cfg.interrupt_mode = mode
@@ -1979,6 +2147,8 @@ class MainWindow(QMainWindow):
         self.timer.stop()
         if getattr(self, "_share", None):
             self._share.stop()
+        if getattr(self, "scheduler", None):
+            self.scheduler.stop()
         if getattr(self, "remote", None):
             self.remote.stop()
         self.timers.cancel_all()

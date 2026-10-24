@@ -39,6 +39,8 @@
   - [Agent tasks](#agent-tasks)
   - [Safe file access](#safe-file-access)
   - [Deeper picture look](#deeper-picture-look)
+  - [Watching videos](#watching-videos)
+  - [Scheduled tasks](#scheduled-tasks)
   - [Opening apps](#opening-apps)
   - [Routines, music actions, interpreter and more](#routines-music-actions-interpreter-and-more)
   - [Skills (Bionic / Claude format)](#skills-bionic--claude-format)
@@ -77,8 +79,8 @@ Windows 11 voice assistant: hotkey (or optional wake word) → local streaming s
    sentence after you finish speaking. On 10 spoken test sentences in 4 synthetic voices plus 2 real recordings it cut the word
    error rate from 33% to 3% (the fast model drops or garbles the first words) and adds about 0.2 s per sentence on a Ryzen 7800X3D.
    The fast streaming model still drives the live text preview and end-of-sentence detection.
-3. Your conversation is remembered between sessions (stored on this PC only, `%APPDATA%\\VoiceAssistant\\conversation.json`;
-   only your messages and the assistant's replies, never tool output). *New chat* erases it.
+3. Your chats are saved on this PC only (`%APPDATA%\\VoiceAssistant\\chats`; only your messages and the assistant's replies, never tool
+   output). The history button in the top bar opens a sidebar to reopen, search, rename or delete them, or to turn saving off.
 
 Build the installer yourself: `powershell -File packaging\\build.ps1 -Version 0.1.0` (needs PyInstaller and Inno Setup 6).
 The build is gated on `VoiceAssistant.exe --selftest`, which checks that every dependency is inside the package.
@@ -111,7 +113,8 @@ Everything below is built in. Items marked *(off by default)* need switching on 
 - Streaming speech recognition with an optional **accurate recognizer** (Parakeet) that re-checks each sentence, so words like "into" are not heard as "in two".
 - Replies stream as text and are spoken sentence by sentence, with a listening chime, a configurable follow-up listening time, and three interrupt modes (voice, hotkey only, ignore).
 - Optional **spoken approval** *(off by default)*: confirmations are read aloud and you answer "yes" or "no".
-- Conversation memory between sessions (stored only on your PC; *New chat* erases it).
+- **Scheduled tasks:** "remind me at 5 to call Sam", "every weekday at 8 tell me the weather and my timers", "in 20 minutes turn the lights off". Reminders are spoken; jobs are carried out by the assistant on its own and the result is spoken. See [Scheduled tasks](#scheduled-tasks).
+- **Chat history sidebar:** every chat is saved on your PC and listed in a sidebar where you can reopen, search, rename and delete chats, delete everything at once, or turn history off. *New chat* starts another chat and keeps the old one.
 
 **Voices**
 - Natural local voices: **Kokoro** (v0.19 and v1.0, 28 English voices), **Supertonic v3**, **Piper Kusal** and a basic Piper voice, all in one voice list, male and female.
@@ -128,6 +131,7 @@ Everything below is built in. Items marked *(off by default)* need switching on 
 - Open apps by name (it switches to a window that is already open instead of starting a second copy), set timers, read or write the clipboard, search and read the web *(off by default)*, work with files and PDFs in folders you approve, run PowerShell *(off by default)*.
 - **Music and volume**: play, pause, next and previous through Windows media sessions; exact volume; one app's volume ("set YouTube Music to 40"); "play Maps by Maroon 5" in YouTube Music, done by searching and pressing play on the YouTube Music web page itself in a YouTube Music window the assistant keeps (sign in there once): no screenshots, no AI vision, no cost, and it checks the right song actually started. Optionally install the small, readable browser extension in `extension/` (see its README) and the same thing is done in your own signed-in YouTube Music tab or app window instead. With the extension it can also save your whole library (playlist names and every song in them) on your PC, so a spoken "Continuum by SLVM Lord" is matched to the exact saved spelling, a different artist's song with the same title is never played by mistake, and when the page is unclear your own language model reads the whole result list to decide.
 - **Smart home**: **Govee** lights (colour, brightness, on/off) over your network or Govee's cloud with your own key, and **Home Assistant** (which brings in Google Home / Nest, Alexa-connected devices, Matter, Hue and more; locks and alarms always ask).
+- **Watching videos:** drop a video into the chat, or record one on your phone, and ask what happens in it. The assistant looks at frames spread across the clip and answers from a timeline, at a detail level you choose (normal, mid, high). See [Watching videos](#watching-videos).
 - **Deeper picture look** *(on when web access is on)*: photos you drop into the chat or take with your phone are studied closely, searched for online and checked against reference photos, so "what plant is this?" gets a researched answer with a confidence. See [Deeper picture look](#deeper-picture-look).
 - **Screen help**: "what's on my screen?", or "look at VRChat and translate the text", using the vision model you already run; answers come in your own language.
 - **Computer use** *(experimental, off by default)*: a step-by-step loop that looks at an app window, clicks buttons by reading their text (Windows' built-in OCR), types, presses keys and checks the result. It asks before touching each window and refuses terminals, password managers and security prompts.
@@ -310,6 +314,45 @@ The answer says what it found, how sure it is, useful facts and safety notes (fo
 Simple questions ("what colour is it?") skip the web. Only short descriptive searches go online, never the picture; searches containing numbers,
 e-mail addresses or links are dropped, documents and screenshots are not researched unless you ask, and people are never identified from their faces.
 Turn it off in Settings > AI (*Research photos online*); it needs *Let the agent search/read the web*.
+
+### Scheduled tasks
+
+Ask in your own words ("remind me at 5 to call Sam", "every weekday at 8 give me a briefing", "every 30 minutes check my timers") or add one by hand in **Settings > Tasks**. You confirm each new task first.
+There are two kinds: a **reminder** (the assistant says your text) and a **job** (the assistant carries out your instruction with its tools and says the result). Repeats can be once, daily, weekdays, chosen days, or every few minutes (at least 5).
+
+- Tasks run **only while the app is open** (tick *Start Voice Assistant when I sign in* in the installer to have it always running). A task that came due while the app was closed or the PC asleep still runs if it is under 15 minutes late; older ones are skipped and reported in the chat.
+- Jobs run **unattended**: anything that would normally ask for your approval (opening an app, writing a file, a shell command, an Odysseus hand-off) is declined instead of waiting, and the result says what was skipped. A job can never do more while you are away than the assistant already does without asking.
+- Ask the assistant to list, pause, resume, run now or delete tasks, or use the Tasks tab. A switch there (and on the phone) turns all scheduled tasks off. Tasks are stored in `%APPDATA%\\VoiceAssistant\\tasks.json`; one-off tasks disappear a week after they ran.
+- Times are your PC's local time. In voice-only Odysseus mode the scheduling tools stay available.
+
+### Watching videos
+
+Drop a video into the chat (mp4, mov, m4v, mkv, webm, avi or wmv) or ask the assistant to *watch* something through your phone, then ask what happens in it ("what does the sign say?", "how is the player doing?", "what did they say?").
+The assistant looks at frames spread across the clip, listens to its sound, and works out what is going on: what the activity, game or event is, how it goes over time (for example a score counter climbing or resetting), and the key moments.
+
+**How closely it watches.** Each level is a picture size and a data budget for all the frames of one video; the number of frames is whatever the budget and a frame-rate limit allow.
+
+| Level | Frame size | Data budget | Frame rate |
+|---|---|---|---|
+| **Normal** (default) | 640 px | 5 MB | up to 2 a second, at most 100 frames |
+| **Mid** | 960 px | 10 MB | up to 3 a second, at most 200 |
+| **High** | 1280 px | 50 MB | up to 6 a second, at most 400 |
+| **Custom** | your choice | your choice | your rate and cap (Settings > AI) |
+
+Choose the default in Settings > AI (*Video detail*, also on the phone). The assistant can look again at one stretch ("look closer at 0:20 to 0:26") or at a higher level when an answer needs more detail.
+
+**What it works out.** Each group of frames is described under *Scene, Action, Text and numbers, Clues* (headset, controllers, interface, logos) and *Results* (hits and misses, counters rising or resetting). A final pass combines these with the sound into an overview: the kind of activity, the specific title if it is shown or unmistakable, the evidence, how sure it is, and how it goes. If the title is unknown it can look it up online by describing what it sees (never the video). Never what anyone thinks or feels, and never who someone is from their face.
+
+All of these can be switched on or off in Settings > AI (and on the phone):
+
+- **Listen to the video's sound:** speech is turned into text with the recognizer on your PC and added to the timeline (a clip recorded on the phone is then recorded with sound, and the phone shows *with sound* while it records). It is off the moment you untick it, and nothing is recorded without it.
+- **Work out what the video is about:** the overview pass. A little slower, much better at understanding.
+- **Look things up online to name a game or activity:** needs web access to be on.
+- **Skip frames where nothing changes:** off by default, so the model sees every frame; when on, skipped stretches are reported to it.
+
+- **From your phone** the clip is recorded and the frames are picked and shrunk *on the phone*, so only a few hundred KB per frame and the sound (about 2 MB a minute) cross the link, never the video.
+- **On the PC** frames and sound are read by Qt's built-in decoder in a small helper process, so nothing extra is installed.
+- Frames (and the words of the sound) go only to the AI model you already use; with a cloud model you are asked once per video. Nothing is saved.
 
 ### Opening apps
 

@@ -128,7 +128,8 @@ def test_voice_only_mode_hides_tools_from_the_model_but_keeps_them_for_sharing(t
     cfg = Config(models_dir=str(tmp_path / "none"), setup_done=True, check_updates=False, odysseus_mode="only", odysseus_share_tools=True)
     w = A.MainWindow(cfg)
     try:
-        assert w._registry.names() == ["ask_odysseus"]
+        from voice_assistant import scheduler
+        assert sorted(w._registry.names()) == sorted(["ask_odysseus", "cancel_odysseus", "check_odysseus", *scheduler.TOOL_NAMES])  # plus the scheduling tools
         shared = {t["name"] for t in w._share.tools()}
         assert {"get_time", "set_timer"} <= shared and "ask_odysseus" not in shared
         assert (tmp_path / tool_share.SERVER_FILE).exists()

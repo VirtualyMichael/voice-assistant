@@ -24,7 +24,7 @@ a = Analysis(
     datas=datas,
     hiddenimports=hidden,
     excludes=["tkinter", "matplotlib", "scipy", "pytest", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
-              "PySide6.QtQml", "PySide6.QtQuick", "PySide6.Qt3DCore", "PySide6.QtMultimedia", "PySide6.QtPdf"],
+              "PySide6.QtQml", "PySide6.QtQuick", "PySide6.Qt3DCore", "PySide6.QtPdf"],
 )
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="VoiceAssistant", console=False,

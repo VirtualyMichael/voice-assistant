@@ -42,8 +42,18 @@ class Config:
     voice_approval: bool = False  # confirmations are also read aloud and can be answered by saying yes or no
     profile_learning: bool = True  # the assistant may propose facts about you for the profile (you confirm each)
     custom_voice_dir: str = ""  # folder with your own sherpa-onnx VITS/Piper voice (model .onnx, tokens.txt, espeak-ng-data); empty = built-in voices
+    video_quality: str = "normal"  # how closely videos are watched: normal (640 px, 5 MB) | mid (960 px, 10 MB) | high (1280 px, 50 MB) | custom (the numbers below)
+    video_custom_edge: int = 800  # custom level: longest side of a frame, in pixels
+    video_custom_mb: float = 8.0  # custom level: most data for all the frames of one video, in MB
+    video_custom_fps: float = 2.0  # custom level: most frames per second
+    video_custom_frames: int = 120  # custom level: most frames in one video
+    video_use_audio: bool = True  # listen to a video's sound and add what is said to the timeline (a phone clip is then recorded with sound)
+    video_overview: bool = True  # one more pass over the notes to work out what the video is: the game, activity or event, how it is going
+    video_research: bool = True  # let that pass look things up online to name a game or activity (needs web access on)
+    video_skip_still: bool = False  # skip frames where the picture did not change (faster, but the model sees less); the skipped stretches are reported
     deep_vision: bool = True  # research pictures online (needs web access on): dropped photos and phone photos get a deeper, checked answer
     plantnet_enabled: bool = False  # also send plant photos to Pl@ntNet (needs your own key; the photo leaves this PC)
+    scheduled_tasks_enabled: bool = True  # run scheduled reminders and jobs while the app is open (the Tasks tab lists them)
     check_updates: bool = True  # look for a newer release on GitHub at start-up (it always asks before installing)
     last_update_check: float = 0.0  # when that last happened (unix time)
     delegate_enabled: bool = False  # hand coding tasks to Claude Code / Codex (their CLIs, your logins)
@@ -119,7 +129,7 @@ class Config:
     max_tool_rounds: int = 8
     skill_folders: list[str] = field(default_factory=list)  # folders holding SKILL.md skills (one skill, or a parent of skills)
     disabled_skills: list[str] = field(default_factory=list)
-    remember_conversation: bool = True  # saved on this PC only (conversation.json); "New chat" or untick to erase
+    remember_conversation: bool = True  # every chat is saved on this PC only (the chats folder) and listed in the history sidebar; untick to stop saving
     history_messages: int = 40  # how many recent messages are kept and sent to the model
     allow_web: bool = False  # web_search / fetch_page send queries and URLs to the internet
     allow_shell: bool = False  # run_powershell (still asks before every command)

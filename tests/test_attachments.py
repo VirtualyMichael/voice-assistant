@@ -108,7 +108,7 @@ def test_the_attachment_tools_are_wired(tmp_path):
     inbox = Inbox()
     inbox.add(tmp_path / "a.txt")
     tools = {t.name: t.handler for t in build_attachment_tools(inbox, lambda: FakeLLM())}
-    assert set(tools) == {"read_attachment", "search_attachment", "look_at_attachment"}
+    assert set(tools) == {"read_attachment", "search_attachment", "look_at_attachment", "look_at_video"}
     assert "hello needle" in tools["read_attachment"]("a.txt") and "a.txt:1" in tools["search_attachment"]("a.txt", "needle")
 
 

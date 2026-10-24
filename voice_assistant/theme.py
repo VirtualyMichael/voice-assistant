@@ -80,6 +80,10 @@ QListWidget#nav {{ background: transparent; border: none; outline: none; }}
 QListWidget#nav::item {{ padding: 9px 12px; margin: 1px 0; border-radius: 9px; color: {MUTED}; }}
 QListWidget#nav::item:hover {{ color: {TEXT}; background: rgba(255,255,255,0.06); }}
 QListWidget#nav::item:selected {{ color: {TEXT}; background: {rgba(accent, 0.25)}; }}
+QListWidget#history {{ background: transparent; border: none; outline: none; }}
+QListWidget#history::item {{ padding: 8px 10px; margin: 1px 0; border-radius: 9px; color: {TEXT}; }}
+QListWidget#history::item:hover {{ background: rgba(255,255,255,0.06); }}
+QListWidget#history::item:selected {{ color: {TEXT}; background: {rgba(accent, 0.25)}; }}
 QToolTip {{ background: {PANEL}; color: {TEXT}; border: 1px solid {line}; }}
 """
 
