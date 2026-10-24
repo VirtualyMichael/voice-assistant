@@ -1,4 +1,4 @@
-"""python -m voice_assistant [run|--setup|--selftest [file]|doctor|setup|fetch-models [kokoro] [--yes]]"""
+"""python -m voice_assistant [run|--setup|--selftest [file]|doctor|setup|fetch-models [kokoro] [--yes]|phone [pair [name]|list|unpair <id>]]"""
 from __future__ import annotations
 
 import sys
@@ -74,6 +74,32 @@ def fetch_models(args: list[str]) -> int:
     return 0
 
 
+def phone(args: list[str]) -> int:
+    """python -m voice_assistant phone pair [name] | list | unpair <id>: manage the phones allowed to connect (see remote.py)."""
+    import json
+
+    from .remote import PairedDevices, tailscale_ip
+
+    devices, action = PairedDevices(), (args[0] if args else "list")
+    if action == "pair":
+        cfg = load_config()
+        host = tailscale_ip()
+        if not host:
+            print("Tailscale is not running on this PC. Install it, sign in, then try again.")
+            return 1
+        device_id, token = devices.pair(" ".join(args[1:]) or "Phone")
+        print("Give this to the phone app (it is shown once and cannot be looked up again):")
+        print(json.dumps({"v": 1, "host": host, "port": cfg.remote_port, "token": token, "id": device_id}))
+        print("Also turn on the phone link: set \"remote_enabled\": true in the settings file, then restart the assistant.")
+        return 0
+    if action == "unpair" and len(args) > 1:
+        print("Removed." if devices.revoke(args[1]) else "No phone with that id.")
+        return 0
+    for d in devices.list():
+        print(f"{d['id']}  {d['name']}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     from .quiet import hide_child_consoles
 
@@ -91,6 +117,8 @@ def main(argv: list[str]) -> int:
         return setup()
     if cmd == "fetch-models":
         return fetch_models(argv[1:])
+    if cmd == "phone":
+        return phone(argv[1:])
     from .app import main as run
 
     return run(argv if argv and argv[0].startswith("--") else [])

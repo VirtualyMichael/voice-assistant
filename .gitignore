@@ -12,3 +12,5 @@ build/
 .graphify/
 graphify-out/
 voice-samples/
+
+debug-audio/

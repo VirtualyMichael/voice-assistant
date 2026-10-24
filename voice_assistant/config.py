@@ -9,6 +9,7 @@ from pathlib import Path
 INTERRUPT_MODES = ("voice", "hotkey", "ignore")
 LISTEN_MODES = ("push", "always")
 ODYSSEUS_MODES = ("off", "assist", "only")
+REMOTE_OUTPUTS = ("phone", "both", "pc")
 
 
 def config_dir() -> Path:
@@ -140,6 +141,10 @@ class Config:
     confirm_screen: bool = True  # ask before every screenshot (turn off only if you trust your AI provider)
     tool_filler: str = "One moment."  # spoken when a task starts before the reply; empty = silent
     vr_announce: bool = True  # speak a short confirmation when the VR profile switches
+    remote_enabled: bool = False  # let a paired phone talk to this PC over Tailscale (see remote.py)
+    remote_port: int = 47830
+    remote_output: str = "phone"  # phone: replies play on the phone while it is connected | both | pc
+    remote_allow_safety_changes: bool = False  # the owner's switch: lets a paired phone change safety settings (shell, web, confirmations...). Never settable from the phone.
 
     def validate(self) -> None:
         if self.interrupt_mode not in INTERRUPT_MODES:
@@ -148,6 +153,8 @@ class Config:
             raise ValueError(f"listen_mode must be one of {LISTEN_MODES}")
         if self.odysseus_mode not in ODYSSEUS_MODES:
             raise ValueError(f"odysseus_mode must be one of {ODYSSEUS_MODES}")
+        if self.remote_output not in REMOTE_OUTPUTS:
+            raise ValueError(f"remote_output must be one of {REMOTE_OUTPUTS}")
 
     def device(self, key: str, vr: bool = False) -> str:
         """Device name for `key` (input_device / output_device), honouring the VR profile when vr is True."""

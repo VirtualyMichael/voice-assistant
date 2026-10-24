@@ -115,8 +115,8 @@ def clean_phrase(phrase: str) -> str:
     return " ".join(re.sub(r"[^A-Za-z0-9' ]+", " ", phrase).upper().split())
 
 
-def write_keywords(folder: Path, phrase: str, boost: float = 1.5, threshold: float = 0.12) -> Path:
-    """Tokenise a wake phrase with the model's BPE model into sherpa's keywords format.
+def keyword_lines(folder: Path, phrase: str, boost: float = 1.5, threshold: float = 0.12) -> str:
+    """Tokenise a wake phrase with the model's BPE model into sherpa's keywords format (one line per spoken variant).
     boost 1.5 / threshold 0.12 won a grid test on synthetic speech; a higher boost lowered detection."""
     import sentencepiece as spm
 
@@ -134,8 +134,12 @@ def write_keywords(folder: Path, phrase: str, boost: float = 1.5, threshold: flo
         if known is not None and any(t not in known for t in pieces):
             raise ValueError(f"The wake phrase '{p}' contains sounds the wake model has no token for; use plain words")
         lines.append(f"{' '.join(pieces)} :{boost} #{threshold} @{p.replace(' ', '_')}\n")
+    return "".join(lines)
+
+
+def write_keywords(folder: Path, phrase: str, boost: float = 1.5, threshold: float = 0.12) -> Path:
     out = folder / "keywords_custom.txt"
-    out.write_text("".join(lines), encoding="utf-8")
+    out.write_text(keyword_lines(folder, phrase, boost, threshold), encoding="utf-8")
     return out
 
 

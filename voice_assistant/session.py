@@ -47,6 +47,37 @@ class SessionEvents:
     def error(self, message: str) -> None: ...
 
 
+class MultiEvents(SessionEvents):
+    """Forward every event to several listeners (the window and a connected phone); one failing listener never blocks the rest."""
+
+    def __init__(self, *listeners: SessionEvents):
+        self._listeners = list(listeners)
+
+    def add(self, listener: SessionEvents) -> None:
+        self._listeners.append(listener)
+
+    def remove(self, listener: SessionEvents) -> None:
+        if listener in self._listeners:
+            self._listeners.remove(listener)
+
+    def _fan(self, name: str, *args) -> None:
+        for listener in list(self._listeners):
+            try:
+                getattr(listener, name)(*args)
+            except Exception:
+                log.exception("event listener failed in %s", name)
+
+    def state(self, state: State) -> None: self._fan("state", state)
+    def partial(self, text: str) -> None: self._fan("partial", text)
+    def user_final(self, text: str) -> None: self._fan("user_final", text)
+    def assistant_delta(self, text: str) -> None: self._fan("assistant_delta", text)
+    def assistant_done(self, metrics: TurnMetrics) -> None: self._fan("assistant_done", metrics)
+    def error(self, message: str) -> None: self._fan("error", message)
+
+
+_FINALIZE = object()  # queued behind the audio already fed, so the recognizer has seen everything before the sentence is closed
+
+
 def trim_leading_silence(x: np.ndarray, sr: int = 16000, pad_s: float = 0.5) -> np.ndarray:
     """Cut the quiet lead-in off a recording but keep `pad_s` before the first loud frame.
 
@@ -99,6 +130,7 @@ class Session:
         self._filler_said = False
         self._approval: Approval | None = None
         self.wake_probe = None  # set by the 'Test wake word' button: called with (samples, hit) instead of waking
+        self.phone_active: Callable[[], bool] = lambda: False  # true while a phone is the microphone: it shows its own cues, so no chimes or follow-up window here
         self._chime = listening_chime()
         orig_on_tool = agent.on_tool
         agent.on_tool = lambda msg: (orig_on_tool(msg), self._tool_filler())
@@ -106,11 +138,17 @@ class Session:
         self._worker.start()
 
     # ---- public controls -------------------------------------------------
-    def feed_audio(self, samples: np.ndarray) -> None:
+    def feed_audio(self, samples: np.ndarray, remote: bool = False) -> None:
+        if not remote and self.phone_active():
+            return  # a connected phone is the microphone: this PC's own mic would be interleaved with it and ruin recognition
         try:
             self._audio_q.put_nowait(samples)
         except queue.Full:
             pass  # drop rather than block the audio callback
+
+    def finalize(self) -> None:
+        """End the sentence now: a remote client's own voice detection heard the speaker stop. Safe from any thread."""
+        self._audio_q.put(_FINALIZE)
 
     def activate(self) -> None:
         with self._lock:
@@ -230,7 +268,7 @@ class Session:
     def _play_chime(self) -> None:
         """Signal 'speak now' and hold the mic closed until the chime (and a short gap) are over, so the start of your
         sentence is neither lost nor mixed with the chime."""
-        if not (self.cfg.listen_tone and self.speaker):
+        if not (self.cfg.listen_tone and self.speaker) or self.phone_active():
             return
         self.speaker.begin_turn(lambda: None)
         self.speaker.play_samples(self._chime, TONE_RATE)
@@ -258,7 +296,10 @@ class Session:
     def _audio_loop(self) -> None:
         while (samples := self._audio_q.get()) is not None:
             try:
-                self._handle_audio(samples)
+                if samples is _FINALIZE:
+                    self._handle_finalize()
+                else:
+                    self._handle_audio(samples)
             except Exception as e:  # keep the loop alive
                 log.exception("audio handling failed")
                 self.events.error(str(e))
@@ -332,17 +373,10 @@ class Session:
             self.events.partial(text)
         if text.strip():
             self._heard = True
-        if rec.is_endpoint():
-            t_end = self.clock()  # taken before re-checking, so the extra time shows up in the latency numbers
-            final = text.strip()
-            audio, self._utt = self._utt, []
-            rec.reset()
-            self._last_partial, self._heard = "", False
-            if final:
-                final = self._refine(final, audio)
-                with self._lock:
-                    if self.state is State.LISTENING:
-                        self._begin_turn(final, t_end, voice=True)
+        if rec.is_endpoint() and not self.phone_active():  # a phone's button decides when you are done, not a pause in your speech
+            self._finish_sentence(text)
+        elif rec.is_endpoint():
+            pass
         elif (
             not self._heard
             and self.cfg.listen_mode != "always"
@@ -351,6 +385,31 @@ class Session:
             with self._lock:
                 if self.state is State.LISTENING:
                     self._rest()
+
+    def _finish_sentence(self, text: str) -> None:
+        rec = self.recognizer
+        t_end = self.clock()  # taken before re-checking, so the extra time shows up in the latency numbers
+        final = text.strip()
+        audio, self._utt = self._utt, []
+        rec.reset()
+        self._last_partial, self._heard = "", False
+        if final:
+            final = self._refine(final, audio)
+            with self._lock:
+                if self.state is State.LISTENING:
+                    self._begin_turn(final, t_end, voice=True)
+
+    def _handle_finalize(self) -> None:
+        with self._lock:
+            listening = self.state is State.LISTENING and self.recognizer is not None
+        if listening and self.clock() >= self._ignore_until:
+            # the streaming recognizer finishes the last words only after some silence; the local flow waits for it, so give it that here
+            pad = np.zeros(int(0.6 * 16000), np.float32)
+            self.recognizer.accept(pad)
+            self._utt_add(pad, 30.0)
+            text = self.recognizer.text()
+            if text.strip():  # nothing heard: leave the usual listen timeout to close the window
+                self._finish_sentence(text)
 
     # ---- turn --------------------------------------------------------------
     def _begin_turn(self, text: str, t_end: float, voice: bool = False) -> None:
@@ -416,7 +475,7 @@ class Session:
             self.metrics.record(m)
             self.events.assistant_done(m)
             self._ignore_until = self.clock() + self.cfg.post_speech_guard_s
-            if self.cfg.follow_up and self.cfg.follow_up_s > 0 and self._voice_turn and self.recognizer is not None:
+            if self.cfg.follow_up and self.cfg.follow_up_s > 0 and self._voice_turn and self.recognizer is not None and not self.phone_active():
                 self._enter_listening(window=self.cfg.follow_up_s)
                 self._play_chime()
             else:

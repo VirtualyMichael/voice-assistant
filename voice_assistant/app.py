@@ -48,8 +48,9 @@ from .interpreter import Interpreter, build_interpreter_tools
 from .vrchat import VRCHAT_TOOL_NAMES, VRChat, build_vrchat_tools
 from .vrchat_menu import AvatarNotes
 from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_for, needs_key, save_key, set_model
-from .session import Session, SessionEvents
+from .session import MultiEvents, Session, SessionEvents
 from .speaker import Speaker
+from .remote import RemoteServer
 from .setup_wizard import run_wizard
 from . import glass
 from .theme import ACCENTS, ICON_FONT, STATE_COLORS, STYLE, build_style, window_tint
@@ -899,6 +900,15 @@ class MainWindow(QMainWindow):
             setattr(self, "ask_" + key.removeprefix("confirm_"), box)
             form.addRow(box)
         form.addRow(QLabel("Opening apps has its own box in the Apps tab. Shell commands, writing files, handing jobs to Claude/Codex, controlling windows and MCP tools always ask.", objectName="small", wordWrap=True))
+        form.addRow(QLabel("Phone app", objectName="small"))
+        phone_safety = QCheckBox("Let my phone change safety settings")
+        phone_safety.setToolTip(
+            "Off: settings that widen what the assistant may do (shell commands, web access, the 'ask me first' questions, cloud models, folders...) are locked in the phone app. "
+            "On: they can be changed from your paired phone, which still asks for your fingerprint or PIN first.")
+        phone_safety.setChecked(bool(cfg.remote_allow_safety_changes))
+        phone_safety.toggled.connect(lambda v: self._set_field("remote_allow_safety_changes", v))
+        self.phone_safety = phone_safety
+        form.addRow(phone_safety)
         cfg_btn, setup_btn = QPushButton("Open settings file"), QPushButton("Run setup again")
         cfg_btn.clicked.connect(self._open_config)
         setup_btn.clicked.connect(self._rerun_setup)
@@ -913,7 +923,15 @@ class MainWindow(QMainWindow):
         self.bridge.confirm.emit(prompt, h)
         if self.cfg.voice_approval and getattr(self, "session", None) is not None:
             threading.Thread(target=self._voice_answer, args=(prompt, h), daemon=True).start()
+        if getattr(self, "remote", None) is not None:  # a connected phone can answer too; the first answer wins
+            threading.Thread(target=self._phone_answer, args=(prompt, h), daemon=True).start()
         return h.event.wait(60) and h.result
+
+    def _phone_answer(self, prompt: str, h: "_Holder") -> None:
+        answer = self.remote.ask(prompt, stop=h.event)
+        if answer is not None and not h.event.is_set():
+            h.voice = answer
+            self.bridge.confirm_close.emit(h)
 
     def _voice_answer(self, prompt: str, h: "_Holder") -> None:
         answer = self.session.ask_voice(prompt, stop=h.event)
@@ -991,13 +1009,24 @@ class MainWindow(QMainWindow):
         agent.on_update = self.store.save if cfg.remember_conversation else None
         self.audio = AudioIO(cfg, lambda x: self.session.feed_audio(x), lambda m: self.bridge.error.emit(m))
         self.synth = parts["synth"]
-        speaker = Speaker(parts["synth"], self.audio.player) if parts["synth"] else None
-        events = QtEvents(self.bridge)
+        self.remote = None
+        local_player = self.audio.player
+        # while a phone is connected the reply streams to it instead of (or as well as) the PC speakers
+        player = lambda *a: (self.remote.make_player(local_player) if self.remote else local_player)(*a)  # noqa: E731
+        speaker = Speaker(parts["synth"], player) if parts["synth"] else None
+        qt_events = QtEvents(self.bridge)
+        events = MultiEvents(qt_events)
         self.ducker = Ducker(Audio(), cfg.duck_level, enabled=lambda: self.cfg.duck_music, init_com=_init_com)
-        events.on_state = self.ducker.on_state
-        events.on_delta = self.interp.feed
-        events.on_done = self.interp.finish
+        qt_events.on_state = self.ducker.on_state
+        qt_events.on_delta = self.interp.feed
+        qt_events.on_done = self.interp.finish
         self.session = Session(cfg, agent, speaker, parts["recognizer"], parts["wake"], events, accurate=parts["accurate"])
+        if cfg.remote_enabled:
+            remote = RemoteServer(self.session, events, cfg)
+            if remote.start():
+                self.remote = remote
+            else:
+                self.warnings.append(f"phone link off: {remote.error}")
         self._add_voice_picker()
         self.mcp = None
         self._warm_pdfs()
@@ -1906,6 +1935,8 @@ class MainWindow(QMainWindow):
         self.timer.stop()
         if getattr(self, "_share", None):
             self._share.stop()
+        if getattr(self, "remote", None):
+            self.remote.stop()
         self.timers.cancel_all()
         self.ducker.restore()  # never leave the music quiet when the assistant closes
         if self.mcp:
