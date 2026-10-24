@@ -51,6 +51,7 @@ from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_f
 from .session import MultiEvents, Session, SessionEvents
 from .speaker import Speaker
 from .remote import RemoteServer
+from .phone_camera import build_phone_camera_tools
 from .setup_wizard import run_wizard
 from . import glass
 from .theme import ACCENTS, ICON_FONT, STATE_COLORS, STYLE, build_style, window_tint
@@ -1025,6 +1026,11 @@ class MainWindow(QMainWindow):
             remote = RemoteServer(self.session, events, cfg)
             if remote.start():
                 self.remote = remote
+                camera = build_phone_camera_tools(cfg, lambda: self.remote, self._confirm, lambda: self.session.agent.llm)
+                visible = [] if cfg.odysseus_mode == "only" else [self._registry]  # 'only' mode shows the model just ask_odysseus
+                for reg in {id(r): r for r in [*visible, self._full]}.values():  # the model's tools, and the full set routines use
+                    reg.add(camera)
+                self._refresh_prompt()
             else:
                 self.warnings.append(f"phone link off: {remote.error}")
         self._add_voice_picker()
