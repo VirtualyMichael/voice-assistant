@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +28,8 @@ from . import __version__, deep_look, odysseus, scheduler, tool_share, updater, 
 from .history_panel import PANEL_WIDTH, HistoryPanel
 from .schedule_ui import TasksPage
 from .settings_search import SettingsIndex, fill_results, reveal
+from .remote_settings import SettingsService
+from .settings_tools import SETTINGS_PROMPT, build_settings_tools
 from .video_ui import VideoDetailBox
 from .memory import ChatLibrary
 from .pdf_tools import PdfStore
@@ -97,6 +100,7 @@ class Bridge(QObject):
     update_found = Signal(object, bool)  # (updater.Release, asked_by_user)
     update_ready = Signal(str)  # path of a downloaded, verified installer
     phone_event = Signal(object)  # the phone link: a phone paired, connected or disconnected
+    show_setting = Signal(str)  # the assistant wants the user to see a setting: open Settings there
 
 
 def icon_button(glyph: str, tip: str, checkable: bool = False) -> QPushButton:
@@ -180,32 +184,110 @@ def _init_com() -> None:
         pass
 
 
+PAGES: dict[str, tuple[str, str]] = {  # page key -> (name shown in the list, one line saying what the page is for)
+    "Voice": ("Listening & voice", "How the assistant hears you and how it sounds when it answers."),
+    "Audio": ("Sound devices", "Pick the microphone and speakers the assistant uses."),
+    "AI": ("AI model", "The brain behind the answers. Most people never need to change this."),
+    "Video": ("Camera & photos", "How closely the assistant looks at videos and photos."),
+    "Memory": ("Memory & profile", "What the assistant knows about you and remembers."),
+    "Skills": ("Skills", "Extra abilities you can add, such as a tutor or a helper for one hobby."),
+    "Delegate": ("Coding helpers", "Let the assistant pass bigger jobs to Claude Code, Codex or Odysseus."),
+    "Phone": ("Phone", "Use the assistant from your phone."),
+    "Apps": ("Music & apps", "Opening programs and playing music."),
+    "Home": ("Smart home", "Control lights and other devices by voice."),
+    "VR": ("VR & VRChat", "Headset audio and VRChat controls."),
+    "Tasks": ("Reminders", "Reminders and jobs that run at a set time."),
+    "Safety": ("Privacy & safety", "Decide what the assistant may do on its own and when it must ask you first."),
+    "Look": ("Appearance", "Make the window look the way you like."),
+    "General": ("General", "Updates, language and first-time setup."),
+}
+
+
+class Collapsible(QWidget):
+    """A fold-out for the settings most people never need. Search opens it when the match is inside."""
+
+    def __init__(self, title: str = "Advanced settings"):
+        super().__init__()
+        self.toggle = QPushButton(objectName="foldout", checkable=True)
+        self.toggle.setCursor(Qt.PointingHandCursor)
+        self.title = title
+        self.body = QWidget()
+        self.form = QFormLayout(self.body)
+        self.form.setContentsMargins(0, 8, 0, 0)
+        self.form.setVerticalSpacing(8)
+        self.form.setRowWrapPolicy(QFormLayout.WrapAllRows)
+        self.form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 14, 0, 0)
+        lay.addWidget(self.toggle, 0, Qt.AlignLeft)
+        lay.addWidget(self.body)
+        self.toggle.toggled.connect(self.set_open)
+        self.body.setVisible(False)
+        self.setVisible(False)  # nothing to show until a setting is put in it
+        self.set_open(False)
+
+    def set_open(self, on: bool) -> None:
+        self.toggle.blockSignals(True)
+        self.toggle.setChecked(on)
+        self.toggle.blockSignals(False)
+        self.body.setVisible(on)
+        self.toggle.setText(("▾  " if on else "▸  ") + self.title)
+
+    def expand(self) -> None:
+        self.set_open(True)
+
+
 class TabbedForm:
-    """Presents the old single-form API (addRow / insertRow) but spreads rows over scrollable tabs."""
+    """Presents the old single-form API (addRow / insertRow) but spreads rows over scrollable pages.
+    Each page has a title, a line saying what it is for, its everyday settings, and a fold-out "Advanced settings" (use advanced(True) to fill that)."""
 
     def __init__(self, tabs: QTabWidget, names: list[str]):
         self.forms: dict[str, QFormLayout] = {}
+        self.folds: dict[str, Collapsible] = {}
+        self.is_advanced = False
         for n in names:
+            title, blurb = PAGES.get(n, (n, ""))
             page = QWidget()
-            form = QFormLayout(page)
-            form.setContentsMargins(10, 12, 10, 10)
-            form.setVerticalSpacing(8)
+            outer = QVBoxLayout(page)
+            outer.setContentsMargins(14, 14, 14, 14)
+            outer.setSpacing(4)
+            outer.addWidget(QLabel(title, objectName="pageTitle"))
+            outer.addWidget(QLabel(blurb, objectName="pageBlurb", wordWrap=True))
+            body = QWidget()
+            form = QFormLayout(body)
+            form.setContentsMargins(0, 14, 0, 0)
+            form.setVerticalSpacing(10)
             form.setRowWrapPolicy(QFormLayout.WrapAllRows)  # label above its field: nothing is cut off in a narrow window
             form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+            outer.addWidget(body)
+            fold = Collapsible()
+            outer.addWidget(fold)
+            outer.addStretch(1)
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             scroll.setWidget(page)
             tabs.addTab(scroll, n)
-            self.forms[n] = form
+            self.forms[n], self.folds[n] = form, fold
         self.current = names[0]
 
-    def use(self, name: str) -> "TabbedForm":
-        self.current = name
+    def use(self, name: str, advanced: bool = False) -> "TabbedForm":
+        self.current, self.is_advanced = name, advanced
         return self
 
+    def advanced(self, on: bool = True) -> "TabbedForm":
+        self.is_advanced = on
+        return self
+
+    def _target(self) -> QFormLayout:
+        if self.is_advanced:
+            fold = self.folds[self.current]
+            fold.setVisible(True)
+            return fold.form
+        return self.forms[self.current]
+
     def addRow(self, *args) -> None:
-        self.forms[self.current].addRow(*args)
+        self._target().addRow(*args)
 
     def insertRow(self, index: int, *args) -> None:
         self.forms[self.current].insertRow(index, *args)
@@ -436,6 +518,7 @@ class MainWindow(QMainWindow):
         self.tasks_page.bind(self.task_store, self.scheduler, cfg.scheduled_tasks_enabled, lambda v: self._set_field("scheduled_tasks_enabled", v))
         self.scheduler.start()  # also catches up on tasks that came due while the app was closed
         threading.Thread(target=self._check_routes, daemon=True).start()
+        self.settings_index.freeze()  # what the assistant's find_setting searches in the PC window
         for w in self.warnings:
             self.chat.add("bubbleNote", w)
         if not cfg.approved_folders:
@@ -447,21 +530,22 @@ class MainWindow(QMainWindow):
         panel = QFrame(objectName="panel")
         tabs = QTabWidget()
         tabs.tabBar().hide()  # the sidebar list below drives the pages
-        names = ["Voice", "Phone", "Audio", "VR", "AI", "Video", "Skills", "Apps", "Home", "Tasks", "Memory", "Delegate", "Look", "General"]
+        names = ["Voice", "Audio", "AI", "Video", "Memory", "Skills", "Delegate", "Phone", "Apps", "Home", "VR", "Tasks", "Safety", "Look", "General"]
         nav = QListWidget(objectName="nav")
-        nav.setFixedWidth(96)
-        nav.addItems(names)
+        nav.setFixedWidth(176)
+        nav.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        nav.addItems([PAGES[n][0] for n in names])
         nav.setFocusPolicy(Qt.NoFocus)
         nav.currentRowChanged.connect(tabs.setCurrentIndex)
         nav.setCurrentRow(0)
-        search = QLineEdit(placeholderText="Search settings (for example video, sound, timer, web)")
+        search = QLineEdit(placeholderText="Search settings: try \"sound\", \"camera\" or \"reminder\"")
         search.setClearButtonEnabled(True)
         results = QListWidget(objectName="nav")
         results.setFocusPolicy(Qt.NoFocus)
         stack = QStackedWidget()  # the pages, or the search results while something is typed
         stack.addWidget(tabs)
         stack.addWidget(results)
-        index = SettingsIndex(tabs, names)
+        index = SettingsIndex(tabs, names, {n: PAGES[n][0] for n in names})
 
         def run_search(text: str) -> None:
             if not text.strip():
@@ -478,6 +562,18 @@ class MainWindow(QMainWindow):
             stack.setCurrentIndex(0)
             reveal(entry, tabs)
 
+        def show_setting(query: str) -> None:  # the assistant asked to show a setting (see settings_tools)
+            found = index.search(query, 1)
+            if not found:
+                return
+            self._gear.setChecked(True)
+            search.clear()
+            nav.setCurrentRow(found[0].tab)
+            stack.setCurrentIndex(0)
+            reveal(found[0], tabs, flash_ms=4000)
+
+        self.settings_index = index
+        self.bridge.show_setting.connect(show_setting)
         search.textChanged.connect(run_search)
         search.returnPressed.connect(lambda: results.count() and open_result(results.item(0)) if stack.currentIndex() == 1 else None)
         results.itemClicked.connect(open_result)
@@ -505,10 +601,10 @@ class MainWindow(QMainWindow):
         form.addRow(duck)
         self.dev = {}
         for key, label, kind, optional in (
-            ("input_device", "Microphone", "input", False),
-            ("input_device_2", "2nd input (mixed in)", "input", True),
-            ("output_device", "Speaker", "output", False),
-            ("output_device_2", "2nd output (same audio)", "output", True),
+            ("input_device", "Microphone (what you speak into)", "input", False),
+            ("input_device_2", "Second microphone (mixed in)", "input", True),
+            ("output_device", "Speaker (where you hear the assistant)", "output", False),
+            ("output_device_2", "Second speaker (plays the same sound)", "output", True),
         ):
             box = QComboBox()
             try:
@@ -524,7 +620,9 @@ class MainWindow(QMainWindow):
             box.setCurrentIndex(max(box.findData(cur), 0))
             box.currentIndexChanged.connect(lambda _i, k=key, b=box: self._set_device(k, b.currentData()))
             self.dev[key] = box
+            form.use("Audio", advanced=optional)
             form.addRow(label, box)
+        form.use("Audio")
         follow = QDoubleSpinBox(minimum=0, maximum=60, singleStep=1, value=cfg.follow_up_s, suffix=" s")
         follow.setSpecialValueText("Off")
         follow.setToolTip("After a spoken reply, keep the mic open this long for your next sentence. Off = push-to-talk each time.")
@@ -535,26 +633,30 @@ class MainWindow(QMainWindow):
         endsil = QDoubleSpinBox(minimum=0.4, maximum=3, singleStep=0.1, value=cfg.end_of_speech_s, suffix=" s")
         endsil.setToolTip("Silence that ends your sentence. Raise it if you get cut off mid-sentence (restart to apply).")
         endsil.valueChanged.connect(lambda v: self._set_field("end_of_speech_s", float(v)))
-        acc = QCheckBox("Re-check sentences with the accurate recognizer")
+        acc = QCheckBox("Double-check every sentence for accuracy (slower)")
         acc.setChecked(cfg.accurate_asr)
         acc.setToolTip("Needs the Parakeet model (setup guide > download). Restart to apply.")
         acc.toggled.connect(lambda v: self._set_field("accurate_asr", v))
+        follow.setToolTip("After a spoken reply, keep the microphone open this long so you can answer without pressing anything. Off means you start each turn yourself.")
         form.use("Voice")
-        form.addRow("Keep listening after a reply", follow)
-        form.addRow("Wait for me to start speaking", wait)
-        form.addRow("End of sentence after silence", endsil)
-        form.addRow(acc)
         listen, mode = QComboBox(), QComboBox()
-        listen.addItems(LISTEN_MODES)
-        listen.setCurrentText(cfg.listen_mode)
-        listen.setToolTip("push: hotkey/Talk starts a turn. always: the mic is always open.")
-        mode.addItems(INTERRUPT_MODES)
-        mode.setCurrentText(cfg.interrupt_mode)
-        mode.setToolTip("voice: speaking interrupts | hotkey: only the hotkey | ignore: reply always finishes")
-        listen.currentTextChanged.connect(self._set_listen)
-        mode.currentTextChanged.connect(self._set_mode)
-        form.addRow("Listening", listen)
-        form.addRow("Interrupt", mode)
+        for value, label in zip(LISTEN_MODES, ("Only when I press the talk button or hotkey", "Always listening")):
+            listen.addItem(label, value)
+        listen.setCurrentIndex(max(listen.findData(cfg.listen_mode), 0))
+        listen.setToolTip("Choose whether the microphone is always open or only listens when you start it.")
+        for value, label in zip(INTERRUPT_MODES, ("Just start talking", "Only with the hotkey", "Never, let it finish")):
+            mode.addItem(label, value)
+        mode.setCurrentIndex(max(mode.findData(cfg.interrupt_mode), 0))
+        mode.setToolTip("How you can stop the assistant while it is speaking.")
+        listen.currentIndexChanged.connect(lambda _i: self._set_listen(listen.currentData()))
+        mode.currentIndexChanged.connect(lambda _i: self._set_mode(mode.currentData()))
+        form.addRow("When should the microphone listen?", listen)
+        form.addRow("Keep listening after a reply", follow)
+        form.addRow("Stop the assistant while it talks", mode)
+        form.advanced()
+        form.addRow("How long to wait for me to start speaking", wait)
+        form.addRow("How long a pause ends my sentence", endsil)
+        form.addRow(acc)
         opacity = QSlider(Qt.Horizontal, minimum=40, maximum=100, value=int(cfg.opacity * 100))
         opacity.valueChanged.connect(self._set_opacity)
         opacity_row = QWidget()
@@ -563,7 +665,7 @@ class MainWindow(QMainWindow):
         orow.addWidget(QLabel("Whole window opacity"))
         orow.addWidget(opacity, 1)
         form.use("General")
-        upd = QCheckBox("Check for updates when the app starts")
+        upd = QCheckBox("Look for a new version when the app starts")
         upd.setToolTip("Contacts the project's public GitHub release page only. It always asks before installing anything.")
         upd.setChecked(cfg.check_updates)
         upd.toggled.connect(lambda v: self._set_field("check_updates", v))
@@ -572,9 +674,9 @@ class MainWindow(QMainWindow):
         form.addRow(upd)
         form.addRow(upd_btn)
         lang = QLineEdit(cfg.main_language)
-        lang.setToolTip("Screen translations are given in this language")
+        lang.setToolTip("Translations, and answers about your screen or photos, are given in this language")
         lang.editingFinished.connect(lambda: self._set_field("main_language", lang.text().strip() or "English"))
-        form.addRow("My language", lang)
+        form.addRow("Language for translations", lang)
         self.prov = QComboBox()
         for pid, label in PROVIDERS.items():
             self.prov.addItem(label, pid)
@@ -588,21 +690,23 @@ class MainWindow(QMainWindow):
         self.model_edit.editingFinished.connect(self._set_model_name)
         key_btn.clicked.connect(self._ask_key)
         form.use("AI")
-        form.addRow("AI model", self.prov)
+        form.addRow("Where the AI runs", self.prov)
         form.addRow("Model name", self.model_edit)
+        form.addRow(self.prov_status)
+        form.advanced()
         self.url_edit = QLineEdit()
         self.url_edit.setPlaceholderText("server address, e.g. http://localhost:11434/v1")
         self.url_edit.editingFinished.connect(self._set_url)
         form.addRow("Server address", self.url_edit)
         self._show_url()
         form.addRow(key_btn)
-        form.addRow(self.prov_status)
+        form.use("Memory")
         remember = self._remember_cb = QCheckBox("Save my chats (history)")
         remember.setToolTip("On: every chat is kept on this PC and listed in the history sidebar. Off: new conversations are not kept.")
         remember.setChecked(cfg.remember_conversation)
         remember.toggled.connect(self._set_remember)
         form.addRow(remember)
-        web = QCheckBox("Let the agent search/read the web")
+        web = QCheckBox("Let the assistant search and read the web")
         web.setChecked(cfg.allow_web)
         web.toggled.connect(lambda v: self._set_field("allow_web", v))
         self.video_box = VideoDetailBox(cfg, self._set_field)
@@ -616,7 +720,7 @@ class MainWindow(QMainWindow):
         plantnet.toggled.connect(lambda v: self._set_field("plantnet_enabled", v))
         plantnet_key = QPushButton("Set Pl@ntNet key\u2026")
         plantnet_key.clicked.connect(self._ask_plantnet_key)
-        shell = QCheckBox("Let the agent run PowerShell (asks each time)")
+        shell = QCheckBox("Let the assistant run PowerShell commands (asks every time)")
         shell.setChecked(cfg.allow_shell)
         shell.toggled.connect(lambda v: self._set_field("allow_shell", v))
         ody_mode = QComboBox()
@@ -648,42 +752,45 @@ class MainWindow(QMainWindow):
         ody_ask = QCheckBox("Ask before each hand-off to Odysseus")
         ody_ask.setChecked(not cfg.odysseus_auto_approve)
         ody_ask.toggled.connect(lambda v: self._set_field("odysseus_auto_approve", not v))
-        form.addRow(QLabel("Odysseus (restart to apply):", objectName="small"))
-        form.addRow(ody_mode)
+        form.use("Delegate", advanced=True)
+        form.addRow(QLabel("Odysseus is a separate assistant workspace you install yourself. Changes here apply after a restart.", objectName="small", wordWrap=True))
+        form.addRow("Odysseus mode", ody_mode)
         form.addRow("Odysseus address", ody_url)
-        form.addRow("Endpoint id", ody_ep)
-        form.addRow("Model", ody_model)
+        form.addRow("Model endpoint ID", ody_ep)
+        form.addRow("Model name", ody_model)
         form.addRow(ody_token)
         form.addRow(ody_launch)
         form.addRow(ody_test)
         form.addRow(ody_share)
         form.addRow(ody_setup)
         form.addRow(ody_ask)
-        form.addRow(QLabel("Agent abilities (restart to apply):", objectName="small"))
+        form.use("Safety")
+        form.addRow(QLabel("What the assistant may do. Changes to the first two apply after a restart.", objectName="small", wordWrap=True))
         form.addRow(web)
         form.addRow(shell)
         form.use("Video")
-        form.addRow(QLabel("How closely the assistant watches videos and looks at photos. The phone camera's own options (such as the 3-second timer) are in the phone app's settings.", objectName="small", wordWrap=True))
-        form.addRow(QLabel("Videos", objectName="small"))
+        form.addRow(QLabel("The phone camera's own options, such as the 3-second timer, are in the phone app.", objectName="small", wordWrap=True))
+        form.addRow(QLabel("<b>Videos</b>", objectName="small"))
         form.addRow(self.video_box)
-        form.addRow(QLabel("Photos", objectName="small"))
+        form.addRow(QLabel("<b>Photos</b>", objectName="small"))
         form.addRow(deep)
+        form.advanced()
         form.addRow(plantnet)
         form.addRow(plantnet_key)
-        form.use("AI")
-        wake, phrase = QCheckBox("Enabled (restart to apply)"), QLineEdit(cfg.wake_phrase)
+        form.use("Voice")
+        wake, phrase = QCheckBox("Start listening when I say the wake phrase (restart to apply)"), QLineEdit(cfg.wake_phrase)
         wake.setChecked(cfg.wake_word_enabled)
         wake.toggled.connect(lambda v: self._set_field("wake_word_enabled", v))
         phrase.editingFinished.connect(lambda: self._set_field("wake_phrase", phrase.text().strip() or "hey assistant"))
-        vapprove = QCheckBox("Read confirmations aloud; answer by saying yes or no")
+        vapprove = QCheckBox("Read questions aloud, and let me answer yes or no by voice")
         vapprove.setToolTip("The on-screen Yes/No still works; whichever answers first wins. Unclear or no answer counts as no.")
         vapprove.setChecked(cfg.voice_approval)
         vapprove.toggled.connect(lambda v: self._set_field("voice_approval", v))
-        own_voice, clear_voice = QPushButton("Use my own voice model\u2026"), QPushButton("Back to built-in voices")
+        own_voice, clear_voice = QPushButton("Use a voice model from a folder\u2026"), QPushButton("Go back to the built-in voices")
         own_voice.setToolTip("A folder with a sherpa-onnx VITS/Piper voice: model .onnx, tokens.txt and espeak-ng-data. Restart to apply.")
         own_voice.clicked.connect(self._pick_voice_folder)
         clear_voice.clicked.connect(lambda: self._set_field("custom_voice_dir", ""))
-        clone = QCheckBox("Speak in my cloned voice (Chatterbox, restart to apply)")
+        clone = QCheckBox("Speak in a cloned voice (needs a Chatterbox server, restart to apply)")
         clone.setToolTip("Uses a local Chatterbox server with your own voice clip. If it can't be reached, the built-in voices are used.")
         clone.setChecked(bool(cfg.chatterbox_url))
         clone.toggled.connect(lambda v: self._set_field("chatterbox_url", "http://127.0.0.1:8123" if v else ""))
@@ -695,18 +802,21 @@ class MainWindow(QMainWindow):
         clone.toggled.connect(lambda _v: self._clone_status.setText(self._clone_text()))
         clone_check = QPushButton("Check the cloned voice server")
         clone_check.clicked.connect(self._check_chatterbox)
-        persona = QCheckBox("Jarvis-style butler personality")
+        persona = QCheckBox("Butler personality (calm and dry-witted)")
         persona.setToolTip("Calm, dry-witted British butler manner. Pair it with the George or Lewis (UK) voice.")
         persona.setChecked(cfg.persona_jarvis)
         persona.toggled.connect(self._set_persona)
         self._persona_cb = persona
-        jarvis = QPushButton("Apply Jarvis-style preset")
+        jarvis = QPushButton("Apply the butler preset (British voice, \"Jarvis\" wake phrase)")
         jarvis.setToolTip("British male voice (George), butler personality, wake phrase \"Jarvis\". A stand-in, not the film voice.")
         jarvis.clicked.connect(self._apply_jarvis_preset)
         form.use("Voice")
-        form.addRow(jarvis)
         form.addRow(persona)
         form.addRow(vapprove)
+        form.addRow(wake)
+        form.addRow("Wake phrase", phrase)
+        form.advanced()
+        form.addRow(jarvis)
         form.addRow(own_voice)
         form.addRow(clear_voice)
         form.addRow(clone)
@@ -719,9 +829,7 @@ class MainWindow(QMainWindow):
         test_wake = QPushButton("Test wake word (10 seconds)")
         test_wake.setToolTip("Say your wake phrase a few times; it reports your mic level, how often it caught you and what it heard")
         test_wake.clicked.connect(self._test_wake)
-        form.addRow("Wake word", wake)
-        form.addRow("Wake phrase", phrase)
-        form.addRow("Wake sensitivity", sens)
+        form.addRow("Wake phrase sensitivity (right hears you more easily)", sens)
         form.addRow(test_wake)
         reserve = QDoubleSpinBox(minimum=0, maximum=64, singleStep=0.5, value=cfg.vram_reserve_gb, suffix=" GB")
         info = QLabel(wordWrap=True)
@@ -735,14 +843,14 @@ class MainWindow(QMainWindow):
 
         reserve.valueChanged.connect(lambda v: (self._set_field("vram_reserve_gb", v), show_profile()))
         show_profile()
-        form.use("AI")
-        form.addRow("VRAM reserve", reserve)
+        form.use("AI", advanced=True)
+        form.addRow("Graphics memory to keep free for games", reserve)
         form.addRow(info)
-        fwd = QCheckBox("Send my mic to the 2nd output (game voice)")
+        fwd = QCheckBox("Send my microphone to the second speaker (for game voice chat)")
         fwd.setToolTip("Replaces Windows 'Listen to this device'. Follows the VR mic when VR auto-switch is active.")
         fwd.setChecked(cfg.mic_forward)
         fwd.toggled.connect(self._set_forward)
-        form.use("VR")
+        form.use("VR", advanced=True)
         form.addRow(fwd)
         self.route_status = QLabel("", objectName="small")
         self.route_status.setWordWrap(True)
@@ -754,6 +862,7 @@ class MainWindow(QMainWindow):
         route_row.addWidget(recheck)
         form.addRow(self.route_status)
         form.addRow(route_row)
+        form.use("VR")
         vr_on = QCheckBox("Switch devices while SteamVR is running")
         vr_on.setChecked(cfg.vr_autoswitch)
         form.addRow(vr_on)
@@ -789,6 +898,7 @@ class MainWindow(QMainWindow):
         vrc.toggled.connect(lambda v: self._set_home("vrchat_enabled", v))
         form.addRow(vrc)
         form.addRow(QLabel("Needs OSC switched on in VRChat: Action Menu > Options > OSC > Enabled. Setup and what you can say: docs/VRCHAT.md in the repository.", objectName="small", wordWrap=True))
+        form.advanced()
         form.addRow(QLabel("Avatar memory: what each avatar's menu names mean and which switches work backwards, one file per avatar (matched by the avatar id VRChat reports). Open one to edit it by hand; it applies at once.", objectName="small", wordWrap=True))
         self.avatar_box = QComboBox()
         self.avatar_box.setToolTip("Avatars the assistant has notes for")
@@ -843,7 +953,7 @@ class MainWindow(QMainWindow):
         app_row = QHBoxLayout()
         for w in (add_app, rem_app, rescan):
             app_row.addWidget(w)
-        ctl = QCheckBox("Let the assistant click, type and press keys in app windows (experimental)")
+        ctl = QCheckBox("Let the assistant click and type in app windows (experimental)")
         ctl.setToolTip("Asks before it first touches each window; never terminals, password managers or security prompts. Works best with a strong vision model.")
         ctl.setChecked(cfg.computer_control)
         ctl.toggled.connect(lambda v: self._set_home("computer_control", v))
@@ -866,6 +976,12 @@ class MainWindow(QMainWindow):
         ext_how = QLabel("Install once: open chrome://extensions, turn on Developer mode, click Load unpacked and pick that folder. Its code is plain JavaScript in the repository.",
                          objectName="small", wordWrap=True)
         form.addRow(ask)
+        form.addRow(ytmb)
+        form.addRow(self.apps_count)
+        form.addRow(self.apps_list)
+        form.addRow(app_row)
+        form.advanced()
+        form.addRow(QLabel("The browser extension controls the YouTube Music tab you are already signed in to.", objectName="small", wordWrap=True))
         form.addRow(ytmx)
         form.addRow(self.ytm_ext_status)
         form.addRow(ext_how)
@@ -873,17 +989,13 @@ class MainWindow(QMainWindow):
         form.addRow(ext_check)
         form.addRow(self.library_label)
         form.addRow(lib_btn)
-        form.addRow(ytmb)
-        form.addRow(ctl)
-        form.addRow(self.apps_count)
-        form.addRow(self.apps_list)
-        form.addRow(app_row)
         test = QPushButton("Test speaker")
         test.clicked.connect(self._test_speaker)
         form.use("Voice")
         form.insertRow(0, test)
-        form.use("Apps")
-        form.addRow(QLabel("Folders the assistant may read and write:", objectName="small"))
+        form.use("Safety")
+        form.addRow(ctl)
+        form.addRow(QLabel("<b>Folders the assistant may read and write</b>", objectName="small"))
         self.folders_list = QListWidget()
         self.folders_list.setMaximumHeight(80)
         self._fill_folders()
@@ -912,11 +1024,12 @@ class MainWindow(QMainWindow):
         form.addRow(govee)
         gkey = QPushButton("Set Govee API key\u2026 (optional: uses Govee's cloud instead of LAN)")
         gkey.clicked.connect(lambda: self._ask_secret("govee", "Govee API key", "Paste your Govee developer API key (Govee Home app > Profile > Settings > Apply for API Key):"))
-        form.addRow(gkey)
         form.addRow(find)
         form.addRow(blink)
         form.addRow(self.home_status)
-        form.addRow(QLabel("Home Assistant (brings in Google Home, Alexa devices, Matter, Hue and more):", objectName="small", wordWrap=True))
+        form.advanced()
+        form.addRow(gkey)
+        form.addRow(QLabel("<b>Home Assistant</b> brings in Google Home, Alexa devices, Matter, Hue and more.", objectName="small", wordWrap=True))
         form.addRow("Address", ha_url)
         form.addRow(ha_key)
         form.addRow(ha_test)
@@ -924,7 +1037,7 @@ class MainWindow(QMainWindow):
         self.tasks_page = TasksPage()
         form.addRow(self.tasks_page)
         form.use("Memory")
-        form.addRow(QLabel("Tell the assistant about yourself: name, job, interests, how you like answers, your personality. It uses this to personalise replies and choices. Stays on this PC; sent to your AI model (the cloud one, if you chose one).", objectName="small", wordWrap=True))
+        form.addRow(QLabel("<b>About you.</b> Write your name, interests and how you like answers, and the assistant personalises its replies. It stays on this PC and is sent to your AI model (the cloud one, if you chose one).", objectName="small", wordWrap=True))
         self.profile_edit = QPlainTextEdit(self.profile.load())
         self.profile_edit.setPlaceholderText("Example: I'm Alex. I like short answers, dry humour, and I drive a Mazda CX-5.")
         self.profile_edit.setMinimumHeight(180)
@@ -958,7 +1071,7 @@ class MainWindow(QMainWindow):
         form.addRow("Max spend per day", usd)
         form.addRow(self.usage_label)
         form.addRow(refresh)
-        form.addRow(QLabel("Runs inside the folders you approved (Apps tab). Commands are set in config.json (delegate_cmd_claude / delegate_cmd_codex).", objectName="small", wordWrap=True))
+        form.addRow(QLabel("Runs inside the folders you approved (Privacy & safety). Commands are set in config.json (delegate_cmd_claude / delegate_cmd_codex).", objectName="small", wordWrap=True))
         form.use("Look")
         form.addRow(QLabel("Make the window your own.", objectName="small"))
         gmode = QComboBox()
@@ -987,8 +1100,8 @@ class MainWindow(QMainWindow):
         form.addRow("Glass see-through \u2194 solid", tint)
         form.addRow("Accent colour", swatches)
         form.addRow(opacity_row)
-        form.use("General")
-        form.addRow(QLabel("Ask me first before the assistant... (untick to let it just do it)", objectName="small", wordWrap=True))
+        form.use("Safety")
+        form.addRow(QLabel("<b>Ask me first before the assistant...</b> (untick to let it just do it)", objectName="small", wordWrap=True))
         for key, label, tip in (
             ("confirm_links", "opens a web link", "Untick only if you trust the web pages, files and messages the assistant reads: a hostile page could try to make it open a link."),
             ("confirm_screen", "takes a screenshot of a window or screen", "A screenshot is sent to your AI model. If that is a cloud model, the picture leaves your PC. Local models keep it on this PC."),
@@ -1001,7 +1114,7 @@ class MainWindow(QMainWindow):
             box.toggled.connect(lambda v, k=key: self._set_field(k, v))
             setattr(self, "ask_" + key.removeprefix("confirm_"), box)
             form.addRow(box)
-        form.addRow(QLabel("Opening apps has its own box in the Apps tab. Shell commands, writing files, handing jobs to Claude/Codex, controlling windows and MCP tools always ask.", objectName="small", wordWrap=True))
+        form.addRow(QLabel("Opening an app has its own box on the Music & apps page. Shell commands, writing files, handing jobs to Claude or Codex, controlling windows and extra tools always ask.", objectName="small", wordWrap=True))
         cfg_btn, setup_btn = QPushButton("Open settings file"), QPushButton("Run setup again")
         cfg_btn.clicked.connect(self._open_config)
         setup_btn.clicked.connect(self._rerun_setup)
@@ -1065,14 +1178,18 @@ class MainWindow(QMainWindow):
         cfg = self.cfg
         models = Path(cfg.models_dir)
         parts = {}
-        for name, factory in (
-            ("recognizer", lambda: SherpaRecognizer(models / "asr", end_silence_s=cfg.end_of_speech_s)),
-            ("accurate", lambda: AccurateRecognizer(models / "asr2", cfg.tts_threads) if cfg.accurate_asr and (models / "asr2").is_dir() else None),
-            ("synth", lambda: load_synth(models, cfg.tts_speed, cfg.tts_threads, cfg.tts_voice, cfg.custom_voice_dir, cfg.chatterbox_url, cfg.chatterbox_launch)),
-            ("wake", lambda: SherpaWakeWord(models / "kws", cfg.wake_phrase, threshold=cfg.wake_threshold) if cfg.wake_word_enabled else None),
-        ):
+        factories = {
+            "recognizer": lambda: SherpaRecognizer(models / "asr", end_silence_s=cfg.end_of_speech_s),
+            "accurate": lambda: AccurateRecognizer(models / "asr2", cfg.tts_threads) if cfg.accurate_asr and (models / "asr2").is_dir() else None,
+            "synth": lambda: load_synth(models, cfg.tts_speed, cfg.tts_threads, cfg.tts_voice, cfg.custom_voice_dir, cfg.chatterbox_url, cfg.chatterbox_launch,
+                                        on_clone_ready=lambda: self.bridge.note.emit("Your cloned voice is ready.")),
+            "wake": lambda: SherpaWakeWord(models / "kws", cfg.wake_phrase, threshold=cfg.wake_threshold) if cfg.wake_word_enabled else None,
+        }
+        with ThreadPoolExecutor(len(factories), thread_name_prefix="load") as pool:  # the models load side by side: a quicker start
+            futures = {name: pool.submit(f) for name, f in factories.items()}
+        for name, fut in futures.items():
             try:
-                parts[name] = factory()
+                parts[name] = fut.result()
             except (ModelsMissing, Exception) as e:  # missing model or load failure: degrade, don't crash
                 parts[name] = None
                 self.warnings.append(f"{name} unavailable: {e}")
@@ -1112,6 +1229,8 @@ class MainWindow(QMainWindow):
         self.scheduler = scheduler.Scheduler(self.task_store, self._run_scheduled, enabled=lambda: self.cfg.scheduled_tasks_enabled,
                                              on_change=lambda: self.bridge.tasks_changed.emit(), note=lambda m: self.bridge.note.emit(m))
         registry.add(scheduler.build_schedule_tools(self.task_store, self.scheduler, self._confirm))
+        own = SettingsService(cfg, lambda: False, list_devices, save_config)  # the assistant may never change safety settings
+        registry.add(build_settings_tools(own, self._confirm, self.settings_index.search_text, self._show_setting_for_agent))
         if cfg.odysseus_mode == "only":
             self._full = registry.copy()  # routines and Odysseus keep the full set while the model sees only ask_odysseus
         odysseus.restrict_tools(registry, cfg.odysseus_mode, keep=scheduler.TOOL_NAMES)  # 'only': ask_odysseus is the only tool
@@ -1163,10 +1282,17 @@ class MainWindow(QMainWindow):
             self._start_hotkey()
             self.session.start()
 
+    def _show_setting_for_agent(self, query: str) -> str:
+        found = self.settings_index.search_text(query, 1)
+        if not found:
+            return "Nothing in the PC window matched, so nothing was opened."
+        self.bridge.show_setting.emit(query)
+        return f"Opened the PC window's Settings at {found[0]} (highlighted for a few seconds)."
+
     def _system_prompt(self) -> str:
         only = self.cfg.odysseus_mode == "only"
         return (self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + self.profile.prompt()
-                + ("" if only else capabilities_prompt(self.cfg, self._registry.names()) + self.skills.prompt() + self.interp.prompt() + self.inbox.prompt())
+                + ("" if only else capabilities_prompt(self.cfg, self._registry.names()) + SETTINGS_PROMPT + self.skills.prompt() + self.interp.prompt() + self.inbox.prompt())
                 + odysseus.mode_prompt(self.cfg.odysseus_mode))
 
     def _refresh_prompt(self) -> None:
@@ -2192,6 +2318,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e) -> None:
         self.cfg.window_size = [self.width(), self.height()]
+        self.hide()  # the window goes at once; the clean-up below happens out of sight
         save_config(self.cfg)
         self.timer.stop()
         if getattr(self, "_share", None):
@@ -2199,7 +2326,9 @@ class MainWindow(QMainWindow):
         if getattr(self, "scheduler", None):
             self.scheduler.stop()
         if getattr(self, "remote", None):
-            self.remote.stop()
+            stopper = threading.Thread(target=self.remote.stop, daemon=True)
+            stopper.start()
+            stopper.join(2.0)  # tell the phone we are going, but never hang on a phone that does not answer
         self.timers.cancel_all()
         self.ducker.restore()  # never leave the music quiet when the assistant closes
         if self.mcp:

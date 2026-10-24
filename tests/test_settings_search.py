@@ -25,14 +25,14 @@ def win(monkeypatch, tmp_path):
 
 def index(w) -> SettingsIndex:
     tabs = w._form.forms and w.settings.findChild(A.QTabWidget)
-    names = [w.settings.findChild(A.QListWidget, "nav").item(i).text() for i in range(w.settings.findChild(A.QListWidget, "nav").count())]
-    return SettingsIndex(tabs, names)
+    names = list(A.PAGES)
+    return SettingsIndex(tabs, names, {n: A.PAGES[n][0] for n in names})
 
 
 def test_the_video_and_photo_settings_have_a_tab_of_their_own(win):
     nav = win.settings.findChild(A.QListWidget, "nav")
     names = [nav.item(i).text() for i in range(nav.count())]
-    assert "Video" in names
+    assert "Camera & photos" in names
     found = index(win).search("video")
     assert found and found[0].tab_name == "Video"
     titles = " | ".join(e.title for e in found)
@@ -71,9 +71,9 @@ def test_typing_in_the_search_box_shows_results_and_clicking_one_jumps_there(win
     win.settings_search.setText("video sound")
     assert stack.currentIndex() == 1 and results.count() >= 1
     first = results.item(0)
-    assert "Video" in first.text() and "›" in first.text()
+    assert "Camera & photos" in first.text() and "›" in first.text()
     results.itemClicked.emit(first)
-    assert stack.currentIndex() == 0 and tabs.currentIndex() == nav.currentRow() == 5  # the Video tab
+    assert stack.currentIndex() == 0 and tabs.currentIndex() == nav.currentRow() == 3  # the Video tab
     win.settings_search.setText("")
     assert stack.currentIndex() == 0
     win.settings_search.setText("nothingmatchesthis")
@@ -84,7 +84,7 @@ def test_typing_in_the_search_box_shows_results_and_clicking_one_jumps_there(win
 
 def test_the_video_tab_holds_the_level_the_toggles_and_the_photo_settings(win):
     tabs = win.settings.findChild(A.QTabWidget)
-    page = tabs.widget(5).widget()
+    page = tabs.widget(3).widget()
     assert win.video_box.parentWidget() is not None and page.isAncestorOf(win.video_box)
     texts = " ".join(c.text() for c in page.findChildren(A.QCheckBox))
     assert "Listen to the video's sound" in texts and "Research photos online" in texts and "Pl@ntNet" in texts and "Skip frames" in texts

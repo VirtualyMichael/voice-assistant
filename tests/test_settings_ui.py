@@ -30,10 +30,10 @@ def tab_text(w):
 
 def test_settings_are_grouped_into_tabs(win):
     tabs, content = tab_text(win)
-    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Voice", "Phone", "Audio", "VR", "AI", "Video", "Skills", "Apps", "Home", "Tasks", "Memory", "Delegate", "Look", "General"]
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Voice", "Audio", "AI", "Video", "Memory", "Skills", "Delegate", "Phone", "Apps", "Home", "VR", "Tasks", "Safety", "Look", "General"]
     assert "Ask before opening an app" in content["Apps"]
     assert "Switch devices while SteamVR is running" in content["VR"]
-    assert "Save my chats (history)" in content["AI"]
+    assert "Save my chats (history)" in content["Memory"]
 
 
 class FakeHolder:
@@ -207,9 +207,9 @@ def test_ask_first_switches_are_in_settings_and_change_the_config(win):
 
 def test_voice_tab_has_cloned_voice_controls(win):
     tabs, content = tab_text(win)
-    assert "Speak in my cloned voice (Chatterbox, restart to apply)" in content["Voice"]
+    assert "Speak in a cloned voice (needs a Chatterbox server, restart to apply)" in content["Voice"]
     assert win._clone_text().startswith("Cloned voice: off")
-    clone = next(c for c in tabs.widget(0).widget().findChildren(QCheckBox) if c.text().startswith("Speak in my cloned voice"))
+    clone = next(c for c in tabs.widget(0).widget().findChildren(QCheckBox) if c.text().startswith("Speak in a cloned voice"))
     clone.setChecked(True)
     assert win.cfg.chatterbox_url == "http://127.0.0.1:8123"
     assert "on, server http://127.0.0.1:8123" in win._clone_status.text()

@@ -47,19 +47,38 @@ class Setting:
 
 # (id, title, one-line description) in the order the phone lists them
 SECTIONS: tuple[tuple[str, str, str], ...] = (
-    ("phone", "Phone link", "How your phone and this PC work together."),
-    ("voice", "Voice and listening", "When the assistant listens, and how it knows you have finished."),
-    ("speech", "Speech", "How the assistant sounds."),
-    ("ai", "AI model", "Which model answers, and in which language."),
-    ("camera", "Camera and video", "How the assistant watches videos and looks at photos."),
-    ("apps", "Apps and music", "Opening apps, and music while you talk."),
+    ("voice", "Listening", "When the assistant listens, and how it knows you have finished talking."),
+    ("speech", "Voice", "How the assistant sounds when it answers."),
+    ("phone", "This phone", "Where replies play and how the phone connects to the PC."),
+    ("camera", "Camera and photos", "How closely the assistant looks at videos and photos."),
+    ("ai", "AI model", "Which AI answers you, and in which language."),
+    ("memory", "Memory and updates", "What the assistant remembers on the PC."),
+    ("apps", "Music and apps", "Opening apps, and how music behaves while you talk."),
     ("home", "Smart home", "Lights and other devices."),
-    ("memory", "Memory and privacy", "What the assistant remembers."),
-    ("safety", "Safety and permissions", "What the assistant may do, and when it must ask first. Locked unless allowed on the PC."),
-    ("delegate", "Coding helpers and Odysseus", "Hand bigger jobs to Claude Code, Codex or Odysseus."),
+    ("safety", "Privacy and safety", "What the assistant may do, and when it must ask you first. Locked unless allowed on the PC."),
+    ("delegate", "Coding helpers", "Hand bigger jobs to Claude Code, Codex or Odysseus."),
     ("vr", "VR and VRChat", "Headset audio and VRChat controls."),
-    ("audio", "Audio devices on the PC", "Which microphone and speakers the PC itself uses."),
+    ("audio", "PC sound devices", "Which microphone and speakers the PC itself uses."),
 )
+
+# A name the phone can map to an icon, one per section.
+SECTION_ICONS = {
+    "phone": "phone", "voice": "mic", "speech": "speaker", "ai": "brain", "camera": "camera", "apps": "music", "home": "bulb", "memory": "memory",
+    "safety": "shield", "delegate": "code", "vr": "headset", "audio": "sound",
+}
+
+# Settings most people never need. The phone shows them under a fold-out "Advanced" at the end of each section.
+ADVANCED = frozenset({
+    "remote_port", "barge_in_min_chars", "listen_delay_s", "post_speech_guard_s", "listen_timeout_s", "end_of_speech_s", "wake_threshold",
+    "tts_threads", "tts_voice", "custom_voice_dir", "chatterbox_url", "chatterbox_launch", "tts_pronunciations",
+    "llm_extra_body", "llm_base_url", "ollama_base_url", "ollama_model", "custom_base_url", "custom_model", "custom_key_env", "openai_base_url",
+    "openai_model", "openai_key_env", "anthropic_model", "anthropic_key_env", "llm_api_key_env", "max_tool_rounds", "history_messages", "vram_reserve_gb",
+    "video_custom_edge", "video_custom_mb", "video_custom_fps", "video_custom_frames", "video_identify_model", "video_skip_still",
+    "ytm_extension", "duck_level", "system_prompt", "approved_folders", "skill_folders", "disabled_skills", "mcp_servers",
+    "delegate_cmd_claude", "delegate_cmd_codex", "delegate_cooldown_s", "delegate_timeout_s", "odysseus_url", "odysseus_endpoint_id", "odysseus_model",
+    "odysseus_launch", "odysseus_share_tools", "odysseus_auto_approve", "vr_poll_s", "vrchat_host", "vrchat_port", "vr_processes",
+    "input_device_2", "output_device_2", "ha_url", "light_names", "cloud_ack", "accurate_asr", "voice_approval",
+})
 
 
 def _s(key, label, help, section, kind, **kw) -> Setting:
@@ -332,7 +351,7 @@ class SettingsService:
         value = getattr(self.cfg, s.key)
         item: dict = {
             "key": s.key, "label": s.label, "help": s.help, "kind": s.kind, "apply": s.apply, "sensitive": s.sensitive,
-            "locked": s.sensitive and not allowed, "essential": s.essential,
+            "locked": s.sensitive and not allowed, "essential": s.essential, "advanced": s.key in ADVANCED,
         }
         if s.kind == "readonly":
             item.update(_summary(value))
@@ -356,8 +375,9 @@ class SettingsService:
         sections = []
         for sid, title, blurb in SECTIONS:
             items = [self._item(s, defaults, allowed) for s in SETTINGS if s.section == sid]
+            items.sort(key=lambda i: (i["advanced"], not i["essential"]))  # everyday settings first, advanced last, otherwise the written order
             if items:
-                sections.append({"id": sid, "title": title, "blurb": blurb, "items": items})
+                sections.append({"id": sid, "title": title, "blurb": blurb, "icon": SECTION_ICONS.get(sid, "settings"), "items": items})
         return {"allow_safety": allowed, "restart_pending": self.restart_pending, "sections": sections}
 
     def change(self, key: str, value: Any) -> dict:
@@ -380,6 +400,64 @@ class SettingsService:
                 self.restart_pending = True
         return {"ok": True, "key": key, "value": value, "restart": restart,
                 "message": "Saved. It takes effect when the assistant restarts." if restart else "Saved."}
+
+
+# words people use for the same thing, so "slower" finds the speaking speed and "mic" the microphone
+_WORDS = {
+    "speed": ("fast", "faster", "slow", "slower", "quick"), "speaking": ("talk", "talking", "speak", "speech", "voice"),
+    "microphone": ("mic", "listen", "listening", "hear", "input"), "speakers": ("speaker", "sound", "output", "headphones", "audio"),
+    "wake": ("hey", "hotword", "wake word"), "video": ("clip", "film", "movie", "camera", "frames"), "photos": ("photo", "picture", "camera", "image"),
+    "internet": ("web", "online", "search"), "remember": ("history", "chats", "memory", "save"), "music": ("song", "youtube", "spotify", "volume"),
+    "lights": ("light", "lamp", "govee", "home assistant", "smart home"), "language": ("translate", "translation"),
+    "updates": ("update", "version", "upgrade"), "model": ("ai", "llm", "brain", "lm studio", "ollama", "provider"),
+    "ask": ("confirm", "permission", "allow", "safety", "privacy"), "personality": ("butler", "jarvis", "persona"),
+    "follow": ("follow-up", "keep listening", "conversation"), "interrupt": ("barge", "talk over", "stop it", "cut off"),
+}
+
+
+def _variants(word: str) -> set[str]:
+    out = {word}
+    for head, alts in _WORDS.items():
+        if word == head or word in alts:
+            out |= {head, *alts}
+    return out
+
+
+def search_catalog(query: str, limit: int = 6) -> list[Setting]:
+    """The settings that best match a question in everyday words; every word must match the setting's name, help, key or section."""
+    import re
+
+    words = [w for w in re.findall(r"[a-z0-9'-]+", query.lower()) if len(w) >= 2 and w not in STOP_WORDS]
+    if not words:
+        return []
+    titles = {sid: title for sid, title, _blurb in SECTIONS}
+    patterns = [re.compile("|".join(r"\b" + re.escape(v) for v in sorted(_variants(w), key=len, reverse=True))) for w in words]  # word starts: "ask" is not in "task"
+    scored = []
+    for s in SETTINGS:
+        label, hay = s.label.lower(), f"{s.help} {s.key.replace('_', ' ')} {titles.get(s.section, '')}".lower()
+        score, hits = 0, 0
+        for p in patterns:
+            if p.search(label):
+                score, hits = score + 3, hits + 1
+            elif p.search(hay):
+                score, hits = score + 1, hits + 1
+        if hits and hits >= max(1, len(words) - 1):  # one word may miss: people add words like "quietly" or "anymore"
+            scored.append((score + (1 if s.essential else 0), s))
+    if not scored:
+        return []
+    scored.sort(key=lambda x: -x[0])
+    best = scored[0][0]
+    return [s for score, s in scored[:limit] if score * 2 >= best]  # drop the weak matches that only share a common word
+
+
+STOP_WORDS = frozenset("the a an my me it its to of in on for and or how do does what where is are can i you your setting settings change turn make be "
+                  "this that with when which assistant please".split())
+
+
+def phone_path(s: Setting) -> str:
+    """Where the setting is in the phone app."""
+    section = next((title for sid, title, _b in SECTIONS if sid == s.section), s.section)
+    return f"Settings › {section} › {'Advanced › ' if s.key in ADVANCED else ''}{s.label}"
 
 
 def coverage_problems() -> list[str]:

@@ -36,7 +36,11 @@ TAB_KEYWORDS = {
     "Memory": "profile remember privacy",
     "Delegate": "claude code codex coding helper odysseus",
     "Look": "theme glass colour accent opacity appearance",
-    "General": "update language ask first confirm privacy",
+    "General": "update language setup first run",
+    "Safety": "ask first confirm privacy permission web internet shell powershell folders screenshot clipboard link",
+    "Home": "lights govee home assistant smart",
+    "VR": "vrchat steamvr headset",
+    "Apps": "music youtube open programs",
 }
 SEARCHABLE = (QAbstractButton, QComboBox, QLineEdit, QAbstractSpinBox, QAbstractSlider, QPlainTextEdit, QLabel)
 
@@ -48,6 +52,7 @@ class Entry:
     title: str
     detail: str  # tooltip and nearby text, searched but not shown
     widget: QWidget
+    tab_label: str = ""  # the page's name as the list shows it (tab_name is its internal key)
 
 
 def _clean(text: str) -> str:
@@ -69,8 +74,17 @@ def _own_text(w: QWidget) -> str:
 class SettingsIndex:
     """Everything that can be searched on the settings pages, found by looking at the widgets themselves, so new settings are searchable automatically."""
 
-    def __init__(self, tabs: QTabWidget, names: list[str]):
-        self.tabs, self.names = tabs, names
+    def __init__(self, tabs: QTabWidget, names: list[str], labels: dict[str, str] | None = None):
+        self.tabs, self.names, self.labels = tabs, names, labels or {}
+        self._frozen: list[Entry] | None = None
+
+    def freeze(self) -> None:
+        """Remember the entries as they are now (call on the GUI thread), so search_text can run on the assistant's thread without touching widgets."""
+        self._frozen = self.entries()
+
+    def search_text(self, query: str, limit: int = 4) -> list[str]:
+        """"Page › Setting" for the best matches, from the frozen entries; safe off the GUI thread."""
+        return [f"{e.tab_label or e.tab_name} › {e.title}" for e in self.search(query, limit, self._frozen or [])]
 
     def entries(self) -> list[Entry]:
         out: list[Entry] = []
@@ -93,7 +107,8 @@ class SettingsIndex:
                 if not shown:
                     continue
                 items = " ".join(w.itemText(k) for k in range(w.count())) if isinstance(w, QComboBox) else ""
-                out.append(Entry(i, name, shown[:90], " ".join(x for x in (label, title, tip, items, TAB_KEYWORDS.get(name, "")) if x), w))
+                out.append(Entry(i, name, shown[:90], " ".join(x for x in (label, title, tip, items, TAB_KEYWORDS.get(name, ""), self.labels.get(name, "")) if x), w,
+                                 self.labels.get(name, name)))
         return out
 
     @staticmethod
@@ -109,12 +124,12 @@ class SettingsIndex:
             p = p.parentWidget()
         return ""
 
-    def search(self, query: str, limit: int = 14) -> list[Entry]:
+    def search(self, query: str, limit: int = 14, entries: list[Entry] | None = None) -> list[Entry]:
         words = [t for t in re.findall(r"[a-z0-9']+", query.lower()) if len(t) >= 2]
         if not words:
             return []
         scored: list[tuple[int, Entry]] = []
-        for e in self.entries():
+        for e in self.entries() if entries is None else entries:
             hay = f"{e.title} {e.detail} {e.tab_name}".lower()
             title = e.title.lower()
             score, ok = 0, True
@@ -147,7 +162,7 @@ class SettingsIndex:
 def fill_results(box: QListWidget, found: list[Entry]) -> None:
     box.clear()
     for e in found:
-        item = QListWidgetItem(f"{e.tab_name}  ›  {e.title}")
+        item = QListWidgetItem(f"{e.tab_label or e.tab_name}  ›  {e.title}")
         item.setData(Qt.UserRole, e)
         box.addItem(item)
     if not found:
@@ -160,6 +175,11 @@ def reveal(entry: Entry, tabs: QTabWidget, flash_ms: int = 1800) -> None:
     """Show the setting's page, scroll to it, give it the focus and outline it for a moment."""
     tabs.setCurrentIndex(entry.tab)
     w = entry.widget
+    p = w.parentWidget()
+    while p is not None:  # a match inside "Advanced settings" opens it
+        if hasattr(p, "expand"):
+            p.expand()
+        p = p.parentWidget()
     scroll = tabs.widget(entry.tab)
     if isinstance(scroll, QScrollArea):
         QTimer.singleShot(0, lambda: scroll.ensureWidgetVisible(w, 0, 120))

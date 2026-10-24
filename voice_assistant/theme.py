@@ -55,6 +55,11 @@ QLabel#bubbleNote {{ background: transparent; color: {MUTED}; font-size: 12px; }
 QLabel#bubbleErr {{ background: {err}; color: #ffb4b4; border-radius: 10px; padding: 7px 11px; }}
 QLabel#partial {{ color: {MUTED}; font-style: italic; background: transparent; }}
 QLabel#small {{ color: {MUTED}; font-size: 11px; background: transparent; }}
+QLabel#pageTitle {{ color: {TEXT}; font-size: 20px; font-weight: 600; background: transparent; }}
+QLabel#pageBlurb {{ color: {MUTED}; font-size: 13px; background: transparent; }}
+QPushButton#foldout {{ background: transparent; border: none; color: {MUTED}; font-weight: 600; padding: 6px 2px; text-align: left; }}
+QPushButton#foldout:hover {{ color: {TEXT}; }}
+QPushButton#foldout:checked {{ background: transparent; color: {TEXT}; border: none; }}
 QLabel#status {{ font-size: 14px; font-weight: 600; background: transparent; }}
 QLineEdit, QPlainTextEdit {{ background: {card}; border: 1px solid {line}; border-radius: 18px; padding: 8px 14px; selection-background-color: {accent}; }}
 QPlainTextEdit {{ border-radius: 10px; }}
@@ -77,7 +82,7 @@ QSlider::handle:horizontal {{ background: {accent}; width: 14px; margin: -6px 0;
 QTabWidget::pane {{ border: none; background: transparent; }}
 QListWidget {{ background: {field}; border: 1px solid {line}; border-radius: 8px; }}
 QListWidget#nav {{ background: transparent; border: none; outline: none; }}
-QListWidget#nav::item {{ padding: 9px 12px; margin: 1px 0; border-radius: 9px; color: {MUTED}; }}
+QListWidget#nav::item {{ padding: 7px 14px; margin: 1px 0; border-radius: 9px; color: {MUTED}; }}
 QListWidget#nav::item:hover {{ color: {TEXT}; background: rgba(255,255,255,0.06); }}
 QListWidget#nav::item:selected {{ color: {TEXT}; background: {rgba(accent, 0.25)}; }}
 QListWidget#history {{ background: transparent; border: none; outline: none; }}

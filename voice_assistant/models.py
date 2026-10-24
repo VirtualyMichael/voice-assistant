@@ -9,6 +9,7 @@ import re
 import shutil
 import tarfile
 import tempfile
+import threading
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -385,29 +386,142 @@ class MultiSynth:
         return self._cur(text)
 
 
-def load_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_dir: str = "", chatterbox_url: str = "", chatterbox_launch: str = ""):
-    """A Chatterbox server (your cloned voice) if chatterbox_url is set and reachable, else the user's own voice folder, else Kokoro (models_dir/kokoro), else Piper (models_dir/tts)."""
-    if chatterbox_url:
-        ensure_chatterbox_server(chatterbox_url, chatterbox_launch)
+class PendingClone:
+    """The built-in voices until the cloned-voice server answers, then the clone. The server can take a minute or two to start,
+    and the window should not wait for it."""
+
+    def __init__(self, fallback, url: str, launch: str, speed: float, on_ready=None, ensure=None, make=None):
+        self._cur, self.ready = fallback, False
+        self._url, self._launch, self._speed, self._on_ready = url, launch, speed, on_ready
+        self._ensure, self._make = ensure or ensure_chatterbox_server, make or ChatterboxSynth
+        threading.Thread(target=self._connect, daemon=True, name="chatterbox-start").start()
+
+    def _connect(self) -> None:
+        self._ensure(self._url, self._launch)
         try:
-            return ChatterboxSynth(chatterbox_url, speed)
+            clone = self._make(self._url, self._speed)
         except ModelsMissing as e:
-            log.warning("%s - falling back to built-in voices", e)
+            log.warning("%s - keeping the built-in voices", e)
+            return
+        self._cur, self.ready = clone, True
+        if self._on_ready:
+            self._on_ready()
+
+    @property
+    def engine(self) -> str:
+        return self._cur.engine
+
+    @property
+    def voices(self):
+        return self._cur.voices
+
+    @property
+    def speed(self) -> float:
+        return getattr(self._cur, "speed", self._speed)
+
+    @speed.setter
+    def speed(self, value: float) -> None:
+        self._speed = value
+        self._cur.speed = value
+
+    def set_voice(self, voice_id: str) -> Voice:
+        return self._cur.set_voice(voice_id)
+
+    def __call__(self, text: str) -> tuple[np.ndarray, int]:
+        return self._cur(text)
+
+
+def load_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_dir: str = "", chatterbox_url: str = "", chatterbox_launch: str = "", on_clone_ready=None):
+    """A Chatterbox server (your cloned voice) if chatterbox_url is set, else the user's own voice folder, else Kokoro (models_dir/kokoro), else Piper (models_dir/tts).
+    A Chatterbox server that is not answering yet is started in the background; the built-in voices speak until it is ready (on_clone_ready is called then)."""
+    if chatterbox_url:
+        if _chatterbox_up(chatterbox_url, timeout=0.5):
+            try:
+                return ChatterboxSynth(chatterbox_url, speed)
+            except ModelsMissing as e:
+                log.warning("%s - falling back to built-in voices", e)
+        else:
+            try:
+                builtin = load_synth(models_dir, speed, threads, voice, custom_dir)
+            except Exception:  # no built-in voice to speak meanwhile: wait for the clone as before
+                ensure_chatterbox_server(chatterbox_url, chatterbox_launch)
+                return ChatterboxSynth(chatterbox_url, speed)
+            return PendingClone(builtin, chatterbox_url, chatterbox_launch, speed, on_clone_ready)
     if custom_dir and Path(custom_dir).is_dir():
         return SherpaSynth(Path(custom_dir), speed, threads, voice, custom=True)
-    engines = []
+    # (engine, its voices, how to load it); the voice lists are known without loading the models
+    specs = []
     slot = next((s for s in ("kokoro2", "kokoro") if (models_dir / s).is_dir()), None)  # newest Kokoro first
     if slot:
-        engines.append(SherpaSynth(models_dir / slot, speed, threads, voice))
+        voices = KOKORO_V10 if (models_dir / slot / "lexicon-us-en.txt").exists() else KOKORO_EN_V019
+        specs.append(("kokoro", voices, lambda: SherpaSynth(models_dir / slot, speed, threads, voice)))
     if (models_dir / "supertonic").is_dir():
-        engines.append(SupertonicSynth(models_dir / "supertonic", speed, threads, voice))
+        specs.append(("supertonic", SUPERTONIC_VOICES, lambda: SupertonicSynth(models_dir / "supertonic", speed, threads, voice)))
     if (models_dir / "piper_kusal").is_dir():
-        engines.append(SherpaSynth(models_dir / "piper_kusal", speed, threads, voice, voices=[Voice("kusal", "Kusal (US)", "male", 0)]))
-    if not engines:
+        kusal = [Voice("kusal", "Kusal (US)", "male", 0)]
+        specs.append(("piper", kusal, lambda: SherpaSynth(models_dir / "piper_kusal", speed, threads, voice, voices=kusal)))
+    if not specs:
         return SherpaSynth(models_dir / "tts", speed, threads, voice)
-    synth = engines[0] if len(engines) == 1 else MultiSynth(engines)
+    if len(specs) == 1:
+        synth = specs[0][2]()
+        synth.set_voice(voice)
+        return synth
+    # only the engine with the chosen voice loads now; the others load in the background once start-up has settled
+    first = next((i for i, (_e, vs, _f) in enumerate(specs) if any(v.id == voice for v in vs)), 0)
+    engines = [specs[i][2]() if i == first else LazySynth(*specs[i], speed) for i in range(len(specs))]
+    engines.insert(0, engines.pop(first))
+    lazy = [e for e in engines if isinstance(e, LazySynth)]
+    timer = threading.Timer(LAZY_VOICE_DELAY_S, lambda: [e.load_quietly() for e in lazy])
+    timer.daemon = True
+    timer.start()
+    synth = MultiSynth(engines)
     synth.set_voice(voice)
     return synth
+
+
+LAZY_VOICE_DELAY_S = 12.0
+
+
+class LazySynth:
+    """A voice engine whose model is loaded the first time it is needed (or by load() in the background)."""
+
+    def __init__(self, engine: str, voices: list, factory, speed: float = 1.0):
+        self.engine, self.voices, self._factory, self._speed = engine, voices, factory, speed
+        self._real = None
+        self._lock = threading.Lock()
+
+    def load(self):
+        with self._lock:
+            if self._real is None:
+                try:
+                    self._real = self._factory()
+                    self._real.speed = self._speed
+                except Exception:
+                    log.warning("could not load the %s voices", self.engine, exc_info=True)
+                    raise
+            return self._real
+
+    def load_quietly(self) -> None:
+        try:
+            self.load()
+        except Exception:
+            pass  # already logged; picking one of its voices will try again and report it
+
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    @speed.setter
+    def speed(self, value: float) -> None:
+        self._speed = value
+        if self._real is not None:
+            self._real.speed = value
+
+    def set_voice(self, voice_id: str) -> Voice:
+        return self.load().set_voice(voice_id)
+
+    def __call__(self, text: str) -> tuple[np.ndarray, int]:
+        return self.load()(text)
 
 
 def fetch_model(spec: ModelSpec, models_dir: Path, progress=None) -> Path:

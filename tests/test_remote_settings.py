@@ -208,7 +208,7 @@ def test_the_phone_can_read_and_change_settings(linked):
 
     ws.send(j.dumps({"type": "get_settings"}))
     snap = next(m for m in collect(ws, has("settings")) if m["type"] == "settings")
-    assert snap["allow_safety"] is False and snap["sections"][0]["id"] == "phone"
+    assert snap["allow_safety"] is False and snap["sections"][0]["id"] == "voice"
     ws.send(j.dumps({"type": "set_setting", "key": "follow_up", "value": False}))
     result = next(m for m in collect(ws, has("setting_result")) if m["type"] == "setting_result")
     assert result["ok"] and result["key"] == "follow_up" and s.session.cfg.follow_up is False and saved

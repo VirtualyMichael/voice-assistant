@@ -46,6 +46,7 @@ log = logging.getLogger(__name__)
 
 PROTOCOL = 1
 HELLO_TIMEOUT_S = 5.0
+CLOSE_TIMEOUT_S = 1.0  # how long a closing connection waits for the phone to confirm
 MAX_MESSAGE_BYTES = 2 * 1024 * 1024  # a photo arrives as one base64 message; the phone shrinks it to well under this
 MAX_PHOTO_BYTES = 1_400_000
 CAMERA_WAIT_S = 90.0
@@ -473,7 +474,8 @@ class RemoteServer:
             self.error = "Tailscale is not running on this PC, so the phone link is off. Install Tailscale and sign in, then restart."
             return False
         try:
-            self._server = self._serve(self._handler, host, self.cfg.remote_port, max_size=MAX_MESSAGE_BYTES)
+            # a phone that is asleep or out of reach never answers the closing handshake; don't wait the default 10 s for it
+            self._server = self._serve(self._handler, host, self.cfg.remote_port, max_size=MAX_MESSAGE_BYTES, close_timeout=CLOSE_TIMEOUT_S)
         except OSError as e:
             self.error = f"Could not open port {self.cfg.remote_port} on {host}: {e}"
             return False
