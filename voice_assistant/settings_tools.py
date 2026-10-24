@@ -115,6 +115,7 @@ def build_settings_tools(service: SettingsService, confirm: Callable[[str], bool
 
 SETTINGS_PROMPT = (
     " When the user asks about one of your own settings (what it does, where it is, how to change how you behave or sound), call find_setting first "
-    "and answer from it in plain words, naming where it is. If they want it changed and it is not a safety setting, call change_setting; "
-    "never try to change a safety setting, just say where they can change it."
+    "and answer from it in plain words, naming where it is. When they ask you to change one ('turn on ...', 'make it ...') and it is not a safety setting, "
+    "call find_setting for the key and then change_setting straight away, without asking in words first: the user is asked to confirm by itself. "
+    "Never try to change a safety setting, just say where they can change it."
 )

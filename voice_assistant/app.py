@@ -61,6 +61,8 @@ from .speaker import Speaker
 from .remote import PairedDevices, RemoteServer
 from .phone_page import PhonePanel
 from .phone_camera import build_phone_camera_tools
+from .phone_actions import PHONE_ACTIONS_PROMPT, build_phone_action_tools
+from .phone_share import ShareReceiver
 from .setup_wizard import run_wizard
 from . import glass
 from .theme import ACCENTS, ICON_FONT, STATE_COLORS, STYLE, build_style, window_tint
@@ -101,6 +103,7 @@ class Bridge(QObject):
     update_ready = Signal(str)  # path of a downloaded, verified installer
     phone_event = Signal(object)  # the phone link: a phone paired, connected or disconnected
     show_setting = Signal(str)  # the assistant wants the user to see a setting: open Settings there
+    attachments_changed = Signal()  # something was attached or removed (maybe on another thread)
 
 
 def icon_button(glyph: str, tip: str, checkable: bool = False) -> QPushButton:
@@ -407,7 +410,9 @@ class MainWindow(QMainWindow):
         head.addWidget(self.pin)
         head.addWidget(gear)
 
-        self.inbox = Inbox(config_dir() / "attachments", on_change=self._attachments_changed)  # files, folders and pictures handed to the assistant
+        # files, folders and pictures handed to the assistant; changes can come from the phone link's thread, so the window updates through a signal
+        self.inbox = Inbox(config_dir() / "attachments", on_change=self.bridge.attachments_changed.emit)
+        self.bridge.attachments_changed.connect(self._attachments_changed)
         self.setAcceptDrops(True)
         self.chat = Chat()
         self.partial = QLabel("", objectName="partial")
@@ -1146,12 +1151,20 @@ class MainWindow(QMainWindow):
         if not remote.start():
             return False
         self.remote = remote
+        remote.shares = ShareReceiver(config_dir() / "attachments" / "phone", self._attach_shared)
         camera = build_phone_camera_tools(self.cfg, lambda: self.remote, self._confirm, lambda: self.session.agent.llm, deep=self.deep.run, video=self.video)
+        camera += build_phone_action_tools(lambda: self.remote)
         visible = [] if self.cfg.odysseus_mode == "only" else [self._registry]  # 'only' mode shows the model just ask_odysseus
         for reg in {id(r): r for r in [*visible, self._full]}.values():  # the model's tools, and the full set routines use
             reg.add(camera)
         self._refresh_prompt()
         return True
+
+    def _attach_shared(self, path: Path) -> tuple[str, str]:
+        """A file shared from the phone's other apps (called on the phone link's thread)."""
+        name, err = self.inbox.add(path)
+        self.bridge.note.emit(f"\U0001F4F1 Shared from your phone: {name}" if name else err)
+        return name, err
 
     def _stop_remote(self) -> None:
         remote, self.remote = self.remote, None
@@ -1221,6 +1234,7 @@ class MainWindow(QMainWindow):
         registry.log = CallLog()
         registry.add(build_diagnostic_tools(registry.log, lambda: self.warnings))
         self.pdfs = PdfStore()
+        self.inbox.pdfs = self.pdfs
         registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))
         if odysseus.active(cfg):
             registry.add(odysseus.build_odysseus_tools(cfg, self._confirm, speak=lambda t: self.session.announce(t), note=lambda m: self.bridge.note.emit(m)))
@@ -1292,7 +1306,8 @@ class MainWindow(QMainWindow):
     def _system_prompt(self) -> str:
         only = self.cfg.odysseus_mode == "only"
         return (self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + self.profile.prompt()
-                + ("" if only else capabilities_prompt(self.cfg, self._registry.names()) + SETTINGS_PROMPT + self.skills.prompt() + self.interp.prompt() + self.inbox.prompt())
+                + ("" if only else capabilities_prompt(self.cfg, self._registry.names()) + SETTINGS_PROMPT
+                                 + (PHONE_ACTIONS_PROMPT if "phone_set_alarm" in self._registry.names() else "") + self.skills.prompt() + self.interp.prompt() + self.inbox.prompt())
                 + odysseus.mode_prompt(self.cfg.odysseus_mode))
 
     def _refresh_prompt(self) -> None:

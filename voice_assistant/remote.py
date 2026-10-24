@@ -9,10 +9,13 @@ Messages are JSON text frames, plus binary frames for audio (16-bit little-endia
   phone -> PC   hello {token, device}, <audio>, wake, end_of_speech, interrupt, text {text}, get_keywords {phrase, threshold}, get_settings, set_setting {key, value}, confirm_result {id, ok},
                 camera_pending {id, opened}, camera_photo {id, jpeg_b64}, camera_cancel {id, reason}, ping,
                 camera_video_begin {id, count, duration_ms, [detail_count]}, camera_video_frame {id, index, t_ms, jpeg_b64, [detail]}, camera_video_audio {id, pcm_b64}, camera_video_end {id}
-                (a video is sampled on the phone, so only a few small frames cross the link, never the clip itself)
+                (a video is sampled on the phone, so only a few small frames cross the link, never the clip itself),
+                share_file {id, name, mime, total, seq, last, data_b64} (a file shared from another app, in pieces; see phone_share.py),
+                phone_action_result {id, ok, message}
   PC -> phone   ready {protocol, state, name}, state {state}, partial {text}, user_final {text}, assistant_delta {text}, done {summary},
                 confirm {id, prompt}, audio_start {sr}, <audio>, audio_flush, audio_end, keywords {phrase, lines}, keywords_error {phrase, message},
                 camera_request {id, prompt, auto, [mode: "video", max_seconds, max_frames, max_edge, max_fps, max_bytes, audio, detail_frames, detail_edge]}, camera_close {id}, settings {allow_safety, restart_pending, sections}, setting_result {ok, key, value, restart, message},
+                share_saved {id, ok, name, message}, phone_action {id, action, args} (see phone_actions.py; the user confirms each one on the phone),
                 error {message}, pong
 """
 from __future__ import annotations
@@ -50,6 +53,7 @@ CLOSE_TIMEOUT_S = 1.0  # how long a closing connection waits for the phone to co
 MAX_MESSAGE_BYTES = 2 * 1024 * 1024  # a photo arrives as one base64 message; the phone shrinks it to well under this
 MAX_PHOTO_BYTES = 1_400_000
 CAMERA_WAIT_S = 90.0
+ACTION_WAIT_S = 60.0  # how long the phone has for the user to agree to an action
 MAX_VIDEO_FRAMES = 500
 MAX_VIDEO_FRAME_BYTES = 600_000
 MAX_VIDEO_TOTAL_BYTES = 80_000_000
@@ -251,6 +255,7 @@ class _Client:
         self._out: queue.Queue = queue.Queue()
         self._pending: dict[str, tuple[threading.Event, list]] = {}
         self._cameras: dict[str, tuple[threading.Event, list]] = {}
+        self._actions: dict[str, tuple[threading.Event, list]] = {}
         self._videos: dict[str, dict] = {}  # clips arriving frame by frame: id -> {count, duration, frames, bytes}
         self._lock = threading.Lock()
         threading.Thread(target=self._writer, daemon=True).start()
@@ -297,6 +302,31 @@ class _Client:
             entry = self._pending.get(mid)
         if entry:
             entry[1].append(bool(ok))
+            entry[0].set()
+
+    def request_action(self, action: str, args: dict, timeout: float, abandoned) -> tuple[bool, str]:
+        """Ask the phone to do something (set an alarm, add an event...). The phone shows it to the user first. (done, what the phone said)."""
+        mid, event, box = uuid.uuid4().hex, threading.Event(), []
+        with self._lock:
+            self._actions[mid] = (event, box)
+        try:
+            if not self.send({"type": "phone_action", "id": mid, "action": action, "args": args}):
+                return False, "disconnected"
+            end = time.monotonic() + timeout
+            while self.alive and time.monotonic() < end and not event.is_set() and not abandoned():
+                event.wait(0.1)
+            if box:
+                return box[0]
+            return False, "disconnected" if not self.alive else "timeout" if time.monotonic() >= end else "interrupted"
+        finally:
+            with self._lock:
+                self._actions.pop(mid, None)
+
+    def resolve_action(self, mid: str, ok: bool, message: str) -> None:
+        with self._lock:
+            entry = self._actions.get(mid)
+        if entry:
+            entry[1].append((bool(ok), message))
             entry[0].set()
 
     def request_photo(self, prompt: str, auto: bool, timeout: float, abandoned) -> tuple[bytes | None, str]:
@@ -419,7 +449,7 @@ class _Client:
 
     def release(self) -> None:
         with self._lock:
-            pending = list(self._pending.values()) + list(self._cameras.values())
+            pending = list(self._pending.values()) + list(self._cameras.values()) + list(self._actions.values())
         for event, _ in pending:
             event.set()
 
@@ -456,6 +486,7 @@ class RemoteServer:
         self._lock = threading.Lock()
         self.listeners: list = []  # called with {"event": "paired" | "connected" | "disconnected", ...} from the server's threads
         self._phone_events = _PhoneEvents(self)
+        self.shares = None  # a phone_share.ShareReceiver: files shared from the phone's other apps
         self.settings = SettingsService(cfg, lambda: bool(getattr(cfg, "remote_allow_safety_changes", False)), device_names or _device_names, settings_save)
         # Developer aid, off unless set: keep each utterance the phone sends as a WAV in this folder to judge microphone quality.
         # Audio is otherwise never written to disk.
@@ -496,6 +527,8 @@ class RemoteServer:
         if self._server is not None:
             self._server.shutdown()
             self._server = None
+        if self.shares is not None:
+            self.shares.close()  # half-received files are removed
 
     @property
     def running(self) -> bool:
@@ -637,6 +670,13 @@ class RemoteServer:
                 self.session.announce("Tap the notification on your phone to take the photo.")
         elif kind == "text":
             self.session.submit_text(str(msg.get("text", ""))[:2000])
+        elif kind == "share_file":
+            reply = self.shares.piece(msg) if self.shares is not None else {"type": "share_saved", "id": str(msg.get("id", ""))[:64], "ok": False,
+                                                                            "message": "This PC cannot take shared files right now."}
+            if reply is not None:
+                client.send(reply)
+        elif kind == "phone_action_result":
+            client.resolve_action(str(msg.get("id", "")), bool(msg.get("ok")), str(msg.get("message", ""))[:300])
         elif kind == "forget_me":  # the phone removed this PC: take the phone off the paired list too
             self.devices.revoke(client.device_id)
             client.close(1000, "forgotten")
@@ -673,6 +713,14 @@ class RemoteServer:
         abandoned = lambda: self.session.state in (State.IDLE, State.LISTENING)  # noqa: E731
         wait = timeout if timeout is not None else CAMERA_WAIT_S + max_seconds + 45 + max_bytes / 1_000_000 * 3  # a bigger budget takes longer to arrive
         return client.request_video(prompt, max_seconds, max_frames, max_edge, max_fps, max_bytes, wait, abandoned, audio, detail_frames)
+
+    def request_action(self, action: str, args: dict, timeout: float = ACTION_WAIT_S) -> tuple[bool, str]:
+        """Have the connected phone carry out an action after the user agrees there: (done, message), or (False, "no_phone" / "timeout" / ...)."""
+        client = self.client
+        if client is None or not client.alive:
+            return False, "no_phone"
+        abandoned = lambda: self.session.state in (State.IDLE, State.LISTENING)  # noqa: E731
+        return client.request_action(action, args, timeout, abandoned)
 
     def request_photo(self, prompt: str = "", auto: bool = False, timeout: float = CAMERA_WAIT_S) -> tuple[bytes | None, str]:
         """Have the connected phone open its camera and return the photo the user takes: (JPEG bytes, "ok") or (None, why)."""

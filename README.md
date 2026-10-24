@@ -95,7 +95,12 @@ PC without Python or Visual C++ runtimes (the package bundles what it found on t
 .venv\Scripts\python -m voice_assistant fetch-models    # asks before each download
 .venv\Scripts\python -m voice_assistant                 # start the app
 .venv\Scripts\python -m pytest                          # tests
+.venv\Scripts\python -m voice_assistant eval            # quality test set against your own model (evals/cases.json)
 ```
+
+The quality test set asks your model real questions about pictures, a PDF bill, settings, phone actions and the web, and checks the answers
+and the tools it chose. Tools that would change something are only recorded. Each run is saved and compared with the last one, so run it
+after changing a prompt, a tool or the model.
 
 Start LM Studio's local server (default `http://localhost:1234/v1`) and load a model; set `llm_model`
 in `%APPDATA%\VoiceAssistant\config.json`. For a cloud endpoint set `llm_base_url`, `llm_model` and

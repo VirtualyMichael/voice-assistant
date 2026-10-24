@@ -1,4 +1,4 @@
-"""python -m voice_assistant [run|--setup|--selftest [file]|doctor|setup|fetch-models [kokoro] [--yes]|phone [pair [name]|list|unpair <id>]]"""
+"""python -m voice_assistant [run|--setup|--selftest [file]|doctor|setup|fetch-models [kokoro] [--yes]|phone [pair [name]|list|unpair <id>]|eval [--only vision,phone] [--case ID] [--verbose]]"""
 from __future__ import annotations
 
 import sys
@@ -127,6 +127,10 @@ def main(argv: list[str]) -> int:
         return fetch_models(argv[1:])
     if cmd == "phone":
         return phone(argv[1:])
+    if cmd == "eval":
+        from .evaluate import main as evaluate
+
+        return evaluate(argv[1:])
     from .app import main as run
 
     return run(argv if argv and argv[0].startswith("--") else [])
