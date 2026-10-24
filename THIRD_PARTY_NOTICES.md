@@ -31,6 +31,13 @@ Generated from the installed packages' metadata. **Not legal advice; verify each
 | Piper en_US amy low (fallback voice) | k2-fsa/sherpa-onnx releases | **unclear**: its MODEL_CARD only says 'See URL' (mimic3-voices dataset). Do not ship or advertise it until confirmed; Kokoro alone is enough |
 | Zipformer KWS (wake word) | k2-fsa/sherpa-onnx releases | Apache-2.0 per its README |
 
+## Phone app only
+
+| Item | Source | Licence note |
+|---|---|---|
+| LiteRT-LM (`com.google.ai.edge.litertlm`) 0.16.1, runs the offline model | Google AI Edge | Apache-2.0 |
+| Gemma 4 E2B (offline helper model), downloaded by the user inside the app, not bundled | litert-community/gemma-4-E2B-it-litert-lm on Hugging Face | **confirm the Gemma terms on its model card (use and redistribution rules) before release** |
+
 ## Needs a decision before selling
 
 - **espeak-ng** (GPL-3.0) supplies the phonemizer data used by the Kokoro and Piper voices through sherpa-onnx. Confirm whether the way it is linked and distributed is compatible with a closed-source paid app, or replace/separate it.
