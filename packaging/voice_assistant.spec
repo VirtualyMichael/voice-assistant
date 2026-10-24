@@ -13,6 +13,7 @@ for pkg in ("sherpa_onnx", "sounddevice", "_sounddevice_data", "sentencepiece", 
         hidden += h
     except Exception as e:  # a package without data files is fine
         print("collect_all skipped", pkg, e)
+datas += [(os.path.join(root, "voice_assistant", "tools_proxy.py"), "voice_assistant")]  # run by Odysseus as a stdio MCP server
 datas += [(os.path.join(os.path.dirname(SPECPATH), "extension"), "extension")]  # the browser extension travels inside the program folder too
 hidden += collect_submodules("keyring.backends") + collect_submodules("anyio") + ["win32ctypes.core"]
 

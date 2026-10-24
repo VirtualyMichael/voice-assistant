@@ -22,6 +22,20 @@ Odysseus is bundled or installed by this app; you install and run it yourself, a
 5. Optional: **Choose start file...** points at a `.bat`, `.cmd` or `.ps1` that starts Odysseus. The app runs it hidden
    when the server is not answering and the assistant needs it.
 
+## Letting Odysseus use this app's tools (optional)
+
+In **Voice only** mode the assistant has no tools of its own, so Odysseus needs them. Tick **Let Odysseus use this app's
+tools** (Settings > AI > Odysseus, restart to apply), then press **Show the Odysseus tool setup** and add the values it
+shows in Odysseus under Settings > MCP: a **stdio** server running `tools_proxy.py` with any Python 3 (Odysseus's own
+venv Python works). Odysseus then sees every tool this app has (apps, timers, music and volume, lights, VRChat, screen
+help, files, and so on) except `ask_odysseus` itself.
+
+- The proxy is a few lines of standard-library Python; it owns no tools and forwards to the running app over
+  `127.0.0.1` with a token that is regenerated at every start and stored in `%APPDATA%\VoiceAssistant\tool-server.json`.
+- Every consent prompt (opening apps, writing files, shell, controlling windows, hand-offs) still appears in this app's
+  window, and tools run one at a time. If you are away from the screen, nothing that asks first will run.
+- The app must be running with the option ticked; otherwise Odysseus's calls report that the app is not running.
+
 ## Safety
 - Every hand-off asks first by default (untick *Ask before each hand-off* to skip). Odysseus can run shell commands and
   read your mail, so keep the token to the `chat` scope, keep Odysseus bound to `127.0.0.1`, and keep its login enabled.

@@ -37,6 +37,15 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._tools)
 
+    def tool_list(self) -> list[Tool]:
+        return list(self._tools.values())
+
+    def copy(self) -> "ToolRegistry":
+        """A registry with the same tools and call log, unaffected by later add/remove on this one."""
+        other = ToolRegistry(self.tool_list())
+        other.log = self.log
+        return other
+
     def schemas(self) -> list[dict]:
         return [
             {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}

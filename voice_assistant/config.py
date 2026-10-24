@@ -105,6 +105,7 @@ class Config:
     odysseus_endpoint_id: str = ""  # a model endpoint id from your Odysseus (Settings > models)
     odysseus_model: str = ""  # a model name served by that endpoint
     odysseus_launch: str = ""  # optional .bat/.cmd/.ps1 that starts Odysseus; run (hidden) when the server is not answering
+    odysseus_share_tools: bool = False  # let Odysseus use this app's tools through tools_proxy.py (consent prompts still appear here)
     odysseus_auto_approve: bool = False  # false = ask before each hand-off to Odysseus
     llm_api_key_env: str = ""  # e.g. "OPENAI_API_KEY" for cloud endpoints
     system_prompt: str = (

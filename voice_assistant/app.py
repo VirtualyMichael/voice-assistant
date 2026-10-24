@@ -22,7 +22,7 @@ from .audio_io import AudioIO, list_devices
 from .hardware import detect_gpus, recommend
 from .config import INTERRUPT_MODES, LISTEN_MODES, Config, config_dir, load_config, save_config
 from .mcp_client import McpHub, read_mcp_json
-from . import __version__, odysseus, updater
+from . import __version__, odysseus, tool_share, updater
 from .memory import ConversationStore
 from .pdf_tools import PdfStore
 from .skill_tools import build_skill_tools
@@ -548,6 +548,12 @@ class MainWindow(QMainWindow):
         ody_launch.clicked.connect(self._pick_odysseus_launch)
         ody_test = QPushButton("Test the connection")
         ody_test.clicked.connect(self._test_odysseus)
+        ody_share = QCheckBox("Let Odysseus use this app's tools (restart to apply)")
+        ody_share.setToolTip("Odysseus can then open apps, set timers, control music, lights and more here. Every prompt still appears in this window.")
+        ody_share.setChecked(cfg.odysseus_share_tools)
+        ody_share.toggled.connect(lambda v: self._set_field("odysseus_share_tools", v))
+        ody_setup = QPushButton("Show the Odysseus tool setup\u2026")
+        ody_setup.clicked.connect(self._show_tool_setup)
         ody_ask = QCheckBox("Ask before each hand-off to Odysseus")
         ody_ask.setChecked(not cfg.odysseus_auto_approve)
         ody_ask.toggled.connect(lambda v: self._set_field("odysseus_auto_approve", not v))
@@ -559,6 +565,8 @@ class MainWindow(QMainWindow):
         form.addRow(ody_token)
         form.addRow(ody_launch)
         form.addRow(ody_test)
+        form.addRow(ody_share)
+        form.addRow(ody_setup)
         form.addRow(ody_ask)
         form.addRow(QLabel("Agent abilities (restart to apply):", objectName="small"))
         form.addRow(web)
@@ -934,6 +942,7 @@ class MainWindow(QMainWindow):
                 self.warnings.append(f"{name} unavailable: {e}")
         llm = make_llm(cfg)
         registry = build_file_tools(self.policy, self._confirm)
+        self._full = registry  # every tool of this app, even when the model only sees ask_odysseus
         self.timers = Timers(lambda text: self.session.announce(text))
         self.catalog = AppCatalog()
         threading.Thread(target=self._scan_apps, daemon=True).start()
@@ -950,7 +959,7 @@ class MainWindow(QMainWindow):
         registry.add(build_profile_tools(cfg, self.profile, self._confirm))
         if cfg.delegate_enabled:
             registry.add(build_delegate_tools(cfg, self.policy, self._confirm, self.usage))
-        registry.add(build_extra_tools(cfg, self._confirm, lambda name, args: registry.call(name, args), known_tools=registry.names, persist=lambda: save_config(self.cfg)))
+        registry.add(build_extra_tools(cfg, self._confirm, lambda name, args: self._full.call(name, args), known_tools=registry.names, persist=lambda: save_config(self.cfg)))
         registry.add(self._music_and_computer_tools())
         registry.add(build_screen_tools(cfg, self._confirm, lambda: self.session.agent.llm))
         registry.log = CallLog()
@@ -960,7 +969,16 @@ class MainWindow(QMainWindow):
         if odysseus.active(cfg):
             registry.add(odysseus.build_odysseus_tools(cfg, self._confirm))
             threading.Thread(target=odysseus.ensure_running, args=(cfg,), daemon=True).start()  # warm up so the first hand-off is quick
+        if cfg.odysseus_mode == "only":
+            self._full = registry.copy()  # routines and Odysseus keep the full set while the model sees only ask_odysseus
         odysseus.restrict_tools(registry, cfg.odysseus_mode)  # 'only': ask_odysseus is the only tool
+        self._share = None
+        if odysseus.active(cfg) and cfg.odysseus_share_tools:
+            try:
+                self._share = tool_share.ToolShare(self._full, config_dir(), exclude=(odysseus.TOOL_NAME,), init_com=_init_com)
+                self._share.start()
+            except OSError as e:
+                self.warnings.append(f"sharing tools with Odysseus failed: {e}")
         self._registry = registry
         agent = Agent(
             llm, self._system_prompt(), registry, max(cfg.max_tool_rounds, 16 if cfg.computer_control else 0),
@@ -1577,6 +1595,21 @@ class MainWindow(QMainWindow):
         if f:
             self._set_field("odysseus_launch", f)
 
+    def _show_tool_setup(self) -> None:
+        script = tool_share.proxy_script()
+        text = (
+            "In Odysseus open Settings > MCP and add a server with these values:\n\n"
+            "Name: voice-assistant\nTransport: stdio\n"
+            f"Command: {tool_share.proxy_python()}\nArguments: {script}\n\n"
+            "The command can be any Python 3 (Odysseus's own venv python works). This app must be running with the option ticked. "
+            "Prompts such as opening an app still appear in this window."
+        )
+        box = QMessageBox(QMessageBox.Information, "Odysseus tool setup", text, QMessageBox.Close, self)
+        copy = box.addButton("Copy the arguments", QMessageBox.ActionRole)
+        box.exec()
+        if box.clickedButton() is copy:
+            QApplication.clipboard().setText(str(script))
+
     def _test_odysseus(self) -> None:
         def work() -> None:
             why = odysseus.problem(self.cfg) or odysseus.ensure_running(self.cfg) or odysseus.OdysseusClient(self.cfg).check()
@@ -1871,6 +1904,8 @@ class MainWindow(QMainWindow):
         self.cfg.window_size = [self.width(), self.height()]
         save_config(self.cfg)
         self.timer.stop()
+        if getattr(self, "_share", None):
+            self._share.stop()
         self.timers.cancel_all()
         self.ducker.restore()  # never leave the music quiet when the assistant closes
         if self.mcp:
