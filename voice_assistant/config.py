@@ -48,6 +48,8 @@ class Config:
     video_custom_fps: float = 2.0  # custom level: most frames per second
     video_custom_frames: int = 120  # custom level: most frames in one video
     video_use_audio: bool = True  # listen to a video's sound and add what is said to the timeline (a phone clip is then recorded with sound)
+    video_identify_model: str = ""  # a stronger model used only for the close-ups and the overview of a video (empty = the main model); same server and provider
+    video_detail_frames: int = 3  # extra high-resolution close-ups taken from a video and read literally (text, held objects); 0 turns them off
     video_overview: bool = True  # one more pass over the notes to work out what the video is: the game, activity or event, how it is going
     video_research: bool = True  # let that pass look things up online to name a game or activity (needs web access on)
     video_skip_still: bool = False  # skip frames where the picture did not change (faster, but the model sees less); the skipped stretches are reported

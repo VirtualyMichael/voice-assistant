@@ -313,7 +313,7 @@ For photos you drop into the chat and photos taken with the phone camera (not sc
 The answer says what it found, how sure it is, useful facts and safety notes (for example toxic to pets), and which searches it ran.
 Simple questions ("what colour is it?") skip the web. Only short descriptive searches go online, never the picture; searches containing numbers,
 e-mail addresses or links are dropped, documents and screenshots are not researched unless you ask, and people are never identified from their faces.
-Turn it off in Settings > AI (*Research photos online*); it needs *Let the agent search/read the web*.
+Turn it off in Settings > Video (*Research photos online*); it needs *Let the agent search/read the web*.
 
 ### Scheduled tasks
 
@@ -337,13 +337,19 @@ The assistant looks at frames spread across the clip, listens to its sound, and 
 | **Normal** (default) | 640 px | 5 MB | up to 2 a second, at most 100 frames |
 | **Mid** | 960 px | 10 MB | up to 3 a second, at most 200 |
 | **High** | 1280 px | 50 MB | up to 6 a second, at most 400 |
-| **Custom** | your choice | your choice | your rate and cap (Settings > AI) |
+| **Custom** | your choice | your choice | your rate and cap (Settings > Video) |
 
-Choose the default in Settings > AI (*Video detail*, also on the phone). The assistant can look again at one stretch ("look closer at 0:20 to 0:26") or at a higher level when an answer needs more detail.
+Choose the default in Settings > Video (*Video detail*, also on the phone). The assistant can look again at one stretch ("look closer at 0:20 to 0:26") or at a higher level when an answer needs more detail.
 
-**What it works out.** Each group of frames is described under *Scene, Action, Text and numbers, Clues* (headset, controllers, interface, logos) and *Results* (hits and misses, counters rising or resetting). A final pass combines these with the sound into an overview: the kind of activity, the specific title if it is shown or unmistakable, the evidence, how sure it is, and how it goes. If the title is unknown it can look it up online by describing what it sees (never the video). Never what anyone thinks or feels, and never who someone is from their face.
+**What it works out.** Each group of frames is described under *Scene, Objects, Action, Text and numbers, Clues* (headset, controllers, interface, logos) and *Results* (hits and misses, counters rising or resetting). A few **close-up frames** are also taken at full detail (1280 px) and read literally: on-screen text, scores, and what the person holds. A final pass combines these with the sound into an overview: the kind of activity, the specific title if it is shown or unmistakable, the evidence, how sure it is, and how it goes. If the title is unknown it looks it up online by describing what it sees (never the video). Never what anyone thinks or feels, and never who someone is from their face.
 
-All of these can be switched on or off in Settings > AI (and on the phone):
+**Recognising what something is depends on the model.** Small local vision models often misname games and apps. In a test on a Beat Saber frame a 12B model said "Geometry Dash", while a 26B model named Beat Saber from the sabers, the notes and the combo counter. Settings > Video has **Model for working out what a video is**: a stronger model of the same server used only for the close-ups and the overview (the frame-by-frame notes stay on the main model). It may be slower, and your server may need to load it first.
+
+**Sound** is described too: what is said, and whether the rest is music (a steady beat is detected and its tempo given) or quiet background noise. Only speech is turned into words.
+
+All of these can be switched on or off in **Settings > Video** (and under *Camera and video* in the phone's settings). Not sure where a setting is? Type a word in the **search box at the top of Settings** (for example "video", "sound", "timer" or "web") and pick a result to jump straight to it; the phone's settings have a search box too.
+
+- **Close-up frames:** how many extra full-detail frames are looked at very closely (0 turns them off).
 
 - **Listen to the video's sound:** speech is turned into text with the recognizer on your PC and added to the timeline (a clip recorded on the phone is then recorded with sound, and the phone shows *with sound* while it records). It is off the moment you untick it, and nothing is recorded without it.
 - **Work out what the video is about:** the overview pass. A little slower, much better at understanding.

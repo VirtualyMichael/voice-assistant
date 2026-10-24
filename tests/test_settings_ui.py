@@ -30,7 +30,7 @@ def tab_text(w):
 
 def test_settings_are_grouped_into_tabs(win):
     tabs, content = tab_text(win)
-    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Voice", "Phone", "Audio", "VR", "AI", "Skills", "Apps", "Home", "Tasks", "Memory", "Delegate", "Look", "General"]
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Voice", "Phone", "Audio", "VR", "AI", "Video", "Skills", "Apps", "Home", "Tasks", "Memory", "Delegate", "Look", "General"]
     assert "Ask before opening an app" in content["Apps"]
     assert "Switch devices while SteamVR is running" in content["VR"]
     assert "Save my chats (history)" in content["AI"]

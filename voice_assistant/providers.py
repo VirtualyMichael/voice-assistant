@@ -44,6 +44,30 @@ def model_for(cfg, provider: str | None = None) -> str:
     return getattr(cfg, MODEL_FIELD[provider])
 
 
+def list_models(cfg, timeout: float = 3.0) -> list[str]:
+    """The model names a local or OpenAI-compatible server offers (empty for a cloud provider or when it cannot be reached)."""
+    import httpx
+
+    field = URL_FIELD.get(cfg.llm_provider)
+    if cfg.llm_provider in ("openai", "anthropic") or not field:
+        return []
+    try:
+        r = httpx.get(str(getattr(cfg, field)).rstrip("/") + "/models", timeout=timeout)
+        r.raise_for_status()
+        return sorted(m["id"] for m in r.json().get("data", []) if isinstance(m, dict) and m.get("id"))
+    except (httpx.HTTPError, ValueError):
+        return []
+
+
+def with_model(cfg, model: str):
+    """A copy of the settings that answers with another model of the same provider and server."""
+    import dataclasses
+
+    other = dataclasses.replace(cfg)
+    set_model(other, cfg.llm_provider, model)
+    return other
+
+
 def set_model(cfg, provider: str, model: str) -> None:
     setattr(cfg, MODEL_FIELD[provider], model.strip())
 

@@ -14,6 +14,7 @@ import numpy as np
 SAMPLE_RATE = 16000
 MAX_AUDIO_BYTES = 8_000_000  # four minutes at 16 kHz, 16-bit mono
 FRAME_S = 0.03
+AUDIBLE = 0.004  # RMS of a 30 ms frame that counts as sound at all (about -48 dB below full scale); quiet music from a TV across a room is above it
 
 
 @dataclass
@@ -28,6 +29,9 @@ class SoundReport:
     seconds: float
     loud_fraction: float  # share of the clip with clearly audible sound
     utterances: list[Utterance]
+    level_db: float = -99.0  # overall loudness, dB below full scale (0 is as loud as it gets)
+    bpm: float = 0.0  # a steady beat in the sound, if there is one (music, game audio, a metronome)
+    beat_strength: float = 0.0
 
 
 def to_float(pcm: bytes) -> np.ndarray:
@@ -35,8 +39,8 @@ def to_float(pcm: bytes) -> np.ndarray:
     return np.frombuffer(pcm[:usable], dtype="<i2").astype(np.float32) / 32768.0
 
 
-def _energy(samples: np.ndarray) -> np.ndarray:
-    n = int(SAMPLE_RATE * FRAME_S)
+def _energy(samples: np.ndarray, frame_s: float = FRAME_S) -> np.ndarray:
+    n = int(SAMPLE_RATE * frame_s)
     frames = len(samples) // n
     if frames == 0:
         return np.zeros(0, np.float32)
@@ -82,12 +86,34 @@ def speech_segments(samples: np.ndarray, min_pause_s: float = 0.45, max_segment_
     return out
 
 
+def tempo(samples: np.ndarray) -> tuple[float, float]:
+    """(beats per minute, strength 0..1) of the steadiest beat in the loudness over time, or (0, 0) when there is none. Looks for 60 to 200 beats a minute."""
+    hop = 0.01
+    e = _energy(samples, hop)
+    if len(e) < int(4 / hop):
+        return 0.0, 0.0
+    onset = np.maximum(np.diff(e), 0.0)
+    onset = onset - onset.mean()
+    if not np.any(onset):
+        return 0.0, 0.0
+    ac = np.correlate(onset, onset, mode="full")[len(onset) - 1:]
+    if ac[0] <= 0:
+        return 0.0, 0.0
+    ac = ac / ac[0]
+    lo, hi = int(60.0 / 200.0 / hop), int(60.0 / 60.0 / hop)
+    lag = lo + int(np.argmax(ac[lo:hi]))
+    return 60.0 / (lag * hop), float(max(ac[lag], 0.0))
+
+
 def transcribe(pcm: bytes, recognize: Callable[[np.ndarray], str], offset_s: float = 0.0) -> SoundReport:
     """Words with their times. `recognize` turns a stretch of float samples into text (the offline recognizer's transcribe, or a streaming one)."""
     samples = to_float(pcm[:MAX_AUDIO_BYTES])
     seconds = len(samples) / SAMPLE_RATE
     e = _energy(samples)
-    loud = float(np.mean(e > _threshold(float(np.percentile(e, 20))))) if len(e) else 0.0
+    loud = float(np.mean(e > AUDIBLE)) if len(e) else 0.0  # by absolute level: steady quiet music has no quiet moments to compare with
+    rms = float(np.sqrt(np.mean(samples ** 2))) if len(samples) else 0.0
+    level = 20.0 * float(np.log10(max(rms, 1e-6)))
+    bpm, strength = tempo(samples)
     words: list[Utterance] = []
     for start, end in speech_segments(samples):
         pad = int(0.15 * SAMPLE_RATE)
@@ -98,7 +124,7 @@ def transcribe(pcm: bytes, recognize: Callable[[np.ndarray], str], offset_s: flo
             text = ""
         if text:
             words.append(Utterance(start + offset_s, end + offset_s, text))
-    return SoundReport(seconds, loud, words)
+    return SoundReport(seconds, loud, words, level, bpm, strength)
 
 
 def clock(seconds: float) -> str:
@@ -106,13 +132,24 @@ def clock(seconds: float) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
+def _loudness(db: float) -> str:
+    return "loud" if db > -20 else "moderate" if db > -35 else "quiet"
+
+
+def _beat(report: SoundReport) -> str:
+    return f"a steady beat around {report.bpm:.0f} beats a minute" if report.bpm and report.beat_strength >= 0.3 else ""
+
+
 def describe(report: SoundReport) -> str:
-    """The sound as text for the timeline."""
+    """The sound as text for the timeline: what is said, and what the rest of the sound seems to be (a beat means music, game audio or a machine)."""
     if report.seconds < 0.5:
         return "Sound: none recorded."
     if report.loud_fraction < 0.05:
         return "Sound: almost silent."
+    beat = _beat(report)
+    feel = f"{_loudness(report.level_db)} sound for about {int(report.loud_fraction * 100)}% of the clip" + (f", with {beat}" if beat else "")
     if not report.utterances:
-        return f"Sound: audible for about {int(report.loud_fraction * 100)}% of the clip, but no recognisable speech (it may be music, game or background noise)."
-    lines = [f"[{clock(u.start)}–{clock(u.end)}] {u.text}" for u in report.utterances]
-    return ("Sound (automatic speech transcript; speech recognisers can mishear, and music or game audio may appear as odd words):\n" + "\n".join(lines))
+        meaning = "that points to music or game audio" if beat and report.loud_fraction > 0.5 else "it may be music, game audio or background noise"
+        return f"Sound: {feel}; no recognisable speech ({meaning}). Only speech is turned into words, so music without words cannot be described further."
+    lines = [f"[{clock(u.start)}\u2013{clock(u.end)}] {u.text}" for u in report.utterances]
+    return f"Sound ({feel}). Automatic speech transcript; speech recognisers can mishear, and music or game audio may appear as odd words:\n" + "\n".join(lines)

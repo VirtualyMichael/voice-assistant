@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
 from .video_look import QUALITIES, clock, custom_quality, estimate_frame_bytes, frame_count, quality_named
 
@@ -54,6 +54,30 @@ class VideoDetailBox(QWidget):
         form.addRow("Data budget for one video", self.mb)
         form.addRow("Most frames per second", self.fps)
         form.addRow("Most frames in one video", self.frames)
+        self.closeups = QSpinBox()
+        self.closeups.setRange(0, 6)
+        self.closeups.setValue(cfg.video_detail_frames)
+        self.closeups.setSpecialValueText("Off")
+        self.closeups.setToolTip("A few extra frames taken at full detail and read literally: on-screen text, scores, what is held. Slower by a few seconds, much better at telling what something is.")
+        closeup_row = QWidget()
+        cform = QFormLayout(closeup_row)
+        cform.setContentsMargins(0, 0, 0, 0)
+        cform.addRow("Close-up frames (extra full-detail looks)", self.closeups)
+        self.identify = QLineEdit(cfg.video_identify_model)
+        self.identify.setPlaceholderText("Same as the main model")
+        self.identify.setToolTip("A stronger model used only for the close-ups and the overview, which is where recognising a game or activity happens. Same server as the main model. "
+                                 "A bigger model is better at naming what it sees but slower, and your server may need to load it first.")
+        self.pick = QPushButton("Choose from my server\u2026")
+        self.pick.clicked.connect(self._pick_model)
+        id_row = QWidget()
+        iform = QFormLayout(id_row)
+        iform.setContentsMargins(0, 0, 0, 0)
+        box = QWidget()
+        bl = QHBoxLayout(box)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.addWidget(self.identify, 1)
+        bl.addWidget(self.pick)
+        iform.addRow("Model for working out what a video is", box)
         self.sound = QCheckBox("Listen to the video's sound")
         self.sound.setToolTip("Turns what is said into text for the timeline (it uses the speech recognizer on this PC). A clip recorded on the phone is then recorded with sound.")
         self.sound.setChecked(cfg.video_use_audio)
@@ -69,7 +93,7 @@ class VideoDetailBox(QWidget):
         self.hint = QLabel("", objectName="small", wordWrap=True)
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
-        for w in (self.level, self.custom, self.hint, self.sound, self.overview, self.research, self.skip):
+        for w in (self.level, self.custom, self.hint, closeup_row, id_row, self.sound, self.overview, self.research, self.skip):
             col.addWidget(w)
 
         self.level.currentIndexChanged.connect(lambda _i: self._changed("video_quality", self.level.currentData()))
@@ -78,10 +102,25 @@ class VideoDetailBox(QWidget):
         self.fps.valueChanged.connect(lambda v: self._changed("video_custom_fps", float(v)))
         self.frames.valueChanged.connect(lambda v: self._changed("video_custom_frames", int(v)))
         self.skip.toggled.connect(lambda v: self._changed("video_skip_still", bool(v)))
+        self.closeups.valueChanged.connect(lambda v: self._changed("video_detail_frames", int(v)))
+        self.identify.editingFinished.connect(lambda: self._changed("video_identify_model", self.identify.text().strip()))
         self.sound.toggled.connect(lambda v: self._changed("video_use_audio", bool(v)))
         self.overview.toggled.connect(lambda v: self._changed("video_overview", bool(v)))
         self.research.toggled.connect(lambda v: self._changed("video_research", bool(v)))
         self._refresh()
+
+    def _pick_model(self) -> None:
+        from .providers import list_models
+
+        names = list_models(self.cfg)
+        if not names:
+            self.hint.setText("Could not list models: this needs a local or OpenAI-compatible server that is running.")
+            return
+        current = names.index(self.identify.text()) if self.identify.text() in names else 0
+        name, ok = QInputDialog.getItem(self, "Model for working out what a video is", "Choose a model on your server:", names, current, False)
+        if ok and name:
+            self.identify.setText(name)
+            self._changed("video_identify_model", name)
 
     def _changed(self, key: str, value) -> None:
         self.set_field(key, value)

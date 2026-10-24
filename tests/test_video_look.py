@@ -176,7 +176,7 @@ def test_looking_at_a_file_uses_the_chosen_level_and_reports_unreadable_videos()
         seen.update(q=q.name, start=start, end=end)
         return frames(6), 6.0
 
-    vl = look(grab=grab, cfg=Config(video_quality="mid"))
+    vl = look(grab=grab, cfg=Config(video_quality="mid", video_detail_frames=0))
     assert "mid level (960px, up to 10 MB)" in vl.look_file(Path("a.mp4"), "?") and seen["q"] == "mid"
     assert "high level (1280px, up to 50 MB)" in vl.look_file(Path("a.mp4"), "?", "high", 2, 4) and (seen["q"], seen["start"], seen["end"]) == ("high", 2.0, 4.0)
 
@@ -232,7 +232,7 @@ def test_unreadable_videos_fail_with_a_plain_message(tmp_path):
 def test_the_whole_thing_end_to_end_on_the_real_clip():
     llm = ScriptedLLM()
     out = look(llm).look_file(CLIP, "what happens?")
-    assert out.count("[0:") >= 1 and "story.mp4" in out and sum(b[0] for b in llm.batches) == 24
+    assert out.count("[0:") >= 1 and "story.mp4" in out and sum(b[0] for b in llm.batches) == 24 + 3  # 24 frames, then the 3 close-ups
 
 
 # ---- dropped videos --------------------------------------------------------------------------------------------
@@ -345,9 +345,9 @@ class FakeRemote:
     def __init__(self, answers):
         self.answers, self.calls = list(answers), []
 
-    def request_video(self, question, seconds, max_frames, edge, fps, max_bytes, audio=False):
+    def request_video(self, question, seconds, max_frames, edge, fps, max_bytes, audio=False, detail_frames=0):
         self.calls.append((question, seconds, max_frames, edge, fps, max_bytes))
-        self.audio_asked = audio
+        self.audio_asked, self.detail_asked = audio, detail_frames
         return self.answers.pop(0)
 
 
@@ -534,7 +534,7 @@ def test_speech_is_split_at_pauses_and_timed():
     rep_ = VA.transcribe(SPEECH, lambda samples: f"words {len(samples) // 16000}")
     assert [u.text for u in rep_.utterances] == ["words 2", "words 3"] and rep_.loud_fraction > 0.5
     text = VA.describe(rep_)
-    assert "[0:01\u20130:03] words 2" in text and "[0:04\u20130:07] words 3" in text and "automatic speech transcript" in text
+    assert "[0:01\u20130:03] words 2" in text and "[0:04\u20130:07] words 3" in text and "Automatic speech transcript" in text
     assert VA.describe(VA.transcribe(pcm(("quiet", 3)), lambda s: "x")) == "Sound: almost silent."
     assert "no recognisable speech" in VA.describe(VA.transcribe(SPEECH, lambda s: ""))
     assert VA.describe(VA.transcribe(b"", lambda s: "x")) == "Sound: none recorded."
@@ -547,7 +547,7 @@ def test_the_sound_joins_the_timeline_with_its_words_and_feeds_the_overview():
     said = []
     vl = look(llm, transcribe=lambda samples: said.append(len(samples)) or "go go go")
     out = vl.look_clip(frames(8), 8.0, "what do they say?", V.QUALITIES["normal"], audio=SPEECH)
-    assert "[0:01\u20130:03] go go go" in out and "Sound (automatic speech transcript" in out and out.index("Timeline:") < out.index("Sound (automatic")
+    assert "[0:01\u20130:03] go go go" in out and "Automatic speech transcript" in out and out.index("Timeline:") < out.index("Sound (")
     assert "go go go" in llm.overviews[0] and len(said) == 2
     narrowed = vl.look_clip(frames(8), 8.0, "?", V.QUALITIES["normal"], start_s=4, end_s=7.5, audio=SPEECH)
     assert "[0:04" in narrowed.split("Sound")[1] and "[0:01" not in narrowed.split("Sound")[1]  # only the words of that stretch, at their own times
@@ -661,5 +661,183 @@ def test_the_apps_recognizer_reads_the_sound_and_no_models_means_no_sound(tmp_pa
         fake = SimpleNamespace(transcribe=lambda samples: f"{len(samples)} samples heard")
         fn = w._video_transcriber(fake)
         assert fn(np.zeros(1600, np.float32)) == "1600 samples heard"
+    finally:
+        w.close()
+
+
+# ---- close-ups: a few frames at full detail, read literally ----------------------------------------------------------
+def test_close_ups_are_read_literally_and_lead_the_evidence():
+    calls = []
+
+    def grab(path, q, start, end):
+        calls.append((q.name, q.edge, q.max_frames))
+        return frames(q.max_frames if q.name == "detail" else 6), 6.0
+
+    llm = ScriptedLLM(reply="Objects: a red bar bottom left")
+    notes = []
+    out = look(llm, grab=grab, notify=notes.append).look_file(Path("a.mp4"), "what is this?")
+    assert calls == [("normal", 640, 100), ("detail", 1280, 3)]  # the normal pass, then a second small pass at full detail
+    assert "Taking a closer look\u2026" in notes and "Close-ups (a few frames at full detail, described literally):" in out
+    assert out.index("Overview:") < out.index("Close-ups") < out.index("Timeline:")
+    detail = next(b for b in llm.batches if "very closely" in b[2])
+    assert detail[0] == 3 and "Do not name the game or activity" in detail[2] and "edges and corners" in detail[2]
+    assert "Close-ups (a few frames at full detail)" in llm.overviews[0] and "red bar bottom left" in llm.overviews[0]
+
+
+def test_close_ups_can_be_turned_off_and_a_failure_to_read_them_is_not_fatal():
+    calls = []
+
+    def grab(path, q, start, end):
+        calls.append(q.name)
+        return frames(6), 6.0
+
+    out = look(cfg=Config(video_detail_frames=0), grab=grab).look_file(Path("a.mp4"), "?")
+    assert calls == ["normal"] and "Close-ups" not in out
+
+    def flaky(path, q, start, end):
+        if q.name == "detail":
+            raise V.VideoError("no")
+        return frames(6), 6.0
+
+    assert "Timeline:" in look(grab=flaky).look_file(Path("a.mp4"), "?") and "Close-ups" not in look(grab=flaky).look_file(Path("a.mp4"), "?")
+
+
+def test_the_notes_are_told_not_to_invent_enemies_and_to_look_at_the_corners_and_the_overview_to_trust_the_close_ups():
+    llm = ScriptedLLM()
+    look(llm).describe(frames(3), 3.0, "?", V.QUALITIES["normal"], close_ups=frames(1))
+    notes_prompt = next(b[2] for b in llm.batches if "Objects:" in b[2] and "Scene:" in b[2])
+    assert "do not turn glowing shapes into enemies" in notes_prompt and "edges and corners" in notes_prompt
+    assert V.OVERVIEW_SYSTEM.count("trust the close-ups") == 1 and "lower corners" in V.OVERVIEW_SYSTEM
+
+
+def test_close_ups_sent_by_the_phone_are_used_too():
+    llm = ScriptedLLM()
+    out = look(llm).look_clip(frames(6), 6.0, "?", V.QUALITIES["normal"], close_ups=frames(2))
+    assert "Close-ups" in out and any("very closely" in b[2] for b in llm.batches)
+
+
+def test_music_is_recognised_by_its_beat_and_quiet_steady_sound_is_not_called_silence():
+    sr, rng = 16000, np.random.default_rng(2)
+
+    def clicks(bpm, sec, amp=0.05):
+        out = np.zeros(int(sr * sec))
+        for i in range(0, len(out), int(sr * 60 / bpm)):
+            n = min(int(sr * 0.04), len(out) - i)
+            out[i:i + n] += amp * rng.normal(0, 1, n) * np.exp(-np.arange(n) / (sr * 0.01))
+        return out + rng.normal(0, 0.004, len(out))
+
+    def to_pcm(x):
+        return (np.clip(x, -1, 1) * 32767).astype("<i2").tobytes()
+
+    for bpm in (90, 128, 150):
+        r = VA.transcribe(to_pcm(clicks(bpm, 12)), lambda s: "")
+        assert abs(r.bpm - bpm) <= 3 and r.beat_strength > 0.5
+    text = VA.describe(VA.transcribe(to_pcm(clicks(128, 12, 0.03)), lambda s: ""))
+    assert "steady beat around 128 beats a minute" in text and "points to music or game audio" in text and "quiet sound" in text
+    fan = VA.describe(VA.transcribe(to_pcm(rng.normal(0, 0.01, sr * 10)), lambda s: ""))
+    assert "almost silent" not in fan and "no recognisable speech" in fan and "beat" not in fan  # steady noise has no beat
+    assert VA.describe(VA.transcribe(to_pcm(rng.normal(0, 0.0005, sr * 5)), lambda s: "")) == "Sound: almost silent."
+    assert VA.tempo(np.zeros(sr * 2, np.float32)) == (0.0, 0.0)  # too short or flat: no beat is claimed
+    cfg = Config()
+    with_beat = look(ScriptedLLM(), transcribe=lambda s: "").look_clip(frames(6), 6.0, "?", V.QUALITIES["normal"], audio=to_pcm(clicks(120, 12)))
+    assert "steady beat around 120" in with_beat
+
+
+# ---- close-up frames from the phone ---------------------------------------------------------------------------------
+def test_the_phone_is_asked_for_close_ups_and_they_arrive_apart_from_the_normal_frames(setup):
+    ws, th, out, request = get_request(setup, prompt="x", detail_frames=2)
+    assert request["detail_frames"] == 2 and request["detail_edge"] == 1280
+    ws.send(json.dumps({"type": "camera_video_begin", "id": request["id"], "count": 2, "duration_ms": 4000, "detail_count": 2}))
+    for i in range(2):
+        ws.send(frame_msg(request["id"], i, i * 1000))
+    for i in range(2):
+        ws.send(json.dumps({"type": "camera_video_frame", "id": request["id"], "index": i, "t_ms": 1000 + i * 2000, "detail": True, "jpeg_b64": base64.b64encode(JPEG + b"big").decode()}))
+    ws.send(json.dumps({"type": "camera_video_end", "id": request["id"]}))
+    th.join(3)
+    clip, why = out[0]
+    assert why == "ok" and len(clip.frames) == 2 and [t for t, _ in clip.detail] == [1.0, 3.0] and clip.detail[0][1].endswith(b"big")
+
+
+def test_close_up_frames_beyond_the_announced_count_are_refused_and_none_means_none(setup):
+    ws, th, out, request = get_request(setup, prompt="x", detail_frames=1)
+    ws.send(json.dumps({"type": "camera_video_begin", "id": request["id"], "count": 1, "duration_ms": 2000, "detail_count": 1}))
+    ws.send(json.dumps({"type": "camera_video_frame", "id": request["id"], "index": 1, "t_ms": 0, "detail": True, "jpeg_b64": base64.b64encode(JPEG).decode()}))
+    th.join(3)
+    assert out == [(None, "invalid")]
+    ws2, th2, out2, request2 = get_request(setup, prompt="x")
+    assert request2["detail_frames"] == 0
+    send_clip(ws2, request2)
+    th2.join(3)
+    assert out2[0][0].detail is None
+
+
+def test_the_phone_tool_asks_for_close_ups_and_reads_them():
+    remote = FakeRemote([(PhoneVideo([(float(i), tiny_jpeg(i * 25 % 256)) for i in range(6)], 6.0, None, [(1.0, tiny_jpeg(10)), (3.0, tiny_jpeg(200))]), "ok")])
+    llm = ScriptedLLM()
+    video = V.VideoLook(Config(), lambda: llm)
+    tools = {t.name: t.handler for t in build_phone_camera_tools(SimpleNamespace(is_cloud=False, main_language="English"), lambda: remote, lambda m: True, lambda: FakeVision(), video=video)}
+    out = tools["watch_through_phone_camera"]("what is it?")
+    assert remote.detail_asked == 3 and "Close-ups" in out and any("very closely" in b[2] and b[0] == 2 for b in llm.batches)
+    off = FakeRemote([clip()])
+    v2 = V.VideoLook(Config(video_detail_frames=0), lambda: ScriptedLLM())
+    t2 = {t.name: t.handler for t in build_phone_camera_tools(SimpleNamespace(is_cloud=False, main_language="English"), lambda: off, lambda m: True, lambda: FakeVision(), video=v2)}
+    t2["watch_through_phone_camera"]("x")
+    assert off.detail_asked == 0
+
+
+# ---- a stronger model for recognising what is shown ----------------------------------------------------------------------
+def test_the_identify_model_does_the_close_ups_and_overview_but_not_the_frame_notes():
+    main = ScriptedLLM(reply="note")
+    strong = ScriptedLLM(reply="strong look", overview="Kind of activity: x.\nSpecific title: Beat Saber.\nLookup: none")
+    notes = []
+    vl = V.VideoLook(Config(video_identify_model="big-model"), lambda: main, notify=notes.append, identify_llm=lambda: strong)
+    out = vl.describe(frames(3), 3.0, "?", V.QUALITIES["normal"], close_ups=frames(1))
+    assert any("very closely" in b[2] for b in strong.batches) and not any("very closely" in b[2] for b in main.batches)
+    assert len(strong.overviews) == 1 and main.overviews == [] and "Beat Saber" in out
+    assert all("Scene:" in b[2] for b in main.batches) and not any("Scene:" in b[2] for b in strong.batches)  # the plain frame notes stayed on the main model
+    assert "Taking a closer look with big-model (it may take a moment to load)…" in notes
+
+
+def test_without_an_identify_model_everything_uses_the_main_model():
+    main = ScriptedLLM()
+    V.VideoLook(Config(), lambda: main).describe(frames(3), 3.0, "?", V.QUALITIES["normal"], close_ups=frames(1))
+    assert len(main.overviews) == 1 and any("very closely" in b[2] for b in main.batches)
+
+
+def test_models_can_be_listed_and_a_copy_of_the_settings_uses_another_one(monkeypatch):
+    import httpx
+
+    from voice_assistant import providers
+
+    monkeypatch.setattr(httpx, "get", lambda url, timeout=3: httpx.Response(200, json={"data": [{"id": "b"}, {"id": "a"}]}, request=httpx.Request("GET", url)))
+    assert providers.list_models(Config()) == ["a", "b"]
+    assert providers.list_models(Config(llm_provider="openai")) == [] and providers.list_models(Config(llm_provider="anthropic")) == []
+    base = Config(llm_provider="ollama", ollama_model="small")
+    other = providers.with_model(base, "large")
+    assert other.ollama_model == "large" and base.ollama_model == "small"
+    assert providers.with_model(Config(), "x").llm_model == "x"
+
+
+def test_the_window_builds_the_identify_model_once_and_the_box_saves_it(tmp_path, monkeypatch):
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    import voice_assistant.app as A_
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(A_, "save_config", lambda *a, **k: None)
+    monkeypatch.setattr("voice_assistant.app.config_dir", lambda: tmp_path)
+    w = A_.MainWindow(Config(models_dir=str(tmp_path / "none"), setup_done=True, check_updates=False, llm_model="small"))
+    built = []
+    monkeypatch.setattr(A_, "make_llm", lambda cfg: built.append(A_.model_for(cfg)) or SimpleNamespace(model=A_.model_for(cfg)))
+    try:
+        assert w._identify_llm() is w.session.agent.llm  # nothing chosen: the main model
+        w.video_box.identify.setText("big")
+        w.video_box.identify.editingFinished.emit()
+        first = w._identify_llm()
+        assert first.model == "big" and w._identify_llm() is first and built == ["big"]  # built once, then reused
+        w.cfg.video_identify_model = "small"
+        assert w._identify_llm() is w.session.agent.llm  # the same as the main model: nothing extra
+        assert w.video_box.pick.text().startswith("Choose from my server")
     finally:
         w.close()

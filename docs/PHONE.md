@@ -40,7 +40,7 @@ The app has a **Test the connection** button that finds the most likely cause. T
 
 Say "watch this" (or ask what is happening somewhere) and the phone opens a recording screen: tap the red button to start, tap again to stop (it also stops by itself after the length the assistant asked for, 15 seconds by default). The phone then picks a few small frames from the clip and sends only those, plus the clip's sound if you allow it; the video itself stays on the phone and is deleted right after. The assistant answers from what the frames show and what was said.
 
-How much it looks at depends on the video detail setting (Settings > AI on the PC, or in the phone's settings): **normal** is 640 px with up to 5 MB of frames, **mid** 960 px with 10 MB, **high** 1280 px with 50 MB, or **custom** with your own numbers. A normal clip sends well under a few MB over Tailscale; a high-detail clip can send ten times that, so keep it for when you need it. You can also ask it to look closer at one part of the clip you just recorded.
+How much it looks at depends on the video detail setting (Settings > Video on the PC, or in the phone's settings under Camera and video): **normal** is 640 px with up to 5 MB of frames, **mid** 960 px with 10 MB, **high** 1280 px with 50 MB, or **custom** with your own numbers. A normal clip sends well under a few MB over Tailscale; a high-detail clip can send ten times that, so keep it for when you need it. You can also ask it to look closer at one part of the clip you just recorded.
 
 **Sound** is on by default (setting *Video sound*, on the PC and in the phone's settings): the clip is recorded with sound, the recording screen says *with sound*, and the PC turns the speech into text. Switch it off and the clip is recorded silent.
 

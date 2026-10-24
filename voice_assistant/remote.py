@@ -8,11 +8,11 @@ header; the phone app does not).
 Messages are JSON text frames, plus binary frames for audio (16-bit little-endian mono PCM; 16 kHz from the phone, any rate from the PC):
   phone -> PC   hello {token, device}, <audio>, wake, end_of_speech, interrupt, text {text}, get_keywords {phrase, threshold}, get_settings, set_setting {key, value}, confirm_result {id, ok},
                 camera_pending {id, opened}, camera_photo {id, jpeg_b64}, camera_cancel {id, reason}, ping,
-                camera_video_begin {id, count, duration_ms}, camera_video_frame {id, index, t_ms, jpeg_b64}, camera_video_audio {id, pcm_b64}, camera_video_end {id}
+                camera_video_begin {id, count, duration_ms, [detail_count]}, camera_video_frame {id, index, t_ms, jpeg_b64, [detail]}, camera_video_audio {id, pcm_b64}, camera_video_end {id}
                 (a video is sampled on the phone, so only a few small frames cross the link, never the clip itself)
   PC -> phone   ready {protocol, state, name}, state {state}, partial {text}, user_final {text}, assistant_delta {text}, done {summary},
                 confirm {id, prompt}, audio_start {sr}, <audio>, audio_flush, audio_end, keywords {phrase, lines}, keywords_error {phrase, message},
-                camera_request {id, prompt, auto, [mode: "video", max_seconds, max_frames, max_edge, max_fps, max_bytes, audio]}, camera_close {id}, settings {allow_safety, restart_pending, sections}, setting_result {ok, key, value, restart, message},
+                camera_request {id, prompt, auto, [mode: "video", max_seconds, max_frames, max_edge, max_fps, max_bytes, audio, detail_frames, detail_edge]}, camera_close {id}, settings {allow_safety, restart_pending, sections}, setting_result {ok, key, value, restart, message},
                 error {message}, pong
 """
 from __future__ import annotations
@@ -54,6 +54,7 @@ MAX_VIDEO_FRAME_BYTES = 600_000
 MAX_VIDEO_TOTAL_BYTES = 80_000_000
 MAX_VIDEO_BUDGET_BYTES = 65_000_000  # what the PC will ask the phone for (the receiving limit above leaves room to spare)
 MAX_VIDEO_SECONDS = 120
+MAX_DETAIL_FRAMES = 8
 MAX_VIDEO_AUDIO_BYTES = 8_000_000  # 16 kHz 16-bit mono: four minutes
 MAX_AUDIO_SAMPLES = 32000  # two seconds in one frame is far more than any phone sends
 _TAILSCALE_EXES = ("tailscale", r"C:\Program Files\Tailscale\tailscale.exe")
@@ -237,6 +238,7 @@ class PhoneVideo:
     frames: list
     duration: float
     audio: bytes | None = None  # the clip's sound as 16 kHz mono 16-bit samples, when it was asked for and sent
+    detail: list | None = None  # a few extra frames at full detail, (seconds, JPEG), when they were asked for and sent
 
 
 class _Client:
@@ -301,11 +303,12 @@ class _Client:
         return self._request_camera({"prompt": prompt[:300], "auto": bool(auto)}, timeout, abandoned)
 
     def request_video(self, prompt: str, max_seconds: int, max_frames: int, max_edge: int, max_fps: float, max_bytes: int, timeout: float, abandoned,
-                      audio: bool = False) -> tuple["PhoneVideo | None", str]:
+                      audio: bool = False, detail_frames: int = 0, detail_edge: int = 1280) -> tuple["PhoneVideo | None", str]:
         """Ask the phone to record a short clip and send back evenly spaced, already shrunken frames: (PhoneVideo, "ok") or (None, why)."""
         extra = {"prompt": prompt[:300], "auto": False, "mode": "video", "max_seconds": int(min(max(max_seconds, 3), MAX_VIDEO_SECONDS)),
                  "max_frames": int(min(max(max_frames, 2), MAX_VIDEO_FRAMES)), "max_edge": int(min(max(max_edge, 320), 1920)), "max_fps": float(max_fps),
-                 "max_bytes": int(min(max(max_bytes, 500_000), MAX_VIDEO_BUDGET_BYTES)), "audio": bool(audio)}
+                 "max_bytes": int(min(max(max_bytes, 500_000), MAX_VIDEO_BUDGET_BYTES)), "audio": bool(audio),
+                 "detail_frames": int(min(max(detail_frames, 0), MAX_DETAIL_FRAMES)), "detail_edge": int(min(max(detail_edge, 640), 1920))}
         return self._request_camera(extra, timeout, abandoned)
 
     def _request_camera(self, extra: dict, timeout: float, abandoned):
@@ -351,7 +354,12 @@ class _Client:
             self.resolve_camera(mid, None, "invalid")
             return
         with self._lock:
-            self._videos[mid] = {"count": count, "duration": duration, "frames": {}, "bytes": 0, "audio": bytearray()}
+            detail_count = 0
+            try:
+                detail_count = min(max(int(msg.get("detail_count", 0)), 0), MAX_DETAIL_FRAMES)
+            except (TypeError, ValueError):
+                pass
+            self._videos[mid] = {"count": count, "duration": duration, "frames": {}, "bytes": 0, "audio": bytearray(), "detail": {}, "detail_count": detail_count}
 
     def video_frame(self, msg: dict) -> None:
         mid = str(msg.get("id", ""))
@@ -365,12 +373,14 @@ class _Client:
         except (TypeError, ValueError):
             self.resolve_camera(mid, None, "invalid")
             return
-        if not 0 <= index < clip["count"] or not data.startswith(b"\xff\xd8\xff"):
+        detail = bool(msg.get("detail"))
+        limit = clip["detail_count"] if detail else clip["count"]
+        if not 0 <= index < limit or not data.startswith(b"\xff\xd8\xff"):
             self.resolve_camera(mid, None, "invalid")
         elif len(data) > MAX_VIDEO_FRAME_BYTES or clip["bytes"] + len(data) > MAX_VIDEO_TOTAL_BYTES:
             self.resolve_camera(mid, None, "too_big")
         else:
-            clip["frames"][index] = (t, data)
+            clip["detail" if detail else "frames"][index] = (t, data)
             clip["bytes"] += len(data)
 
     def video_audio(self, msg: dict) -> None:
@@ -396,7 +406,8 @@ class _Client:
             return
         frames = [clip["frames"][i] for i in sorted(clip["frames"])]
         audio = bytes(clip["audio"]) if clip["audio"] and not clip.get("audio_bad") else None
-        self.resolve_camera(mid, PhoneVideo(frames, clip["duration"], audio) if frames else None, "ok" if frames else "invalid")
+        detail = [clip["detail"][i] for i in sorted(clip["detail"])] or None
+        self.resolve_camera(mid, PhoneVideo(frames, clip["duration"], audio, detail) if frames else None, "ok" if frames else "invalid")
 
     def cancel_cameras(self, reason: str = "interrupted") -> None:
         with self._lock:
@@ -652,14 +663,14 @@ class RemoteServer:
             client.resolve_camera(mid, data, "ok")
 
     def request_video(self, prompt: str = "", max_seconds: int = 20, max_frames: int = 100, max_edge: int = 640, max_fps: float = 2.0, max_bytes: int = 5_000_000,
-                      timeout: float | None = None, audio: bool = False) -> tuple["PhoneVideo | None", str]:
+                      timeout: float | None = None, audio: bool = False, detail_frames: int = 0) -> tuple["PhoneVideo | None", str]:
         """Have the connected phone record a short clip and return its frames: (PhoneVideo, "ok") or (None, why)."""
         client = self.client
         if client is None or not client.alive:
             return None, "no_phone"
         abandoned = lambda: self.session.state in (State.IDLE, State.LISTENING)  # noqa: E731
         wait = timeout if timeout is not None else CAMERA_WAIT_S + max_seconds + 45 + max_bytes / 1_000_000 * 3  # a bigger budget takes longer to arrive
-        return client.request_video(prompt, max_seconds, max_frames, max_edge, max_fps, max_bytes, wait, abandoned, audio)
+        return client.request_video(prompt, max_seconds, max_frames, max_edge, max_fps, max_bytes, wait, abandoned, audio, detail_frames)
 
     def request_photo(self, prompt: str = "", auto: bool = False, timeout: float = CAMERA_WAIT_S) -> tuple[bytes | None, str]:
         """Have the connected phone open its camera and return the photo the user takes: (JPEG bytes, "ok") or (None, why)."""

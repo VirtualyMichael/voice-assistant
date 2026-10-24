@@ -14,7 +14,7 @@ from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QObject, Qt, 
 from PySide6.QtGui import QColor, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QPlainTextEdit, QSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from .agent import Agent
@@ -26,6 +26,7 @@ from .mcp_client import McpHub, read_mcp_json
 from . import __version__, deep_look, odysseus, scheduler, tool_share, updater, video_look
 from .history_panel import PANEL_WIDTH, HistoryPanel
 from .schedule_ui import TasksPage
+from .settings_search import SettingsIndex, fill_results, reveal
 from .video_ui import VideoDetailBox
 from .memory import ChatLibrary
 from .pdf_tools import PdfStore
@@ -446,18 +447,50 @@ class MainWindow(QMainWindow):
         panel = QFrame(objectName="panel")
         tabs = QTabWidget()
         tabs.tabBar().hide()  # the sidebar list below drives the pages
-        names = ["Voice", "Phone", "Audio", "VR", "AI", "Skills", "Apps", "Home", "Tasks", "Memory", "Delegate", "Look", "General"]
+        names = ["Voice", "Phone", "Audio", "VR", "AI", "Video", "Skills", "Apps", "Home", "Tasks", "Memory", "Delegate", "Look", "General"]
         nav = QListWidget(objectName="nav")
         nav.setFixedWidth(96)
         nav.addItems(names)
         nav.setFocusPolicy(Qt.NoFocus)
         nav.currentRowChanged.connect(tabs.setCurrentIndex)
         nav.setCurrentRow(0)
-        side = QHBoxLayout(panel)
-        side.setContentsMargins(8, 8, 8, 8)
+        search = QLineEdit(placeholderText="Search settings (for example video, sound, timer, web)")
+        search.setClearButtonEnabled(True)
+        results = QListWidget(objectName="nav")
+        results.setFocusPolicy(Qt.NoFocus)
+        stack = QStackedWidget()  # the pages, or the search results while something is typed
+        stack.addWidget(tabs)
+        stack.addWidget(results)
+        index = SettingsIndex(tabs, names)
+
+        def run_search(text: str) -> None:
+            if not text.strip():
+                stack.setCurrentIndex(0)
+                return
+            fill_results(results, index.search(text))
+            stack.setCurrentIndex(1)
+
+        def open_result(item) -> None:
+            entry = item.data(Qt.UserRole)
+            if entry is None:
+                return
+            nav.setCurrentRow(entry.tab)
+            stack.setCurrentIndex(0)
+            reveal(entry, tabs)
+
+        search.textChanged.connect(run_search)
+        search.returnPressed.connect(lambda: results.count() and open_result(results.item(0)) if stack.currentIndex() == 1 else None)
+        results.itemClicked.connect(open_result)
+        self.settings_search = search
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
+        outer.addWidget(search)
+        side = QHBoxLayout()
         side.setSpacing(6)
         side.addWidget(nav)
-        side.addWidget(tabs, 1)
+        side.addWidget(stack, 1)
+        outer.addLayout(side, 1)
         form = TabbedForm(tabs, names)
         self._form = form
         form.use("Phone")
@@ -628,12 +661,16 @@ class MainWindow(QMainWindow):
         form.addRow(ody_ask)
         form.addRow(QLabel("Agent abilities (restart to apply):", objectName="small"))
         form.addRow(web)
-        form.addRow(QLabel("Video detail:", objectName="small"))
+        form.addRow(shell)
+        form.use("Video")
+        form.addRow(QLabel("How closely the assistant watches videos and looks at photos. The phone camera's own options (such as the 3-second timer) are in the phone app's settings.", objectName="small", wordWrap=True))
+        form.addRow(QLabel("Videos", objectName="small"))
         form.addRow(self.video_box)
+        form.addRow(QLabel("Photos", objectName="small"))
         form.addRow(deep)
         form.addRow(plantnet)
         form.addRow(plantnet_key)
-        form.addRow(shell)
+        form.use("AI")
         wake, phrase = QCheckBox("Enabled (restart to apply)"), QLineEdit(cfg.wake_phrase)
         wake.setChecked(cfg.wake_word_enabled)
         wake.toggled.connect(lambda v: self._set_field("wake_word_enabled", v))
@@ -1043,7 +1080,7 @@ class MainWindow(QMainWindow):
         registry = build_file_tools(self.policy, self._confirm)
         self.deep = deep_look.DeepLook(cfg, lambda: self.session.agent.llm, notify=lambda m: self.bridge.note.emit(m), plantnet_key=lambda: get_key("plantnet"))
         self.video = video_look.VideoLook(cfg, lambda: self.session.agent.llm, notify=lambda m: self.bridge.note.emit(m), confirm=self._confirm,
-                                          transcribe=self._video_transcriber(parts["accurate"]), web=self.deep.web)
+                                          transcribe=self._video_transcriber(parts["accurate"]), web=self.deep.web, identify_llm=self._identify_llm)
         self._full = registry  # every tool of this app, even when the model only sees ask_odysseus
         self.timers = Timers(lambda text: self.session.announce(text))
         self.catalog = AppCatalog()
@@ -1742,6 +1779,18 @@ class MainWindow(QMainWindow):
             why = odysseus.problem(self.cfg) or odysseus.ensure_running(self.cfg) or odysseus.OdysseusClient(self.cfg).check()
             self.bridge.note.emit("Odysseus: connected." if not why else f"Odysseus: {why}.")
         threading.Thread(target=work, daemon=True).start()
+
+    def _identify_llm(self):
+        """The model chosen for working out what a video is (Settings > Video), or the main model when none is chosen."""
+        name = self.cfg.video_identify_model.strip()
+        if not name or name == model_for(self.cfg):
+            return self.session.agent.llm
+        cache = getattr(self, "_identify_cache", None)
+        if cache is None or cache[0] != (name, self.cfg.llm_provider):
+            from .providers import with_model
+
+            cache = self._identify_cache = ((name, self.cfg.llm_provider), make_llm(with_model(self.cfg, name)))
+        return cache[1]
 
     def _video_transcriber(self, accurate):
         """Words from a stretch of a video's sound: the accurate recognizer when it is installed, else the fast one. None when neither is (no sound is read)."""
