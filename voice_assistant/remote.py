@@ -16,6 +16,8 @@ Messages are JSON text frames, plus binary frames for audio (16-bit little-endia
                 confirm {id, prompt}, audio_start {sr}, <audio>, audio_flush, audio_end, keywords {phrase, lines}, keywords_error {phrase, message},
                 camera_request {id, prompt, auto, [mode: "video", max_seconds, max_frames, max_edge, max_fps, max_bytes, audio, detail_frames, detail_edge]}, camera_close {id}, settings {allow_safety, restart_pending, sections}, setting_result {ok, key, value, restart, message},
                 share_saved {id, ok, name, message}, phone_action {id, action, args} (see phone_actions.py; the user confirms each one on the phone),
+                card {id, sources [{title, url, site}], settings [{section, label}], images [{jpeg_b64, page, caption, site}]} after done (sent again with
+                the images once they are downloaded; see answer_cards.py),
                 error {message}, pong
 """
 from __future__ import annotations
@@ -467,7 +469,17 @@ class _PhoneEvents(SessionEvents):
     def partial(self, text): self._send({"type": "partial", "text": text})
     def user_final(self, text): self._send({"type": "user_final", "text": text})
     def assistant_delta(self, text): self._send({"type": "assistant_delta", "text": text})
-    def assistant_done(self, metrics): self._send({"type": "done", "summary": metrics.describe()})
+    def assistant_done(self, metrics):
+        self._send({"type": "done", "summary": metrics.describe()})
+        cards = self.server.cards
+        card = cards.card() if cards is not None and self.server.client is not None else None
+        log.debug("answer card: %s", "none" if card is None else f"{len(card['sources'])} sources, {len(card['_pending'])} pictures")
+        if card is None:
+            return
+        pending = card.pop("_pending", [])
+        self._send(card)  # the sources at once; pictures follow as an update of the same card, once downloaded
+        if pending:
+            threading.Thread(target=lambda: (pics := cards.pictures(pending)) and self._send({**card, "images": pics}), daemon=True).start()
     def error(self, message): self._send({"type": "error", "message": message})
 
 
@@ -487,6 +499,7 @@ class RemoteServer:
         self.listeners: list = []  # called with {"event": "paired" | "connected" | "disconnected", ...} from the server's threads
         self._phone_events = _PhoneEvents(self)
         self.shares = None  # a phone_share.ShareReceiver: files shared from the phone's other apps
+        self.cards = None  # an answer_cards.CardCollector: the sources and pictures shown under each reply on the phone
         self.settings = SettingsService(cfg, lambda: bool(getattr(cfg, "remote_allow_safety_changes", False)), device_names or _device_names, settings_save)
         # Developer aid, off unless set: keep each utterance the phone sends as a WAV in this folder to judge microphone quality.
         # Audio is otherwise never written to disk.

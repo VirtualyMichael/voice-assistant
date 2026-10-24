@@ -21,7 +21,7 @@ from .config import config_dir, load_config
 
 CASES_FILE = Path(__file__).resolve().parent.parent / "evals" / "cases.json"
 READ_ONLY = {"get_time", "system_status", "web_search", "fetch_page", "find_setting", "read_attachment", "search_attachment", "look_at_attachment",
-             "list_timers", "list_apps", "list_routines",
+             "list_timers", "list_apps", "list_routines", "find_images",
              # these run for real too: here they only reach a pretend phone and a settings copy that is never saved
              "change_setting", "phone_set_alarm", "phone_set_timer", "phone_add_calendar_event"}
 
@@ -189,6 +189,10 @@ def _registry(cfg, inbox, llm, record):
             return True, "Done on the phone."
 
     tools = build_agent_tools(cfg, FolderPolicy([]), no, lambda _t: None)
+    if cfg.allow_web:
+        from .answer_cards import build_image_tools
+
+        tools += build_image_tools()
     tools += build_attachment_tools(inbox, lambda: llm, lambda: cfg.main_language)
     from dataclasses import replace
 

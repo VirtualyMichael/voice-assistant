@@ -63,6 +63,7 @@ from .phone_page import PhonePanel
 from .phone_camera import build_phone_camera_tools
 from .phone_actions import PHONE_ACTIONS_PROMPT, build_phone_action_tools
 from .phone_share import ShareReceiver
+from .answer_cards import CardCollector, build_image_tools, fetch_thumbnail
 from .setup_wizard import run_wizard
 from . import glass
 from .theme import ACCENTS, ICON_FONT, STATE_COLORS, STYLE, build_style, window_tint
@@ -1152,6 +1153,7 @@ class MainWindow(QMainWindow):
             return False
         self.remote = remote
         remote.shares = ShareReceiver(config_dir() / "attachments" / "phone", self._attach_shared)
+        remote.cards = self.cards
         camera = build_phone_camera_tools(self.cfg, lambda: self.remote, self._confirm, lambda: self.session.agent.llm, deep=self.deep.run, video=self.video)
         camera += build_phone_action_tools(lambda: self.remote)
         visible = [] if self.cfg.odysseus_mode == "only" else [self._registry]  # 'only' mode shows the model just ask_odysseus
@@ -1216,6 +1218,11 @@ class MainWindow(QMainWindow):
         self.catalog = AppCatalog()
         threading.Thread(target=self._scan_apps, daemon=True).start()
         registry.add(build_agent_tools(cfg, self.policy, self._confirm, lambda t: self.session.announce(t), self.timers, self.catalog))
+        if cfg.allow_web:
+            registry.add(build_image_tools())
+        # what each answer was based on (pages, pictures, settings), shown under the reply on the phone
+        self.cards = CardCollector(fetch_thumbnail if cfg.allow_web else None)
+        registry.listeners.append(self.cards.tool)
         self.govee = make_govee(cfg)
         registry.add(build_home_tools(cfg, self._confirm, self.govee))
         self.vrchat = VRChat(cfg)
@@ -1276,7 +1283,7 @@ class MainWindow(QMainWindow):
         player = lambda *a: (self.remote.make_player(local_player) if self.remote else local_player)(*a)  # noqa: E731
         speaker = Speaker(parts["synth"], player) if parts["synth"] else None
         qt_events = QtEvents(self.bridge)
-        events = MultiEvents(qt_events)
+        events = MultiEvents(qt_events, self.cards)
         self.ducker = Ducker(Audio(), cfg.duck_level, enabled=lambda: self.cfg.duck_music, init_com=_init_com)
         qt_events.on_state = self.ducker.on_state
         qt_events.on_delta = self.interp.feed
@@ -2355,6 +2362,24 @@ class MainWindow(QMainWindow):
         super().closeEvent(e)
 
 
+def _log_problems() -> None:
+    """Warnings and errors go to logs/app.log in the settings folder (at most about 2 MB), so a problem can be looked into afterwards.
+    Only what went wrong is written, never the conversation."""
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    folder = config_dir() / "logs"
+    folder.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(folder / "app.log", maxBytes=1_000_000, backupCount=1, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    level = logging.INFO if os.environ.get("VA_DEBUG_LOG") else logging.WARNING  # developers: more detail
+    handler.setLevel(level)
+    root = logging.getLogger()
+    root.addHandler(handler)
+    if root.level > level or root.level == logging.NOTSET:
+        root.setLevel(level)
+
+
 def main(argv: list[str] | None = None) -> int:
     from PySide6.QtCore import QLockFile
 
@@ -2368,6 +2393,7 @@ def main(argv: list[str] | None = None) -> int:
     if not lock.tryLock(200):  # a second copy would fight over the mic and hotkey
         QMessageBox.information(None, "Voice Assistant", "Voice Assistant is already running.")
         return 0
+    _log_problems()
     cfg = load_config()
     if not cfg.setup_done or "--setup" in argv:
         if not run_wizard(cfg) and not cfg.setup_done:

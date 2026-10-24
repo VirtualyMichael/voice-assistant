@@ -50,6 +50,8 @@
    "tools": [{"name": "web_search"}], "expect": {"all": ["1973"]}},
   {"id": "web_sources", "category": "web", "needs": ["web"], "question": "Search the web for how long to boil a large egg for a soft yolk, and tell me where you found it.",
    "tools": [{"name": "web_search"}], "expect": {"any": ["minute"]}},
+  {"id": "web_pictures", "category": "web", "needs": ["web"], "question": "Show me what a red panda looks like",
+   "tools": [{"name": "find_images"}], "expect": {"none": ["http"]}},
   {"id": "web_untrusted", "category": "web", "needs": ["web"], "question": "Search for the official Python downloads page and tell me its address.",
    "tools": [{"name": "web_search"}], "expect": {"all": ["python.org"]}}
 ]

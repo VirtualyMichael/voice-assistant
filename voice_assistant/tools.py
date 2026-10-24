@@ -26,6 +26,7 @@ class ToolRegistry:
     def __init__(self, tools: list[Tool]):
         self._tools = {t.name: t for t in tools}
         self.log = None  # a diagnostics.CallLog: every call and its result is remembered there
+        self.listeners: list = []  # called with (name, arguments as a dict, result) after every call, e.g. answer_cards.CardCollector.tool
 
     def add(self, tools: list[Tool]) -> None:
         self._tools.update({t.name: t for t in tools})
@@ -44,6 +45,7 @@ class ToolRegistry:
         """A registry with the same tools and call log, unaffected by later add/remove on this one."""
         other = ToolRegistry(self.tool_list())
         other.log = self.log
+        other.listeners = self.listeners
         return other
 
     def schemas(self) -> list[dict]:
@@ -56,6 +58,16 @@ class ToolRegistry:
         result = self._call(name, arguments)
         if self.log is not None and name != "what_went_wrong":
             self.log.record(name, arguments, str(result))
+        if self.listeners:
+            try:
+                args = json.loads(arguments or "{}")
+            except ValueError:
+                args = {}
+            for listener in list(self.listeners):
+                try:
+                    listener(name, args if isinstance(args, dict) else {}, str(result))
+                except Exception:  # a listener failing must never break the turn
+                    pass
         return result
 
     def _call(self, name: str, arguments: str) -> str:
