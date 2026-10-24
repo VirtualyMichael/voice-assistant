@@ -169,6 +169,7 @@ SETTINGS: tuple[Setting, ...] = (
     toggle("check_updates", "Check for updates", "Looks for a newer version when it starts. It always asks before installing.", "memory"),
     # ---- safety and permissions (all sensitive) ----
     toggle("allow_web", "Use the internet", "Lets it search and read web pages. Your questions and links leave this PC.", "safety", sensitive=True),
+    toggle("deep_vision", "Research photos online", "Photos you drop in or take with your phone are studied closely and searched for online. Needs 'Use the internet'. Only short text searches go online, not the photo.", "safety", sensitive=True),
     toggle("allow_shell", "Run PowerShell commands", "Lets it run commands. It still asks before each one.", "safety", sensitive=True),
     toggle("computer_control", "Control app windows", "Experimental: click, type and press keys in app windows. It asks per window.", "safety", sensitive=True),
     toggle("confirm_launch", "Ask before opening an app", "Turn off to let it open apps without asking.", "safety", sensitive=True, apply=LIVE),
@@ -230,6 +231,7 @@ PC_ONLY: dict[str, str] = {
     "window_size": "internal: the PC window's size",
     "ytm_extension_id": "internal: the browser extension the PC trusts",
     "mic_forward": "needs the PC's audio routing set up (virtual cable)",
+    "plantnet_enabled": "sends plant photos to a third party and needs a key entered on the PC",
     "remote_allow_safety_changes": "the owner's switch on the PC; it must never be changeable from the phone",
 }
 

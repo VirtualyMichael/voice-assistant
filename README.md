@@ -38,6 +38,7 @@
 - [Agent and tools](#agent-and-tools)
   - [Agent tasks](#agent-tasks)
   - [Safe file access](#safe-file-access)
+  - [Deeper picture look](#deeper-picture-look)
   - [Opening apps](#opening-apps)
   - [Routines, music actions, interpreter and more](#routines-music-actions-interpreter-and-more)
   - [Skills (Bionic / Claude format)](#skills-bionic--claude-format)
@@ -127,6 +128,7 @@ Everything below is built in. Items marked *(off by default)* need switching on 
 - Open apps by name (it switches to a window that is already open instead of starting a second copy), set timers, read or write the clipboard, search and read the web *(off by default)*, work with files and PDFs in folders you approve, run PowerShell *(off by default)*.
 - **Music and volume**: play, pause, next and previous through Windows media sessions; exact volume; one app's volume ("set YouTube Music to 40"); "play Maps by Maroon 5" in YouTube Music, done by searching and pressing play on the YouTube Music web page itself in a YouTube Music window the assistant keeps (sign in there once): no screenshots, no AI vision, no cost, and it checks the right song actually started. Optionally install the small, readable browser extension in `extension/` (see its README) and the same thing is done in your own signed-in YouTube Music tab or app window instead. With the extension it can also save your whole library (playlist names and every song in them) on your PC, so a spoken "Continuum by SLVM Lord" is matched to the exact saved spelling, a different artist's song with the same title is never played by mistake, and when the page is unclear your own language model reads the whole result list to decide.
 - **Smart home**: **Govee** lights (colour, brightness, on/off) over your network or Govee's cloud with your own key, and **Home Assistant** (which brings in Google Home / Nest, Alexa-connected devices, Matter, Hue and more; locks and alarms always ask).
+- **Deeper picture look** *(on when web access is on)*: photos you drop into the chat or take with your phone are studied closely, searched for online and checked against reference photos, so "what plant is this?" gets a researched answer with a confidence. See [Deeper picture look](#deeper-picture-look).
 - **Screen help**: "what's on my screen?", or "look at VRChat and translate the text", using the vision model you already run; answers come in your own language.
 - **Computer use** *(experimental, off by default)*: a step-by-step loop that looks at an app window, clicks buttons by reading their text (Windows' built-in OCR), types, presses keys and checks the result. It asks before touching each window and refuses terminals, password managers and security prompts.
 - **Hand coding tasks to Claude Code or Codex** *(off by default)*: you approve the exact text first, with daily request and dollar limits and a usage readout.
@@ -293,6 +295,21 @@ VR switching now re-opens the speaker for the active profile, shows both mic and
 File tools (`list_directory`, `read_text_file`, `write_text_file`) work only inside folders added with
 "Add approved folder…". Paths outside (including `..`, symlinks, alternate data streams) are rejected;
 every write asks for confirmation (auto-declined after 60 s). No delete tool exists.
+
+### Deeper picture look
+
+For photos you drop into the chat and photos taken with the phone camera (not screenshots of your screen), the assistant does more than describe:
+
+1. **Observe:** the vision model you already use describes the picture, answers directly if it can, and lists what it might be and what to search for.
+2. **Inspect:** small details it flags (a label, a leaf edge) are cropped, enlarged and looked at again.
+3. **Research:** short text searches, Wikipedia, and for plants, animals and fungi the iNaturalist taxonomy. A name no taxonomy knows lowers the confidence.
+4. **Verify:** a reference photo of the top candidates is fetched and the vision model compares it with yours.
+5. **Pl@ntNet** *(optional, off)*: for plants, with your own free key, the photo is also sent to Pl@ntNet for a dedicated plant identification.
+
+The answer says what it found, how sure it is, useful facts and safety notes (for example toxic to pets), and which searches it ran.
+Simple questions ("what colour is it?") skip the web. Only short descriptive searches go online, never the picture; searches containing numbers,
+e-mail addresses or links are dropped, documents and screenshots are not researched unless you ask, and people are never identified from their faces.
+Turn it off in Settings > AI (*Research photos online*); it needs *Let the agent search/read the web*.
 
 ### Opening apps
 

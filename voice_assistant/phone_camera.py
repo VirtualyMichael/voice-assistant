@@ -23,7 +23,7 @@ _WHY = {
 }
 
 
-def build_phone_camera_tools(cfg, get_remote, confirm, get_llm, clock=time.monotonic) -> list[Tool]:
+def build_phone_camera_tools(cfg, get_remote, confirm, get_llm, clock=time.monotonic, deep=None) -> list[Tool]:
     from .agent_tools import _obj, _str
 
     last: dict = {"photo": None, "at": 0.0}
@@ -42,6 +42,9 @@ def build_phone_camera_tools(cfg, get_remote, confirm, get_llm, clock=time.monot
                 return _WHY.get(why, f"No photo was taken ({why}).")
             last["photo"], last["at"] = photo, clock()
         try:
+            researched = deep(photo, "image/jpeg", question or "What am I looking at?") if deep is not None else None  # None = deep looks off
+            if researched:
+                return researched
             answer = ask_about_image(
                 get_llm(), question or "What am I looking at?", photo, cfg.main_language, mime="image/jpeg",
                 what="a photo the user just took with their phone camera",
@@ -53,7 +56,7 @@ def build_phone_camera_tools(cfg, get_remote, confirm, get_llm, clock=time.monot
     return [Tool(
         "look_through_phone_camera",
         "Open the camera on the user's phone so they can take a picture of what is in front of them, then describe it or answer a question about it "
-        "('what is this', 'read this sign', 'which plant is that', 'translate this menu'). The user frames, zooms and taps the shutter on their phone. "
+        "('what is this', 'read this sign', 'which plant is that', 'translate this menu'). For plants, animals, products, places and objects it studies the photo closely and researches it online, then gives a checked answer with a confidence. The user frames, zooms and taps the shutter on their phone. "
         "This is the DEFAULT way to look at anything when the user is talking through their phone ('what do you see', 'what am I looking at', 'look at this'): "
         "use look_at_screen instead only when they say it is on their PC, computer, monitor, or in a named app or game. "
         "Set new_photo to false to ask another question about the picture already taken. Only works while the phone app is connected.",

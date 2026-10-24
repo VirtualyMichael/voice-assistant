@@ -22,7 +22,7 @@ from .audio_io import AudioIO, list_devices
 from .hardware import detect_gpus, recommend
 from .config import INTERRUPT_MODES, LISTEN_MODES, Config, config_dir, load_config, save_config
 from .mcp_client import McpHub, read_mcp_json
-from . import __version__, odysseus, tool_share, updater
+from . import __version__, deep_look, odysseus, tool_share, updater
 from .memory import ConversationStore
 from .pdf_tools import PdfStore
 from .skill_tools import build_skill_tools
@@ -536,6 +536,16 @@ class MainWindow(QMainWindow):
         web = QCheckBox("Let the agent search/read the web")
         web.setChecked(cfg.allow_web)
         web.toggled.connect(lambda v: self._set_field("allow_web", v))
+        deep = QCheckBox("Research photos online for better answers (needs web access)")
+        deep.setToolTip("For photos you drop in or take with your phone: the assistant studies details, searches the web and public plant/animal databases, and checks reference photos. Only short text searches go online, never the photo.")
+        deep.setChecked(cfg.deep_vision)
+        deep.toggled.connect(lambda v: self._set_field("deep_vision", v))
+        plantnet = QCheckBox("Also identify plants with Pl@ntNet (sends the plant photo to them)")
+        plantnet.setToolTip("Optional and much more accurate for plants. Needs your own free Pl@ntNet key. The photo leaves this PC for that service.")
+        plantnet.setChecked(cfg.plantnet_enabled)
+        plantnet.toggled.connect(lambda v: self._set_field("plantnet_enabled", v))
+        plantnet_key = QPushButton("Set Pl@ntNet key\u2026")
+        plantnet_key.clicked.connect(self._ask_plantnet_key)
         shell = QCheckBox("Let the agent run PowerShell (asks each time)")
         shell.setChecked(cfg.allow_shell)
         shell.toggled.connect(lambda v: self._set_field("allow_shell", v))
@@ -581,6 +591,9 @@ class MainWindow(QMainWindow):
         form.addRow(ody_ask)
         form.addRow(QLabel("Agent abilities (restart to apply):", objectName="small"))
         form.addRow(web)
+        form.addRow(deep)
+        form.addRow(plantnet)
+        form.addRow(plantnet_key)
         form.addRow(shell)
         wake, phrase = QCheckBox("Enabled (restart to apply)"), QLineEdit(cfg.wake_phrase)
         wake.setChecked(cfg.wake_word_enabled)
@@ -938,7 +951,7 @@ class MainWindow(QMainWindow):
         if not remote.start():
             return False
         self.remote = remote
-        camera = build_phone_camera_tools(self.cfg, lambda: self.remote, self._confirm, lambda: self.session.agent.llm)
+        camera = build_phone_camera_tools(self.cfg, lambda: self.remote, self._confirm, lambda: self.session.agent.llm, deep=self.deep.run)
         visible = [] if self.cfg.odysseus_mode == "only" else [self._registry]  # 'only' mode shows the model just ask_odysseus
         for reg in {id(r): r for r in [*visible, self._full]}.values():  # the model's tools, and the full set routines use
             reg.add(camera)
@@ -983,6 +996,7 @@ class MainWindow(QMainWindow):
                 self.warnings.append(f"{name} unavailable: {e}")
         llm = make_llm(cfg)
         registry = build_file_tools(self.policy, self._confirm)
+        self.deep = deep_look.DeepLook(cfg, lambda: self.session.agent.llm, notify=lambda m: self.bridge.note.emit(m), plantnet_key=lambda: get_key("plantnet"))
         self._full = registry  # every tool of this app, even when the model only sees ask_odysseus
         self.timers = Timers(lambda text: self.session.announce(text))
         self.catalog = AppCatalog()
@@ -994,7 +1008,7 @@ class MainWindow(QMainWindow):
         registry.add(build_vrchat_tools(cfg, self.vrchat))
         self.vrchat.resolve_path = self.inbox.resolve  # 'import the menu from the folder I attached'
         self.vrchat.attached = lambda: [it["path"] for it in self.inbox.items.values()]
-        registry.add(build_attachment_tools(self.inbox, lambda: self.session.agent.llm, lambda: cfg.main_language))
+        registry.add(build_attachment_tools(self.inbox, lambda: self.session.agent.llm, lambda: cfg.main_language, deep=self.deep.run))
         self.interp = Interpreter(say=lambda t: self.vrchat.say(t), on_change=lambda: self._refresh_prompt(), chatbox_ok=lambda: self.cfg.vrchat_enabled)
         registry.add(build_interpreter_tools(self.interp))
         registry.add(build_profile_tools(cfg, self.profile, self._confirm))
@@ -1628,6 +1642,16 @@ class MainWindow(QMainWindow):
                 self._on_error(f"Could not save the key: {e}")
                 return
             self._rebuild_llm()
+
+    def _ask_plantnet_key(self) -> None:
+        key, ok = QInputDialog.getText(self, "Pl@ntNet key", "Paste your Pl@ntNet API key (free at my.plantnet.org):", QLineEdit.Password)
+        if ok and key.strip():
+            try:
+                save_key("plantnet", key)
+            except Exception as e:
+                self._on_error(f"Could not save the key: {e}")
+                return
+            self.chat.add("bubbleNote", "Pl@ntNet key saved.")
 
     def _ask_odysseus_token(self) -> None:
         key, ok = QInputDialog.getText(self, "Odysseus token", "Paste an Odysseus API token with the chat scope:", QLineEdit.Password)
