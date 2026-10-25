@@ -42,6 +42,7 @@ from .routing import double_voice_warnings, listen_routes
 from .delegate import UsageLog, build_delegate_tools
 from .computer import build_computer_tools
 from .backup import make_backup, restore_backup
+from .briefing import build_briefing_tools
 from .extras import Audio, Notes, build_extra_tools
 from .music import build_music_tools, open_users_youtube_music
 from .ytm_bridge import YtmBridge, extension_folder, make_music_actions, make_player, make_playlist_player
@@ -57,7 +58,7 @@ from .interpreter import Interpreter, build_interpreter_tools
 from .vrchat import VRCHAT_TOOL_NAMES, VRChat, build_vrchat_tools
 from .vrchat_menu import AvatarNotes
 from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_for, needs_key, save_key, set_model
-from .session import MultiEvents, Session, SessionEvents
+from .session import MultiEvents, Session, SessionEvents, State
 from .speaker import Speaker
 from .remote import ChatHooks, PairedDevices, RemoteServer
 from .phone_page import PhonePanel
@@ -513,6 +514,7 @@ class MainWindow(QMainWindow):
         self.profile, self.usage = Profile(), UsageLog()
         self._vr_gen = 0
         self._vr_apply_lock = threading.Lock()
+        self._live_look_lock = threading.Lock()  # one live "what's this?" frame is looked at at a time
         self._warned_routes: set[str] = set()
 
         self.status = QLabel(objectName="status")
@@ -1332,6 +1334,8 @@ class MainWindow(QMainWindow):
             return False
         self.remote = remote
         remote.on_new_chat = self.bridge.new_chat_requested.emit
+        remote.on_camera_ask = self._phone_camera_ask
+        remote.notes = Notes()
         remote.chat_hooks = ChatHooks(lambda: self.chats.list(), self._phone_open_chat, self._phone_delete_chat, lambda: self.chat_id or "")
         remote.shares = ShareReceiver(config_dir() / "attachments" / "phone", self._attach_shared)
         remote.cards = self.cards
@@ -1436,6 +1440,7 @@ class MainWindow(QMainWindow):
         self.scheduler = scheduler.Scheduler(self.task_store, self._run_scheduled, enabled=lambda: self.cfg.scheduled_tasks_enabled,
                                              on_change=lambda: self.bridge.tasks_changed.emit(), note=lambda m: self.bridge.note.emit(m))
         registry.add(scheduler.build_schedule_tools(self.task_store, self.scheduler, self._confirm))
+        registry.add(build_briefing_tools(self.task_store, self.scheduler, self._confirm))
         own = SettingsService(cfg, lambda: False, list_devices, save_config)  # the assistant may never change safety settings
         registry.add(build_settings_tools(own, self._confirm, self.settings_index.search_text, self._show_setting_for_agent))
         if cfg.odysseus_mode == "only":
@@ -1858,6 +1863,37 @@ class MainWindow(QMainWindow):
         c = QColorDialog.getColor(QColor(self.cfg.accent), self, "Accent colour")
         if c.isValid():
             self._set_look("accent", c.name())
+
+    def _phone_camera_ask(self, data: bytes, question: str, live: bool) -> None:
+        """A picture from the phone's own camera screen. One shot: it becomes an attachment and goes through the normal assistant turn. Live: a quick
+        look at each frame (one short sentence, spoken), skipped while the last answer is still being worked on or spoken."""
+        if live:
+            if self.session.state not in (State.IDLE, State.LISTENING) or not self._live_look_lock.acquire(blocking=False):
+                return
+            try:
+                ask = question or "What is this? Answer in one short sentence (under 15 words), naming it if you can."
+                old = getattr(self, "_live_name", "")
+                name, err = self.inbox.add_image_bytes(data, ".jpg")
+                if err:
+                    return
+                if old:
+                    self.inbox.remove(old)
+                self._live_name = name
+                answer = self.inbox.look(name, ask, lambda: self.session.agent.llm, self.cfg.main_language, deep=None)
+                text = answer.split("\n", 1)[-1].strip() if answer.startswith("[") else answer
+                if text:
+                    self.bridge.gui_call.emit(lambda t=text: (self.chat.end_stream(), self.chat.add("bubbleAI", t)))
+                    client = self.remote.client if self.remote else None
+                    if client is not None:
+                        client.send({"type": "camera_answer", "text": text})  # shown over the live camera on the phone; not spoken, so it never talks over what you are filming
+            finally:
+                self._live_look_lock.release()
+            return
+        name, err = self.inbox.add_image_bytes(data, ".jpg")
+        if err:
+            return
+        ask = question.strip() or "What is this?"
+        self.session.submit_text(f"{ask} (The picture I just took is attached as '{name}'. Look at it with look_at_attachment.)")
 
     def _fill_notes(self) -> None:
         self.notes_list.clear()

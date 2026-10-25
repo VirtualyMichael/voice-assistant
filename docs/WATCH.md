@@ -102,4 +102,6 @@ What has been checked: both apps compile, the protocol tests pass (8), the phone
 
 To try it with a Wear OS watch: on the watch turn on Developer options and Wireless debugging, then `adb connect <watch address:port>` and `adb -s <that> install wear-debug.apk` (built by `gradlew :wear:assembleDebug`); on the phone switch the watch setting on; open the app on the watch.
 
-Still to do from the plan: a Tile and a complication to open it in one tap, reply audio on the watch speaker, typed or dictated replies, and offline phone speech recognition.
+Added in 0.17 (built, run on a Wear OS 4 emulator without a paired phone; the phone link itself is still untested): the **Ask tile** (swipe to it and tap once; it opens the app already listening), an **Ask complication** for the watch face, six **quick-reply chips** (Yes, No, Thanks, Continue, Say that again, Shorter please) that need no microphone, a buzz when the microphone opens and closes, and the screen staying on while it listens. What the emulator check showed: the app starts without errors, shows "Phone not found" when no phone is paired, the quick replies display, and the tile and complication are registered. What it did not show: the audio and messages between a real watch and phone, the tile on a watch face, or the complication in a face's slot.
+
+Still to do from the plan: reply audio on the watch speaker, dictated replies, and offline phone speech recognition.

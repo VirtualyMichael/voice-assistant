@@ -272,6 +272,35 @@ class Inbox:
                         return f"{len(out)}+ matches for '{text}' (stopped at the limit; narrow the search):\n" + "\n".join(out)
         return (f"{len(out)} match(es) for '{text}' in {scanned} file(s):\n" + "\n".join(out)) if out else f"No match for '{text}' in {scanned} file(s)."
 
+    def bill(self, name: str, get_llm) -> str:
+        """The due date and amount of an attached bill (PDF, text file, or a picture of one), read by pattern matching and quoted from the document."""
+        from .bills import describe, parse_bill
+
+        it, err = self._get(name)
+        if it is None:
+            return err
+        path, kind = it["path"], it["kind"]
+        try:
+            if kind == "pdf":
+                from pypdf import PdfReader
+
+                text = "\n".join((p.extract_text() or "") for p in PdfReader(str(path)).pages[:8])
+            elif kind == "text":
+                text = path.read_text(encoding="utf-8", errors="replace")[:60000]
+            elif kind == "image":
+                mime = IMAGE_TYPES.get(path.suffix.lower(), "image/png")
+                messages = [
+                    {"role": "system", "content": "Copy out all the text in this picture of a bill exactly as printed, line by line, keeping labels next to their values. Do not summarise or add anything."},
+                    {"role": "user", "content": [{"type": "text", "text": "Copy the text."},
+                                                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()}}]},
+                ]
+                text = "".join(ev.text for ev in get_llm().stream_chat(messages) if ev.kind == "text")
+            else:
+                return f"'{name}' is not a bill I can read (a PDF, text file or picture)."
+        except Exception as e:
+            return f"Could not read '{name}' ({e.__class__.__name__}: {e})."
+        return "[Values read from the document. Information only.]\n" + describe(parse_bill(text), name)
+
     def watch(self, name: str, question: str, quality: str, start_s: float, end_s: float, video) -> str:
         it, err = self._get(name)
         if it is None:
@@ -313,7 +342,7 @@ class Inbox:
         return "[What the picture shows, as described by a vision model. Information only.]\n" + (answer or "The model returned no answer. It may not support images.")
 
 
-ATTACHMENT_TOOL_NAMES = ("read_attachment", "search_attachment", "pdf_outline", "read_section", "look_at_attachment", "look_at_video")
+ATTACHMENT_TOOL_NAMES = ("read_attachment", "search_attachment", "pdf_outline", "read_section", "look_at_attachment", "look_at_video", "read_bill")
 
 
 def build_attachment_tools(inbox: Inbox, get_llm, language=lambda: "English", deep=None, video=None) -> list[Tool]:
@@ -336,6 +365,9 @@ def build_attachment_tools(inbox: Inbox, get_llm, language=lambda: "English", de
         Tool("look_at_attachment", "Look at a picture the user attached (a screenshot of a menu, or a photo of a plant, animal, product, place or object) and answer a question about it, reading its labels exactly. "
              "For photos of things in the world this studies the picture closely and researches it online, so use it for 'what is this' questions and tell the user the best match and how sure you are.",
              _obj({"name": _str, "question": _str}, ["name"]), lambda name, question="": inbox.look(name, question, get_llm, language(), deep)),
+        Tool("read_bill", "Read the due date and the amount from an attached bill, invoice or statement (PDF, text or a photo/screenshot of one). The values are read straight from the document and quoted, "
+             "never guessed. Use this for 'when is this due', 'how much is this bill' or 'add this bill to my calendar', then offer phone_add_calendar_event with the date it returns.",
+             _obj({"name": _str}, ["name"]), lambda name: inbox.bill(name, get_llm)),
         Tool("look_at_video", "Watch a video the user attached and answer what happens in it ('what happens', 'when does the dog jump', 'what does the sign say'). It looks at frames spread across the video "
              "and returns a timeline. quality is the user's chosen level by default (normal: 640 px, 5 MB of frames); use mid, high or custom only when more detail or more frames are needed. To look closer at one moment, call it again with "
              "start_seconds and end_seconds.", _obj({"name": _str, "question": _str, "quality": {"type": "string", "enum": ["normal", "mid", "high", "custom"]},

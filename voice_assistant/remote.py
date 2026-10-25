@@ -7,7 +7,7 @@ header; the phone app does not).
 
 Messages are JSON text frames, plus binary frames for audio (16-bit little-endian mono PCM; 16 kHz from the phone, any rate from the PC):
   phone -> PC   hello {token, device}, <audio>, wake, end_of_speech, interrupt, text {text}, get_keywords {phrase, threshold}, get_settings, set_setting {key, value}, confirm_result {id, ok},
-                camera_pending {id, opened}, camera_photo {id, jpeg_b64}, camera_cancel {id, reason}, ping,
+                camera_ask {jpeg_b64, question, live}, camera_pending {id, opened}, camera_photo {id, jpeg_b64}, camera_cancel {id, reason}, ping,
                 camera_video_begin {id, count, duration_ms, [detail_count]}, camera_video_frame {id, index, t_ms, jpeg_b64, [detail]}, camera_video_audio {id, pcm_b64}, camera_video_end {id}
                 (a video is sampled on the phone, so only a few small frames cross the link, never the clip itself),
                 share_file {id, name, mime, total, seq, last, data_b64} (a file shared from another app, in pieces; see phone_share.py),
@@ -517,6 +517,8 @@ class RemoteServer:
         self.listeners: list = []  # called with {"event": "paired" | "connected" | "disconnected", ...} from the server's threads
         self._phone_events = _PhoneEvents(self)
         self.on_new_chat = None  # called when the phone's New chat button is pressed (any thread)
+        self.notes = None  # an extras.Notes: what the assistant was asked to remember, listed and edited from the phone
+        self.on_camera_ask = None  # called with (jpeg bytes, question, live) for a picture taken on purpose from the phone's camera screen (any thread)
         self.chat_hooks: ChatHooks | None = None  # the PC's saved chats, for the phone's history screen
         self.shares = None  # a phone_share.ShareReceiver: files shared from the phone's other apps
         self.cards = None  # an answer_cards.CardCollector: the sources and pictures shown under each reply on the phone
@@ -691,6 +693,10 @@ class RemoteServer:
             self.session.stop()
         elif kind == "camera_photo":
             self._receive_photo(client, msg)
+        elif kind in ("list_notes", "add_note", "edit_note"):  # the phone's "what it remembers" screen
+            self._notes_request(client, kind, msg)
+        elif kind == "camera_ask":  # a picture the user took on purpose from the phone's camera screen: "what's this?", one shot or live
+            self._camera_ask(msg)
         elif kind == "camera_video_begin":
             client.video_begin(msg)
         elif kind == "camera_video_frame":
@@ -775,6 +781,30 @@ class RemoteServer:
             client.resolve_camera(mid, None, "too_big")
         else:
             client.resolve_camera(mid, data, "ok")
+
+    def _notes_request(self, client: _Client, kind: str, msg: dict) -> None:
+        """List, add, edit or delete (an edit with empty text) the things the assistant was asked to remember. Always answers with the whole list."""
+        notes = self.notes
+        if notes is not None:
+            try:
+                text = str(msg.get("text", ""))[:1000]
+                if kind == "add_note" and text.strip():
+                    notes.add(text)
+                elif kind == "edit_note":
+                    notes.update(int(msg.get("index", -1)), text)
+            except (ValueError, TypeError, OSError):
+                pass
+        items = notes.items()[-100:] if notes is not None else []
+        client.send({"type": "notes", "items": items, "offset": max(0, (len(notes.items()) if notes is not None else 0) - 100)})
+
+    def _camera_ask(self, msg: dict) -> None:
+        try:
+            data = base64.b64decode(str(msg.get("jpeg_b64", "")), validate=True)
+        except ValueError:
+            return
+        if not data.startswith(b"\xff\xd8\xff") or len(data) > MAX_PHOTO_BYTES or self.on_camera_ask is None:
+            return
+        self.on_camera_ask(data, str(msg.get("question", ""))[:300], bool(msg.get("live")))
 
     def request_video(self, prompt: str = "", max_seconds: int = 20, max_frames: int = 100, max_edge: int = 640, max_fps: float = 2.0, max_bytes: int = 5_000_000,
                       timeout: float | None = None, audio: bool = False, detail_frames: int = 0) -> tuple["PhoneVideo | None", str]:

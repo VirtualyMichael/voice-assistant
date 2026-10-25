@@ -236,3 +236,49 @@ def test_no_phone_and_a_refusal_are_explained():
     assert "No phone is connected" in tools(None).call("phone_set_timer", json.dumps({"seconds": 60}))
     assert "said no" in tools(FakeRemote((False, "declined"))).call("phone_set_timer", json.dumps({"seconds": 60}))
     assert "Error" in tools(FakeRemote()).call("phone_set_timer", json.dumps({"seconds": 0}))
+
+
+def test_a_picture_from_the_phones_camera_screen_reaches_the_pc_with_its_question(tmp_path):
+    import base64
+
+    s = Setup(tmp_path)
+    try:
+        got = []
+        s.server.on_camera_ask = lambda data, question, live: got.append((data[:3], question, live))
+        ws = s.connect()
+        collect(ws, has("ready"))
+        jpeg = b"\xff\xd8\xff" + b"0" * 50
+        ws.send(json.dumps({"type": "camera_ask", "jpeg_b64": base64.b64encode(jpeg).decode(), "question": "what plant is this?", "live": False}))
+        ws.send(json.dumps({"type": "camera_ask", "jpeg_b64": base64.b64encode(b"not a jpeg").decode(), "question": "x", "live": True}))  # ignored
+        ws.send(json.dumps({"type": "camera_ask", "jpeg_b64": base64.b64encode(jpeg).decode(), "live": True}))
+        for _ in range(60):
+            if len(got) >= 2:
+                break
+            threading.Event().wait(0.05)
+        assert got == [(b"\xff\xd8\xff", "what plant is this?", False), (b"\xff\xd8\xff", "", True)]
+    finally:
+        s.close()
+
+
+def test_the_phone_can_list_add_edit_and_delete_remembered_notes(tmp_path):
+    from voice_assistant.extras import Notes
+
+    s = Setup(tmp_path)
+    try:
+        s.server.notes = Notes(tmp_path / "notes.json")
+        ws = s.connect()
+        collect(ws, has("ready"))
+
+        def ask(**msg):
+            ws.send(json.dumps(msg))
+            return collect(ws, has("notes"))
+
+        assert ask(type="list_notes")[-1]["items"] == []
+        ask(type="add_note", text="my dog is Rex")
+        got = ask(type="add_note", text="I like metric")[-1]["items"]
+        assert [n["text"] for n in got] == ["my dog is Rex", "I like metric"]
+        assert [n["text"] for n in ask(type="edit_note", index=0, text="my dog is Max")[-1]["items"]] == ["my dog is Max", "I like metric"]
+        assert [n["text"] for n in ask(type="edit_note", index=0, text="")[-1]["items"]] == ["I like metric"]
+        assert [n["text"] for n in ask(type="edit_note", index="x", text="y")[-1]["items"]] == ["I like metric"]  # junk changes nothing
+    finally:
+        s.close()
