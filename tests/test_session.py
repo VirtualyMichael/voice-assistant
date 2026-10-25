@@ -45,7 +45,10 @@ class SlowLLM:
 
 class Rec(SessionEvents):
     def __init__(self):
-        self.deltas, self.done = [], threading.Event()
+        self.deltas, self.done, self.finals = [], threading.Event(), []
+
+    def user_final(self, t):
+        self.finals.append(t)
 
     def assistant_delta(self, t):
         self.deltas.append(t)

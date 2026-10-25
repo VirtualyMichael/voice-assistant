@@ -87,6 +87,7 @@ class Config:
     listen_timeout_s: float = 8.0
     follow_up: bool = True  # keep listening after a spoken reply
     follow_up_s: float = 8.0  # ...for this many seconds; 0 turns follow-up off
+    ambient_min_words: int = 3  # when the mic opened by itself (follow-up window, always-listening), ignore sentences shorter than this unless they are a command like 'stop'; 0 = keep everything
     accurate_asr: bool = True  # re-check each sentence with the larger recognizer when it is installed
     models_dir: str = field(default_factory=lambda: str(default_models_dir()))
     tts_speed: float = 1.0

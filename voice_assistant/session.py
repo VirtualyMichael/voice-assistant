@@ -80,6 +80,23 @@ class MultiEvents(SessionEvents):
 _FINALIZE = object()  # queued behind the audio already fed, so the recognizer has seen everything before the sentence is closed
 
 
+SHORT_COMMANDS = frozenset({
+    "stop", "yes", "no", "yeah", "yep", "nope", "cancel", "thanks", "thank you", "never mind", "nevermind", "next", "previous", "pause", "play", "resume",
+    "louder", "quieter", "repeat", "continue", "okay", "ok", "go on", "go ahead", "skip", "mute", "unmute", "again", "more",
+})
+
+
+def looks_like_noise(text: str, min_words: int) -> bool:
+    """True for a sentence picked up while the mic was open without being asked (the follow-up window, always-listening mode): one or two stray words from
+    the room ('Sh', 'Ow', 'Cut') are far more likely to be other people or the TV than a request, so they are dropped unless they are a known short command."""
+    if min_words <= 0:
+        return False
+    words = re.findall(r"[A-Za-z0-9']+", text.lower())
+    if len(words) >= min_words:
+        return False
+    return " ".join(words) not in SHORT_COMMANDS
+
+
 def trim_leading_silence(x: np.ndarray, sr: int = 16000, pad_s: float = 0.5) -> np.ndarray:
     """Cut the quiet lead-in off a recording but keep `pad_s` before the first loud frame.
 
@@ -118,6 +135,7 @@ class Session:
         self.accurate = accurate  # optional second recognizer with a transcribe(samples) method
         self._utt: list[np.ndarray] = []  # audio of the sentence being spoken, for the accurate recognizer
         self._listen_window = cfg.listen_timeout_s
+        self._ambient = False
         self.state = State.IDLE
         self._lock = threading.RLock()
         self._turn_id = 0
@@ -265,6 +283,8 @@ class Session:
         if not keep_recognizer:
             self._utt = []
         self._listen_window = self.cfg.listen_timeout_s if window is None else window
+        # nobody asked for this turn by name: a follow-up window, or an always-open mic (never when a phone's button or wake phrase started it)
+        self._ambient = not keep_recognizer and not self.phone_active() and (window is not None or self.cfg.listen_mode == "always")
         self._listen_started, self._heard, self._last_partial = self.clock(), keep_recognizer, ""
         self._set_state(State.LISTENING)
 
@@ -396,6 +416,10 @@ class Session:
         audio, self._utt = self._utt, []
         rec.reset()
         self._last_partial, self._heard = "", False
+        if final and self._ambient and looks_like_noise(final, getattr(self.cfg, "ambient_min_words", 3)):
+            log.info("ignored a stray sentence picked up from the room: %r", final)
+            self.events.partial("")
+            return  # keep listening; the usual window timeout closes it
         if final:
             final = self._refine(final, audio)
             with self._lock:

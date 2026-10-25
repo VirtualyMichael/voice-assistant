@@ -137,6 +137,7 @@ SETTINGS: tuple[Setting, ...] = (
     number("listen_timeout_s", "How long it waits for you to start", "After listening starts, how long it waits for you to say something.", "voice", 2, 30, 1, unit="s", apply=LIVE),
     toggle("follow_up", "Keep listening after a reply", "Lets you answer without starting again. On the phone, hands-free uses the wake phrase instead.", "voice", apply=LIVE, essential=True),
     number("follow_up_s", "Follow-up time", "How long it keeps listening after a reply. 0 turns follow-up off.", "voice", 0, 30, 1, unit="s", apply=LIVE),
+    number("ambient_min_words", "Ignore stray words from the room", "When the mic opened by itself (after a reply, or in always-listening), sentences shorter than this many words are ignored unless they are a command like “stop”. 0 keeps everything.", "voice", 0, 6, 1, integer=True, apply=LIVE),
     toggle("accurate_asr", "Double-check each sentence", "Re-listens to every sentence with a bigger, more accurate model. A little slower, much more accurate.", "voice"),
     toggle("voice_approval", "Answer questions by voice", "Confirmations are also read aloud, and you can say yes or no.", "voice", apply=LIVE),
     toggle("wake_word_enabled", "Wake phrase on the PC", "Lets the PC's own microphone start listening when it hears the phrase. (Your phone has its own wake phrase in the app.)", "voice"),
@@ -274,7 +275,7 @@ PC_ONLY: dict[str, str] = {
 # Settings read each time they are used, so a change takes effect at once. Everything else is read when the assistant starts.
 LIVE_VERIFIED = frozenset({
     "listen_mode", "interrupt_mode", "barge_in_min_chars", "listen_tone", "listen_delay_s", "post_speech_guard_s", "listen_timeout_s",
-    "follow_up", "follow_up_s", "show_thinking", "tool_filler", "voice_approval", "main_language", "remote_output", "duck_music",
+    "follow_up", "follow_up_s", "ambient_min_words", "show_thinking", "tool_filler", "voice_approval", "main_language", "remote_output", "duck_music",
     "confirm_launch", "confirm_links", "confirm_screen", "confirm_clipboard", "confirm_routines",
 })
 

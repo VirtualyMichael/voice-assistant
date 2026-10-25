@@ -51,3 +51,35 @@ def test_always_mode_listens_from_start_and_after_turn():
     assert ev.done.wait(3)
     assert wait(lambda: s.state is State.LISTENING)
     s.close()
+
+
+def test_stray_words_are_dropped_when_the_mic_opened_by_itself_but_not_when_asked():
+    from voice_assistant.session import looks_like_noise
+
+    for stray in ("Sh", "Ow", "Cut", "Well wrong", "Missing my hand"):
+        assert looks_like_noise(stray, 3) == (len(stray.split()) < 3), stray
+    assert not looks_like_noise("Stop", 3) and not looks_like_noise("never mind", 3) and not looks_like_noise("yes", 3)
+    assert not looks_like_noise("what is the weather", 3) and not looks_like_noise("Sh", 0)
+
+    # the follow-up window after a reply: a stray word is ignored and the mic stays open
+    s, rec, ev, played = build(Config(listen_tone=False, follow_up=True, follow_up_s=5, listen_mode="push"), play_s=0.0)
+    speak_utterance(s, rec)
+    assert ev.done.wait(3)
+    assert wait(lambda: s.state is State.LISTENING)
+    s.feed_audio(AUDIO)
+    time.sleep(0.05)
+    rec.t, rec.end = "Ow", True
+    s.feed_audio(AUDIO)
+    time.sleep(0.2)
+    assert s.state is State.LISTENING and ev.finals == ["hello there"]
+    s.close()
+
+    # asked by name (hotkey or wake word): even one word is a real request
+    s, rec, ev, played = build(Config(listen_tone=False, follow_up=False, listen_mode="push"), play_s=0.0)
+    s.activate()
+    s.feed_audio(AUDIO)
+    time.sleep(0.05)
+    rec.t, rec.end = "Weather", True
+    s.feed_audio(AUDIO)
+    assert wait(lambda: "Weather" in ev.finals)
+    s.close()
