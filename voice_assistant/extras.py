@@ -158,6 +158,22 @@ class Notes:
         self.path.write_text(json.dumps(notes, indent=1), encoding="utf-8")
         return f"Saved note #{len(notes)}."
 
+    def items(self) -> list[dict]:
+        """Every note as {"text", "at"}, oldest first (the Memory page and the phone's memory screen show these)."""
+        return [{"text": str(n.get("text", "")), "at": str(n.get("at", ""))} for n in self._load() if isinstance(n, dict)]
+
+    def update(self, index: int, text: str) -> bool:
+        """Change note number `index` (0-based). An empty text deletes it."""
+        notes = self._load()
+        if not 0 <= index < len(notes):
+            return False
+        if text.strip():
+            notes[index]["text"] = text.strip()
+        else:
+            notes.pop(index)
+        self.path.write_text(json.dumps(notes, indent=1), encoding="utf-8")
+        return True
+
     def listing(self, query: str = "") -> str:
         q = query.strip().lower()
         rows = [f"#{i} ({n['at']}) {n['text']}" for i, n in enumerate(self._load(), 1) if q in n["text"].lower()]

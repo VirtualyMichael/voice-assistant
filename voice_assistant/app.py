@@ -41,7 +41,8 @@ from .permissions import FolderPolicy
 from .routing import double_voice_warnings, listen_routes
 from .delegate import UsageLog, build_delegate_tools
 from .computer import build_computer_tools
-from .extras import Audio, build_extra_tools
+from .backup import make_backup, restore_backup
+from .extras import Audio, Notes, build_extra_tools
 from .music import build_music_tools, open_users_youtube_music
 from .ytm_bridge import YtmBridge, extension_folder, make_music_actions, make_player, make_playlist_player
 from .ytm_library import Library
@@ -1212,6 +1213,27 @@ class MainWindow(QMainWindow):
         form.addRow(self.profile_edit)
         form.addRow(save_profile)
         form.addRow(learn)
+        form.addRow(QLabel("<b>What it remembers.</b> Things you asked it to remember (\"remember that...\"). Edit or delete any of them.", objectName="small", wordWrap=True))
+        self.notes_list = QListWidget()
+        self.notes_list.setMaximumHeight(120)
+        add_note, edit_note, del_note = QPushButton("Add…"), QPushButton("Edit…"), QPushButton("Delete")
+        add_note.clicked.connect(lambda: self._edit_note(None))
+        edit_note.clicked.connect(lambda: self._edit_note(self.notes_list.currentRow()))
+        del_note.clicked.connect(self._delete_note)
+        note_row = QHBoxLayout()
+        for w in (add_note, edit_note, del_note):
+            note_row.addWidget(w)
+        form.addRow(self.notes_list)
+        form.addRow(note_row)
+        form.addRow(QLabel("<b>Back up.</b> Saves your chats, settings, notes and profile in one file you can keep or move to another PC. Paired phones and API keys are not included.", objectName="small", wordWrap=True))
+        backup_btn, restore_btn = QPushButton("Back up chats and settings…"), QPushButton("Restore from a backup…")
+        backup_btn.clicked.connect(self._make_backup)
+        restore_btn.clicked.connect(self._restore_backup)
+        backup_row = QHBoxLayout()
+        backup_row.addWidget(backup_btn)
+        backup_row.addWidget(restore_btn)
+        form.addRow(backup_row)
+        self._fill_notes()
         form.use("Delegate")
         form.addRow(QLabel("Let the assistant hand coding tasks to Claude Code or Codex (their own command-line programs, with your logins). You approve the exact text before anything is sent.", objectName="small", wordWrap=True))
         dele = QCheckBox("Enable delegating to Claude Code / Codex")
@@ -1836,6 +1858,52 @@ class MainWindow(QMainWindow):
         c = QColorDialog.getColor(QColor(self.cfg.accent), self, "Accent colour")
         if c.isValid():
             self._set_look("accent", c.name())
+
+    def _fill_notes(self) -> None:
+        self.notes_list.clear()
+        for n in Notes().items():
+            self.notes_list.addItem(f"{n['text']}   ({n['at']})" if n["at"] else n["text"])
+
+    def _edit_note(self, row) -> None:
+        notes = Notes()
+        current = notes.items()[row]["text"] if row is not None and 0 <= row < len(notes.items()) else ""
+        if row is not None and row < 0:
+            return
+        text, ok = QInputDialog.getMultiLineText(self, "Remember", "What should it remember?", current)
+        if not ok or not text.strip():
+            return
+        notes.add(text) if row is None else notes.update(row, text)
+        self._fill_notes()
+
+    def _delete_note(self) -> None:
+        row = self.notes_list.currentRow()
+        if row >= 0 and Notes().update(row, ""):
+            self._fill_notes()
+
+    def _make_backup(self) -> None:
+        stamp = time.strftime("%Y-%m-%d")
+        path, _ = QFileDialog.getSaveFileName(self, "Save a backup", str(Path.home() / f"voice-assistant-backup-{stamp}.zip"), "Backup (*.zip)")
+        if not path:
+            return
+        try:
+            r = make_backup(config_dir(), Path(path), __version__)
+            self.chat.add("bubbleNote", f"Backed up {r['chats']} chats and {r['files']} settings files to {path}.")
+        except OSError as e:
+            self.chat.add("bubbleErr", f"The backup could not be saved: {e}")
+
+    def _restore_backup(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a backup", str(Path.home()), "Backup (*.zip)")
+        if not path:
+            return
+        if QMessageBox.question(self, "Restore", "Restore chats and settings from this backup? What it replaces is kept next to it with the ending .before-restore. The app restarts to use the restored settings.") != QMessageBox.Yes:
+            return
+        try:
+            r = restore_backup(Path(path), config_dir())
+        except (ValueError, OSError) as e:
+            self.chat.add("bubbleErr", str(e))
+            return
+        self.chat.add("bubbleNote", f"Restored {r['restored']} files. Close and open the app to use the restored settings.")
+        self._fill_notes()
 
     def _save_profile(self) -> None:
         saved = self.profile.save(self.profile_edit.toPlainText())

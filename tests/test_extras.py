@@ -159,3 +159,15 @@ def test_routines_cannot_hide_a_shell_command_or_unknown_tools_and_need_the_user
     cfg.confirm_routines = False
     t["run_routine"]("sneaky")
     assert [c[0] for c in calls] == ["set_volume"]
+
+
+def test_notes_can_be_listed_edited_and_deleted_for_the_memory_screen(tmp_path):
+    from voice_assistant.extras import Notes
+
+    n = Notes(tmp_path / "notes.json")
+    n.add("my dog is called Rex")
+    n.add("I prefer metric units")
+    assert [i["text"] for i in n.items()] == ["my dog is called Rex", "I prefer metric units"]
+    assert n.update(0, "my dog is called Max") and n.items()[0]["text"] == "my dog is called Max"
+    assert n.update(1, "  ") and [i["text"] for i in n.items()] == ["my dog is called Max"]  # empty text deletes
+    assert not n.update(5, "x")
