@@ -74,7 +74,7 @@ ADVANCED = frozenset({
     "llm_extra_body", "llm_base_url", "ollama_base_url", "ollama_model", "custom_base_url", "custom_model", "custom_key_env", "openai_base_url",
     "openai_model", "openai_key_env", "anthropic_model", "anthropic_key_env", "llm_api_key_env", "max_tool_rounds", "history_messages", "vram_reserve_gb",
     "video_custom_edge", "video_custom_mb", "video_custom_fps", "video_custom_frames", "video_identify_model", "video_skip_still",
-    "ytm_extension", "duck_level", "system_prompt", "approved_folders", "skill_folders", "disabled_skills", "mcp_servers",
+    "ytm_extension", "duck_level", "system_prompt", "approved_folders", "skill_folders", "library_folders", "disabled_skills", "mcp_servers",
     "delegate_cmd_claude", "delegate_cmd_codex", "delegate_cooldown_s", "delegate_timeout_s", "odysseus_url", "odysseus_endpoint_id", "odysseus_model",
     "odysseus_launch", "odysseus_share_tools", "odysseus_auto_approve", "vr_poll_s", "vrchat_host", "vrchat_port", "vr_processes",
     "input_device_2", "output_device_2", "ha_url", "light_names", "cloud_ack", "accurate_asr", "voice_approval",
@@ -103,7 +103,7 @@ def text(key, label, help, section, **kw):
 
 _READONLY_SECTION = {
     "tts_pronunciations": "speech", "llm_extra_body": "ai", "app_shortcuts": "apps", "routines": "apps", "light_names": "home",
-    "approved_folders": "safety", "skill_folders": "safety", "disabled_skills": "safety", "mcp_servers": "safety", "vr_processes": "vr",
+    "approved_folders": "safety", "skill_folders": "safety", "library_folders": "safety", "disabled_skills": "safety", "mcp_servers": "safety", "vr_processes": "vr",
 }
 
 
@@ -214,6 +214,7 @@ SETTINGS: tuple[Setting, ...] = (
     text("system_prompt", "Basic instructions", "The standing instructions the assistant follows. Changing them changes how it behaves.", "safety", multiline=True, maxlen=4000, sensitive=True),
     readonly("approved_folders", "Folders it may use", "Folders the assistant may read and write. Edit these on the PC."),
     readonly("skill_folders", "Skill folders", "Folders that hold extra skills. Edit these on the PC."),
+    readonly("library_folders", "Reference library folders", "Folders of documents (textbooks, guidelines, manuals, notes) the assistant searches before answering technical questions. Edit these on the PC."),
     readonly("disabled_skills", "Skills turned off", "Skills you switched off. Edit these on the PC."),
     readonly("mcp_servers", "Tool servers (MCP)", "Extra tools from other programs. Edit these on the PC."),
     # ---- coding helpers and Odysseus ----

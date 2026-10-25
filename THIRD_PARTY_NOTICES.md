@@ -36,6 +36,9 @@ Generated from the installed packages' metadata. **Not legal advice; verify each
 | Item | Source | Licence note |
 |---|---|---|
 | LiteRT-LM (`com.google.ai.edge.litertlm`) 0.16.1, runs the offline model | Google AI Edge | Apache-2.0 |
+| Google Play services Wearable (`com.google.android.gms:play-services-wearable`), the phone to watch link | Google | Proprietary but free to use, part of Google Play services; the only non-open piece of the watch feature (a build without a watch would not need it) |
+| Compose for Wear OS (`androidx.wear.compose`) | Google | Apache-2.0 |
+| AndroidX ExifInterface, Fragment | Google | Apache-2.0 |
 | Gemma 4 E2B (offline helper model), downloaded by the user inside the app, not bundled | litert-community/gemma-4-E2B-it-litert-lm on Hugging Face | **confirm the Gemma terms on its model card (use and redistribution rules) before release** |
 
 ## Needs a decision before selling

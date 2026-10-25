@@ -31,6 +31,7 @@ import logging
 import os
 import platform
 import queue
+import re
 import secrets
 import socket
 import subprocess
@@ -39,6 +40,7 @@ import time
 import uuid
 import wave
 from dataclasses import dataclass
+from typing import Callable
 from pathlib import Path
 
 import numpy as np
@@ -56,6 +58,8 @@ MAX_MESSAGE_BYTES = 2 * 1024 * 1024  # a photo arrives as one base64 message; th
 MAX_PHOTO_BYTES = 1_400_000
 CAMERA_WAIT_S = 90.0
 ACTION_WAIT_S = 60.0  # how long the phone has for the user to agree to an action
+MAX_CHAT_MESSAGES = 80  # the most recent messages of an opened chat sent to the phone
+MAX_CHAT_MESSAGE_CHARS = 4000
 MAX_ACTION_REPLY_CHARS = 8000  # room for a list of notifications
 MAX_VIDEO_FRAMES = 500
 MAX_VIDEO_FRAME_BYTES = 600_000
@@ -247,6 +251,16 @@ class PhoneVideo:
     duration: float
     audio: bytes | None = None  # the clip's sound as 16 kHz mono 16-bit samples, when it was asked for and sent
     detail: list | None = None  # a few extra frames at full detail, (seconds, JPEG), when they were asked for and sent
+
+
+@dataclass
+class ChatHooks:
+    """What the phone's history screen needs from the PC's saved chats. open() also makes the chosen chat the current conversation."""
+
+    list: Callable[[], list]  # objects with id, title, updated, count (memory.ChatInfo)
+    open: Callable[[str], "list[dict] | None"]  # the chat's messages, or None when it cannot be read
+    delete: Callable[[str], None]
+    current: Callable[[], str]
 
 
 class _Client:
@@ -499,6 +513,8 @@ class RemoteServer:
         self._lock = threading.Lock()
         self.listeners: list = []  # called with {"event": "paired" | "connected" | "disconnected", ...} from the server's threads
         self._phone_events = _PhoneEvents(self)
+        self.on_new_chat = None  # called when the phone's New chat button is pressed (any thread)
+        self.chat_hooks: ChatHooks | None = None  # the PC's saved chats, for the phone's history screen
         self.shares = None  # a phone_share.ShareReceiver: files shared from the phone's other apps
         self.cards = None  # an answer_cards.CardCollector: the sources and pictures shown under each reply on the phone
         self.settings = SettingsService(cfg, lambda: bool(getattr(cfg, "remote_allow_safety_changes", False)), device_names or _device_names, settings_save)
@@ -684,6 +700,13 @@ class RemoteServer:
                 self.session.announce("Tap the notification on your phone to take the photo.")
         elif kind == "text":
             self.session.submit_text(str(msg.get("text", ""))[:2000])
+        elif kind == "new_chat":
+            client.cancel_cameras("interrupted")
+            self.session.stop()
+            if self.on_new_chat is not None:
+                self.on_new_chat()
+        elif kind in ("list_chats", "open_chat", "delete_chat"):
+            self._chat_request(client, kind, str(msg.get("id", ""))[:64])
         elif kind == "share_file":
             reply = self.shares.piece(msg) if self.shares is not None else {"type": "share_saved", "id": str(msg.get("id", ""))[:64], "ok": False,
                                                                             "message": "This PC cannot take shared files right now."}
@@ -704,6 +727,35 @@ class RemoteServer:
             client.resolve(str(msg.get("id", "")), bool(msg.get("ok")))
         elif kind == "ping":
             client.send({"type": "pong"})
+
+    def _chats_message(self) -> dict:
+        hooks = self.chat_hooks
+        items = []
+        if hooks is not None:
+            for c in hooks.list()[:100]:
+                items.append({"id": c.id, "title": str(c.title)[:120], "updated": int(c.updated), "count": int(c.count)})
+        return {"type": "chats", "items": items, "current": hooks.current() if hooks is not None else ""}
+
+    def _chat_request(self, client: _Client, kind: str, chat_id: str) -> None:
+        """The phone's history screen: list the PC's saved chats, open one (the conversation then continues from it) or delete one."""
+        hooks = self.chat_hooks
+        if hooks is None:
+            client.send({"type": "chats", "items": [], "current": ""})
+            return
+        if kind != "list_chats" and not re.fullmatch(r"[\w-]{1,64}", chat_id):
+            return
+        try:
+            if kind == "open_chat":
+                self.session.stop()
+                messages = hooks.open(chat_id)
+                shown = [{"role": m["role"], "text": str(m["content"])[:MAX_CHAT_MESSAGE_CHARS]} for m in (messages or [])[-MAX_CHAT_MESSAGES:] if m.get("role") in ("user", "assistant")]
+                client.send({"type": "chat_opened", "id": chat_id, "ok": messages is not None, "messages": shown})
+                return
+            if kind == "delete_chat":
+                hooks.delete(chat_id)
+            client.send(self._chats_message())
+        except Exception as e:  # a chat that cannot be read must not drop the phone link
+            client.send({"type": "chat_opened" if kind == "open_chat" else "chats", "id": chat_id, "ok": False, "items": [], "messages": [], "current": "", "error": e.__class__.__name__})
 
     def _receive_photo(self, client: _Client, msg: dict) -> None:
         mid = str(msg.get("id", ""))

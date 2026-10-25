@@ -11,8 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QKeySequence, QPainter
+from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QObject, QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QPlainTextEdit, QSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QVBoxLayout, QWidget,
@@ -58,12 +58,15 @@ from .vrchat_menu import AvatarNotes
 from .providers import PROVIDERS, URL_FIELD, get_key, key_env, make_llm, model_for, needs_key, save_key, set_model
 from .session import MultiEvents, Session, SessionEvents
 from .speaker import Speaker
-from .remote import PairedDevices, RemoteServer
+from .remote import ChatHooks, PairedDevices, RemoteServer
 from .phone_page import PhonePanel
 from .phone_camera import build_phone_camera_tools
 from .phone_actions import PHONE_ACTIONS_PROMPT, build_phone_action_tools
 from .phone_share import ShareReceiver
 from .answer_cards import CardCollector, build_image_tools, fetch_thumbnail
+from .attach_strip import AttachStrip
+from .deep_research import DEEP_RESEARCH_PROMPT, build_deep_research_tools
+from .library import LIBRARY_PROMPT, Library as ReferenceLibrary, build_library_tools
 from .research import RESEARCH_PROMPT, build_research_tools
 from .setup_wizard import run_wizard
 from . import glass
@@ -106,6 +109,9 @@ class Bridge(QObject):
     phone_event = Signal(object)  # the phone link: a phone paired, connected or disconnected
     show_setting = Signal(str)  # the assistant wants the user to see a setting: open Settings there
     attachments_changed = Signal()  # something was attached or removed (maybe on another thread)
+    new_chat_requested = Signal()  # the phone's New chat button (arrives on the phone link's thread)
+    gui_call = Signal(object)  # run a function on the window's thread (used by the phone link, which runs on its own)
+    library_changed = Signal()  # the reference library finished indexing: refresh its status and the assistant's prompt
 
 
 def icon_button(glyph: str, tip: str, checkable: bool = False) -> QPushButton:
@@ -337,16 +343,70 @@ class Chat(QScrollArea):
         self._ai = None if kind != "bubbleAI" else label
         return label
 
+    def add_user(self, text: str, media: list[Path] | None = None, frames: dict[str, bytes] | None = None) -> None:
+        """A message from the user; pictures (and a chip for videos and files) sent with it show above the text, as in a messaging app."""
+        if not media:
+            self.add("bubbleUser", text)
+            return
+        box = QVBoxLayout()
+        box.setSpacing(4)
+        for path in media:
+            chip = QLabel()
+            pix = QPixmap(str(path)) if Path(path).suffix.lower() in IMAGE_SUFFIXES else QPixmap()
+            if pix.isNull() and Path(path).suffix.lower() in VIDEO_SUFFIXES and frames and frames.get(str(path)):
+                pix = QPixmap.fromImage(QImage.fromData(frames[str(path)]))  # a frame of the video, with a play mark
+                if not pix.isNull():
+                    pix = pix.scaled(260, 260, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    painter = QPainter(pix)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    cx, cy, r = pix.width() // 2, pix.height() // 2, min(pix.width(), pix.height()) // 6
+                    painter.setBrush(QColor(0, 0, 0, 150))
+                    painter.setPen(Qt.NoPen)
+                    painter.drawEllipse(cx - r, cy - r, 2 * r, 2 * r)
+                    painter.setBrush(QColor(255, 255, 255, 230))
+                    painter.drawPolygon([QPoint(cx - r // 3, cy - r // 2), QPoint(cx - r // 3, cy + r // 2), QPoint(cx + r // 2, cy)])
+                    painter.end()
+            if not pix.isNull():
+                chip.setPixmap(pix.scaled(260, 260, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                chip.setToolTip(Path(path).name)
+            else:
+                icon = "🎬" if Path(path).suffix.lower() in VIDEO_SUFFIXES else "📄"
+                chip.setText(f"{icon}  {Path(path).name}")
+                chip.setObjectName("bubbleUser")
+            chip.setAlignment(Qt.AlignRight)
+            box.addWidget(chip, 0, Qt.AlignRight)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addStretch(1)
+        if text.strip():
+            label = QLabel(text)
+            label.setObjectName("bubbleUser")
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.PlainText)
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            label.setMaximumWidth(self._max_width())
+            box.addWidget(label, 0, Qt.AlignRight)
+            self._labels.append(label)
+        row.addLayout(box)
+        self.col.insertLayout(self.col.count() - 1, row)
+        self._ai = None
+
     def clear(self) -> None:
+        def drop(layout) -> None:
+            while layout.count():
+                item = layout.takeAt(0)
+                if item.layout():
+                    drop(item.layout())
+                elif item.widget():
+                    w = item.widget()
+                    w.hide()  # vanish at once; deleteLater alone waits for the event loop
+                    w.setParent(None)
+                    w.deleteLater()
+
         while self.col.count() > 1:  # keep the trailing stretch
             item = self.col.takeAt(0)
             if item.layout():
-                while item.layout().count():
-                    w = item.layout().takeAt(0).widget()
-                    if w:
-                        w.hide()  # vanish at once; deleteLater alone waits for the event loop
-                        w.setParent(None)
-                        w.deleteLater()
+                drop(item.layout())
         self._labels.clear()
         self._ai = None
 
@@ -367,6 +427,8 @@ class Chat(QScrollArea):
             lbl.setMaximumWidth(self._max_width())
 
 
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
 VR_SETTLE_S = 6.0  # the headset's audio devices can appear a few seconds after SteamVR starts
 
 
@@ -383,6 +445,7 @@ class MainWindow(QMainWindow):
         self._remote_attempt = None  # the last one we tried to start, even if it failed, so the Phone page can show why
         self.phone_devices = PairedDevices()
         self.skills = SkillLibrary(cfg.skill_folders, cfg.disabled_skills)  # needed by the settings tabs built below
+        self.reference_library = ReferenceLibrary(config_dir() / "cache" / "library.db")  # the reference library: documents searched across all at once
         self.profile, self.usage = Profile(), UsageLog()
         self._vr_gen = 0
         self._vr_apply_lock = threading.Lock()
@@ -413,8 +476,12 @@ class MainWindow(QMainWindow):
         head.addWidget(gear)
 
         # files, folders and pictures handed to the assistant; changes can come from the phone link's thread, so the window updates through a signal
+        self._unsent_media: list[Path] = []  # attached pictures and files not yet shown in a message bubble
         self.inbox = Inbox(config_dir() / "attachments", on_change=self.bridge.attachments_changed.emit)
         self.bridge.attachments_changed.connect(self._attachments_changed)
+        self.bridge.new_chat_requested.connect(self._new_chat)
+        self.bridge.library_changed.connect(self._library_changed)
+        self.bridge.gui_call.connect(lambda fn: fn())
         self.setAcceptDrops(True)
         self.chat = Chat()
         self.partial = QLabel("", objectName="partial")
@@ -424,6 +491,7 @@ class MainWindow(QMainWindow):
         talk, stop = QPushButton("Talk", objectName="talk"), icon_button("\uE71A", "Stop: stop listening or speaking")
         self.attach_btn = icon_button("\uE723", "Attach: give the assistant files, a folder or pictures to learn from (you can also drop them here or paste a picture)")
         self.attach_label = QLabel("", objectName="small", wordWrap=True)
+        self.attach_strip = AttachStrip()  # previews of what is attached, before it is sent
         self.attach_clear = icon_button("\uE711", "Remove attachments: forget everything attached to this chat")
         inp = QHBoxLayout()
         inp.addWidget(self.entry, 1)
@@ -451,6 +519,7 @@ class MainWindow(QMainWindow):
         page.addWidget(self.chat, 1)
         page.addWidget(self.partial)
         page.addLayout(inp)
+        page.addWidget(self.attach_strip)
         page.addLayout(attach_row)
         page.addWidget(self.latency)
         col.addWidget(self.settings, 1)
@@ -488,6 +557,7 @@ class MainWindow(QMainWindow):
         self.entry.picture.connect(self._attach_picture)
         self.attach_btn.clicked.connect(self._pick_files)
         self.attach_clear.clicked.connect(lambda: self.inbox.clear())
+        self.attach_strip.removed.connect(self._remove_attachment)
         self.timer = QTimer(self, interval=100)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
@@ -943,7 +1013,24 @@ class MainWindow(QMainWindow):
         form.addRow(sk_row)
         form.addRow(self.skills_status)
         form.addRow(mcp_btn)
+        form.addRow(QLabel("Reference library: folders of documents (textbooks, guidelines, manuals, notes, saved pages, PDFs) that the assistant searches before answering "
+                           "medical, science, maths and coding questions. Name each folder after its subject. Skill folders are searched too. Nothing leaves this PC.",
+                           objectName="small", wordWrap=True))
+        self.library_folders_list = QListWidget()
+        self.library_folders_list.setMaximumHeight(70)
+        self.library_status = QLabel("", objectName="small", wordWrap=True)
+        add_lib, rem_lib, rescan_lib = QPushButton("Add library folder…"), QPushButton("Remove folder"), QPushButton("Rescan")
+        add_lib.clicked.connect(self._add_library_folder)
+        rem_lib.clicked.connect(self._remove_library_folder)
+        rescan_lib.clicked.connect(self._sync_library)
+        lib_row = QHBoxLayout()
+        for w in (add_lib, rem_lib, rescan_lib):
+            lib_row.addWidget(w)
+        form.addRow(self.library_folders_list)
+        form.addRow(lib_row)
+        form.addRow(self.library_status)
         self._fill_skills()
+        self._library_changed()
         form.use("Apps")
         self.apps_count = QLabel("Scanning installed apps\u2026", objectName="small")
         ask = self.ask_apps = QCheckBox("Ask before opening an app")
@@ -1153,6 +1240,8 @@ class MainWindow(QMainWindow):
         if not remote.start():
             return False
         self.remote = remote
+        remote.on_new_chat = self.bridge.new_chat_requested.emit
+        remote.chat_hooks = ChatHooks(lambda: self.chats.list(), self._phone_open_chat, self._phone_delete_chat, lambda: self.chat_id or "")
         remote.shares = ShareReceiver(config_dir() / "attachments" / "phone", self._attach_shared)
         remote.cards = self.cards
         camera = build_phone_camera_tools(self.cfg, lambda: self.remote, self._confirm, lambda: self.session.agent.llm, deep=self.deep.run, video=self.video)
@@ -1163,9 +1252,11 @@ class MainWindow(QMainWindow):
         self._refresh_prompt()
         return True
 
-    def _attach_shared(self, path: Path) -> tuple[str, str]:
+    def _attach_shared(self, path: Path, meta: str = "") -> tuple[str, str]:
         """A file shared from the phone's other apps (called on the phone link's thread)."""
-        name, err = self.inbox.add(path)
+        name, err = self.inbox.add(path, meta)
+        if name:
+            self._unsent_media.append(Path(path))
         self.bridge.note.emit(f"\U0001F4F1 Shared from your phone: {name}" if name else err)
         return name, err
 
@@ -1222,6 +1313,7 @@ class MainWindow(QMainWindow):
         if cfg.allow_web:
             registry.add(build_image_tools())
             registry.add(build_research_tools())
+            registry.add(build_deep_research_tools(lambda: self.session.agent.llm, notify=lambda m: self.bridge.note.emit(m), language=lambda: cfg.main_language))
         # what each answer was based on (pages, pictures, settings), shown under the reply on the phone
         self.cards = CardCollector(fetch_thumbnail if cfg.allow_web else None)
         registry.listeners.append(self.cards.tool)
@@ -1245,6 +1337,7 @@ class MainWindow(QMainWindow):
         self.pdfs = PdfStore()
         self.inbox.pdfs = self.pdfs
         registry.add(build_skill_tools(self.skills, self.pdfs, self.policy))
+        registry.add(build_library_tools(lambda: self.reference_library))
         if odysseus.active(cfg):
             registry.add(odysseus.build_odysseus_tools(cfg, self._confirm, speak=lambda t: self.session.announce(t), note=lambda m: self.bridge.note.emit(m)))
             threading.Thread(target=odysseus.ensure_running, args=(cfg,), daemon=True).start()  # warm up so the first hand-off is quick
@@ -1317,7 +1410,7 @@ class MainWindow(QMainWindow):
         return (self.cfg.system_prompt + (JARVIS_PERSONA if self.cfg.persona_jarvis else "") + self.profile.prompt()
                 + ("" if only else capabilities_prompt(self.cfg, self._registry.names()) + SETTINGS_PROMPT
                                  + (PHONE_ACTIONS_PROMPT if "phone_set_alarm" in self._registry.names() else "")
-                                 + (RESEARCH_PROMPT if "research" in self._registry.names() else "") + self.skills.prompt() + self.interp.prompt() + self.inbox.prompt())
+                                 + (RESEARCH_PROMPT if "research" in self._registry.names() else "") + (DEEP_RESEARCH_PROMPT if "deep_research" in self._registry.names() else "") + (LIBRARY_PROMPT if self.reference_library.collections() else "") + self.skills.prompt() + self.interp.prompt() + self.inbox.prompt())
                 + odysseus.mode_prompt(self.cfg.odysseus_mode))
 
     def _refresh_prompt(self) -> None:
@@ -1330,6 +1423,18 @@ class MainWindow(QMainWindow):
         """Index the skills' PDFs in the background so the first question is quick (cached on disk afterwards)."""
         pdfs = [p for s in self.skills.active for p in s.dir.rglob("*.pdf")]
         threading.Thread(target=self.pdfs.warm, args=(pdfs,), daemon=True).start()
+        self._sync_library()
+
+    def _library_folders(self) -> list[str]:
+        """The folders the user added, plus every active skill's folder (its reference files become searchable across all documents)."""
+        return list(dict.fromkeys([*self.cfg.library_folders, *(str(s.dir) for s in self.skills.active)]))
+
+    def _sync_library(self) -> None:
+        def work() -> None:
+            self.reference_library.sync(self._library_folders())
+            self.bridge.library_changed.emit()
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _start_mcp(self) -> None:
         """Connect configured MCP servers in the background and add their tools to the agent."""
@@ -1379,7 +1484,8 @@ class MainWindow(QMainWindow):
         self.chat.add("bubbleErr", msg)
 
     def _on_user(self, text: str) -> None:
-        self.chat.add("bubbleUser", text)
+        media, self._unsent_media = self._unsent_media, []  # pictures and files attached since the last message go in this one's bubble
+        self.chat.add_user(text, media, self.attach_strip.frames())
 
     def _on_done(self, desc: str) -> None:
         self.chat.end_stream()
@@ -1440,6 +1546,8 @@ class MainWindow(QMainWindow):
     def _attach_paths(self, paths: list[str]) -> None:
         for p in paths:
             name, err = self.inbox.add(p)
+            if name and not Path(p).is_dir():
+                self._unsent_media.append(Path(p))
             self.chat.add("bubbleNote", f"Attached {name}." if name else err)
             looks_unity = Path(p).suffix.lower() in (".asset", ".controller", ".anim") or (Path(p).is_dir() and any(k in Path(p).name.lower() for k in ("menu", "controller", "animation")))
             if name and looks_unity and self.cfg.vrchat_enabled:
@@ -1447,9 +1555,16 @@ class MainWindow(QMainWindow):
 
     def _attach_picture(self, png: bytes) -> None:
         name, err = self.inbox.add_image_bytes(png)
+        if name:
+            self._unsent_media.append(self.inbox.resolve(name))
         self.chat.add("bubbleNote", f"Attached the pasted picture as {name}." if name else err)
 
+    def _remove_attachment(self, name: str) -> None:
+        self._unsent_media = [m for m in self._unsent_media if m != self.inbox.resolve(name)]
+        self.inbox.remove(name)
+
     def _attachments_changed(self) -> None:
+        self.attach_strip.set_items(dict(self.inbox.items))
         text = self.inbox.summary()
         self.attach_label.setText("\U0001F4CE " + text if text else "")
         self.attach_label.setVisible(bool(text))
@@ -2114,6 +2229,36 @@ class MainWindow(QMainWindow):
             save_config(self.cfg)
             self._apply_skills()
 
+    def _library_changed(self) -> None:
+        self.library_folders_list.clear()
+        for f in self.cfg.library_folders:
+            self.library_folders_list.addItem(f)
+        rows = self.reference_library.collections()
+        docs = sum(n for _c, n, _k in rows)
+        text = (f"{docs} document{'s' if docs != 1 else ''} in {len(rows)} collection{'s' if len(rows) != 1 else ''}: " + ", ".join(c for c, _n, _k in rows[:8])) if rows else "The library is empty."
+        self.library_status.setText(text + (" " + " ".join(self.reference_library.problems[:3]) if self.reference_library.problems else ""))
+        try:
+            self.session.agent.messages[0]["content"] = self._system_prompt()  # the assistant is told about the library once it has something in it
+        except Exception:
+            pass
+
+    def _add_library_folder(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Choose a folder of reference documents (name it after its subject, e.g. medicine)")
+        if d and d not in self.cfg.library_folders:
+            self.cfg.library_folders.append(d)
+            save_config(self.cfg)
+            self._library_changed()
+            self.library_status.setText("Indexing… large PDFs can take a few minutes the first time.")
+            self._sync_library()
+
+    def _remove_library_folder(self) -> None:
+        row = self.library_folders_list.currentRow()
+        if row >= 0:
+            self.cfg.library_folders.pop(row)
+            save_config(self.cfg)
+            self._library_changed()
+            self._sync_library()
+
     def _rescan_skills(self) -> None:
         self._apply_skills()
 
@@ -2225,9 +2370,50 @@ class MainWindow(QMainWindow):
         self.session.agent.reset()
         self.chat_id, self.history = None, []
         self.inbox.clear()
+        self._unsent_media = []
         self.chat.clear()
         self.chat.add("bubbleNote", "New conversation started.")
         self._refresh_history()
+
+    def _on_gui(self, fn, timeout: float = 8.0):
+        """Run fn on the window's thread and wait for its result (for the phone link, which runs on its own thread)."""
+        done, box = threading.Event(), {}
+
+        def run() -> None:
+            try:
+                box["value"] = fn()
+            except Exception as e:  # handed back to the caller below
+                box["error"] = e
+            finally:
+                done.set()
+
+        self.bridge.gui_call.emit(run)
+        if not done.wait(timeout):
+            raise TimeoutError("the window did not answer")
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
+    def _phone_open_chat(self, chat_id: str):
+        """The phone's history screen opened a chat: it becomes the conversation here too. Returns its messages, or None."""
+        def work():
+            msgs = self.chats.load(chat_id)
+            if not msgs:
+                return None
+            self._open_chat(chat_id)  # does nothing when it is already the current chat
+            return msgs
+
+        return self._on_gui(work)
+
+    def _phone_delete_chat(self, chat_id: str) -> None:
+        def work() -> None:  # the phone already asked the user, so no second question here
+            self.chats.delete(chat_id)
+            if chat_id == self.chat_id:
+                self._new_chat()
+            else:
+                self._refresh_history()
+
+        self._on_gui(work)
 
     def _open_chat(self, chat_id: str) -> None:
         if chat_id == self.chat_id:

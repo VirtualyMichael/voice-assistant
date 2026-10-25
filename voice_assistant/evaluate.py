@@ -20,7 +20,7 @@ from pathlib import Path
 from .config import config_dir, load_config
 
 CASES_FILE = Path(__file__).resolve().parent.parent / "evals" / "cases.json"
-READ_ONLY = {"get_time", "system_status", "web_search", "fetch_page", "find_setting", "read_attachment", "search_attachment", "look_at_attachment",
+READ_ONLY = {"get_time", "system_status", "web_search", "fetch_page", "find_setting", "read_attachment", "search_attachment", "pdf_outline", "read_section", "deep_research", "look_at_attachment",
              "list_timers", "list_apps", "list_routines", "find_images", "research",
              # these run for real too: here they only reach a pretend phone and a settings copy that is never saved
              "change_setting", "phone_set_alarm", "phone_set_timer", "phone_add_calendar_event"}

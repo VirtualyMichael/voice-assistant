@@ -45,9 +45,9 @@ def _discard(path: Path) -> None:
 
 
 class ShareReceiver:
-    """Puts the pieces of shared files back together on disk. attach(path) -> (name, error) hands a finished file to the chat."""
+    """Puts the pieces of shared files back together on disk. attach(path, meta) -> (name, error) hands a finished file to the chat."""
 
-    def __init__(self, folder: Path, attach: Callable[[Path], tuple[str, str]], clock=time.monotonic):
+    def __init__(self, folder: Path, attach: Callable[..., tuple[str, str]], clock=time.monotonic):
         self.folder, self.attach, self.clock = Path(folder), attach, clock
         self._open: dict[str, dict] = {}
         self._lock = threading.Lock()
@@ -78,7 +78,7 @@ class ShareReceiver:
                 box = self.folder / f"{time.strftime('%Y%m%d-%H%M%S')}-{sid[:8]}"  # a folder per share, so the file keeps its own name
                 box.mkdir(parents=True, exist_ok=True)
                 path = box / name
-                entry = {"path": path, "file": open(path, "wb"), "next": 0, "total": total, "got": 0, "at": self.clock(), "name": name}
+                entry = {"path": path, "file": open(path, "wb"), "next": 0, "total": total, "got": 0, "at": self.clock(), "name": name, "meta": str(msg.get("meta") or "")[:1200]}
                 self._open[sid] = entry
             if seq != entry["next"] or len(data) > MAX_CHUNK_BYTES or entry["got"] + len(data) > entry["total"]:
                 return self._fail(sid, "Part of the file went missing. Share it again.")
@@ -93,7 +93,7 @@ class ShareReceiver:
         if entry["got"] != entry["total"]:
             _discard(entry["path"])
             return {"type": "share_saved", "id": sid, "ok": False, "message": "Part of the file went missing. Share it again."}
-        name, err = self.attach(entry["path"])
+        name, err = self.attach(entry["path"], entry["meta"])
         if not name:
             _discard(entry["path"])
         return {"type": "share_saved", "id": sid, "ok": bool(name), "name": name or entry["name"], "message": err or "Attached."}

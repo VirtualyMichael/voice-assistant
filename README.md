@@ -402,6 +402,27 @@ real `garage-mechanic` skill and its two owner's manuals (search found the speci
 `science-teacher` server (4 tools, lists the Chemistry 2e textbook). Not tested: the local AI model choosing these tools by
 itself, because no model server was running at the time.
 
+### Reference library (search your own documents)
+
+**Settings > Skills > Add library folder** adds a folder of documents (textbooks, guidelines, manuals, notes, saved web pages, PDFs, Markdown, text)
+that the assistant searches before answering medical, science, maths and coding questions. Name each folder after its subject (`medicine`,
+`python`, `calculus`): the name is the collection, and a question can be limited to one. Every document is split into passages and indexed with
+SQLite full-text search, so a question finds the best passages across all documents at once (`library_search`), each with the document, the page or
+heading and the file's date; unchanged files are not read again, and removing a folder or file removes its knowledge. Every active skill's folder is
+included automatically. The assistant is told to answer from the passages, name the document, and say how old it is. Nothing leaves the PC. This is how a
+small model gets more accurate and more current without a bigger model: it reads the reference instead of guessing.
+
+### Long PDFs and deep research
+
+- **Finding your way in a long PDF**: for an attached PDF the assistant has `pdf_outline` (page count, bookmarks, a printed contents page, or the first
+  line of every page), `search_attachment` with mode `exact` or `regex` (lists every match with its page: every date, amount or part number), and
+  `read_section` (read the pages under a heading). It is told never to read a long PDF from the start.
+- **Deep research** (`deep_research`, needs "Use the internet"): for questions where being right matters it splits the question into parts,
+  searches the web and, for health, science and maths, PubMed, arXiv and Wikipedia, reads the pages, keeps only claims whose exact quote is on the
+  page (the number dropped is reported), groups claims that agree, and marks each finding well supported, one source only or sources disagree, with each
+  site rated (official or peer-reviewed, established reference or news, general site, forum or social). It takes about a minute with a local model.
+  It is separate from Odysseus and does not use it.
+
 ### MCP tool servers
 
 Add servers to `mcp_servers` in config.json (Settings → Open settings file), then restart:

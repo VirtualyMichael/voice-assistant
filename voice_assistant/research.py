@@ -20,7 +20,7 @@ PASSAGE_CHARS = 420
 PAGE_TIMEOUT_S = 8
 _STOP = set("""a an and are as at be by can did do does for from has have how i in is it its me my of on or the this that to was were what when where which who
 why will with you your about into than then there their they them tell find out look up please latest current today now""".split())
-_DATE_KEYS = ("article:modified_time", "og:updated_time", "dateModified", "article:published_time", "datePublished", "pubdate", "date")
+_DATE_KEYS = ("article:modified_time", "og:updated_time", "dateModified", "article:published_time", "datePublished", "pubdate", "citation_publication_date", "citation_date", "date")
 
 
 def site_name(url: str) -> str:
@@ -45,9 +45,9 @@ def page_date(html: str) -> str:
     found += re.findall(r"""<time[^>]+datetime\s*=\s*["']([^"']+)""", html, re.I)[:3]
     dates = []
     for value in found:
-        m = re.match(r"\s*(\d{4})-(\d{2})-(\d{2})", value)
+        m = re.match(r"\s*(\d{4})[-/](\d{2})[-/](\d{2})", value)
         if m and 1995 <= int(m.group(1)) <= datetime.now().year + 1:
-            dates.append(m.group(0).strip())
+            dates.append(f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
     return max(dates) if dates else ""
 
 

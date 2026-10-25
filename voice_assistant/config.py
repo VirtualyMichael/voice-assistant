@@ -130,6 +130,7 @@ class Config:
     approved_folders: list[str] = field(default_factory=list)
     max_tool_rounds: int = 8
     skill_folders: list[str] = field(default_factory=list)  # folders holding SKILL.md skills (one skill, or a parent of skills)
+    library_folders: list[str] = field(default_factory=list)  # folders of reference documents the assistant can search (library.py); each folder is a collection
     disabled_skills: list[str] = field(default_factory=list)
     remember_conversation: bool = True  # every chat is saved on this PC only (the chats folder) and listed in the history sidebar; untick to stop saving
     history_messages: int = 40  # how many recent messages are kept and sent to the model

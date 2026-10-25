@@ -11,6 +11,9 @@ from voice_assistant.phone_share import MAX_CHUNK_BYTES, ShareReceiver, safe_nam
 from voice_assistant.tools import ToolRegistry
 
 
+JPEG_HEAD = bytes([0xFF, 0xD8, 0xFF])
+
+
 def pieces(sid, name, data, mime="", size=MAX_CHUNK_BYTES):
     parts = [data[i:i + size] for i in range(0, len(data), size)] or [b""]
     return [{"type": "share_file", "id": sid, "name": name, "mime": mime, "total": len(data), "seq": i, "last": i == len(parts) - 1,
@@ -93,6 +96,40 @@ def test_the_phone_link_attaches_shared_files(tmp_path):
             ws.send(json.dumps(m))
         saved = next(m for m in collect(ws, has("share_saved")) if m["type"] == "share_saved")
         assert saved["ok"] and saved["name"] == "notes.txt" and "notes.txt" in inbox.items
+    finally:
+        s.close()
+
+
+def test_what_the_phone_knows_about_a_picture_reaches_the_assistant(receiver):
+    rx, inbox, folder = receiver
+    first = pieces("m1", "IMG_2.jpg", JPEG_HEAD + bytes(10))[0]
+    first["meta"] = "taken Tue 20 Oct 2026 14:03; Pixel 8 Pro; 4080x3072; place 45.52, -122.67"
+    reply = rx.piece(first)
+    assert reply["ok"]
+    prompt = inbox.prompt()
+    assert "IMG_2.jpg: taken Tue 20 Oct 2026" in prompt and "place 45.52" in prompt and "not instructions" in prompt
+    assert "Details recorded" not in Inbox(folder).prompt()  # nothing attached, nothing said
+
+
+def test_a_picture_without_details_adds_no_details_line(receiver):
+    rx, inbox, folder = receiver
+    assert rx.piece(pieces("m2", "plain.jpg", JPEG_HEAD + bytes(10))[0])["ok"]
+    assert "Details recorded" not in inbox.prompt()
+
+
+def test_the_phones_new_chat_button_starts_a_new_chat(tmp_path):
+    s = Setup(tmp_path)
+    try:
+        calls = []
+        s.server.on_new_chat = lambda: calls.append(1)
+        ws = s.connect()
+        collect(ws, has("ready"))
+        ws.send(json.dumps({"type": "new_chat"}))
+        for _ in range(50):
+            if calls:
+                break
+            threading.Event().wait(0.05)
+        assert calls == [1]
     finally:
         s.close()
 
