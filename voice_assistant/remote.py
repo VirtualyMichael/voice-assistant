@@ -12,7 +12,7 @@ Messages are JSON text frames, plus binary frames for audio (16-bit little-endia
                 (a video is sampled on the phone, so only a few small frames cross the link, never the clip itself),
                 share_file {id, name, mime, total, seq, last, data_b64} (a file shared from another app, in pieces; see phone_share.py),
                 phone_action_result {id, ok, message}
-  PC -> phone   ready {protocol, state, name}, state {state}, partial {text}, user_final {text}, assistant_delta {text}, done {summary},
+  PC -> phone   ready {protocol, state, name}, state {state}, partial {text}, user_final {text}, assistant_thinking {text}, assistant_delta {text}, done {summary},
                 confirm {id, prompt}, audio_start {sr}, <audio>, audio_flush, audio_end, keywords {phrase, lines}, keywords_error {phrase, message},
                 camera_request {id, prompt, auto, [mode: "video", max_seconds, max_frames, max_edge, max_fps, max_bytes, audio, detail_frames, detail_edge]}, camera_close {id}, settings {allow_safety, restart_pending, sections}, setting_result {ok, key, value, restart, message},
                 share_saved {id, ok, name, message}, phone_action {id, action, args} (see phone_actions.py; the user confirms each one on the phone),
@@ -483,6 +483,9 @@ class _PhoneEvents(SessionEvents):
     def state(self, state): self._send({"type": "state", "state": state.value})
     def partial(self, text): self._send({"type": "partial", "text": text})
     def user_final(self, text): self._send({"type": "user_final", "text": text})
+    def thinking(self, text):
+        if self.server.show_thinking():
+            self._send({"type": "assistant_thinking", "text": text})
     def assistant_delta(self, text): self._send({"type": "assistant_delta", "text": text})
     def assistant_done(self, metrics):
         self._send({"type": "done", "summary": metrics.describe()})
@@ -523,6 +526,9 @@ class RemoteServer:
         debug = os.environ.get("VA_REMOTE_DEBUG_DIR")
         self._debug_dir = Path(debug) if debug else None
         self._capture: list[bytes] | None = None
+
+    def show_thinking(self) -> bool:
+        return bool(getattr(self.cfg, "show_thinking", True))
 
     # ---- server -----------------------------------------------------------------
     def start(self) -> bool:

@@ -42,6 +42,7 @@ class SessionEvents:
     def state(self, state: State) -> None: ...
     def partial(self, text: str) -> None: ...
     def user_final(self, text: str) -> None: ...
+    def thinking(self, text: str) -> None: ...
     def assistant_delta(self, text: str) -> None: ...
     def assistant_done(self, metrics: TurnMetrics) -> None: ...
     def error(self, message: str) -> None: ...
@@ -70,6 +71,7 @@ class MultiEvents(SessionEvents):
     def state(self, state: State) -> None: self._fan("state", state)
     def partial(self, text: str) -> None: self._fan("partial", text)
     def user_final(self, text: str) -> None: self._fan("user_final", text)
+    def thinking(self, text: str) -> None: self._fan("thinking", text)
     def assistant_delta(self, text: str) -> None: self._fan("assistant_delta", text)
     def assistant_done(self, metrics: TurnMetrics) -> None: self._fan("assistant_done", metrics)
     def error(self, message: str) -> None: self._fan("error", message)
@@ -110,6 +112,7 @@ class Session:
     ):
         self.cfg, self.agent, self.speaker, self.recognizer, self.wake = cfg, agent, speaker, recognizer, wake
         self.events = events or SessionEvents()
+        agent.on_thinking = lambda text: self.events.thinking(text)
         self.metrics = metrics or MetricsLog()
         self.clock = clock
         self.accurate = accurate  # optional second recognizer with a transcribe(samples) method

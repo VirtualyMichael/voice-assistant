@@ -36,6 +36,7 @@ Name: "autostart"; Description: "Start Voice Assistant when I sign in to Windows
 [Files]
 Source: "..\dist\VoiceAssistant\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion createallsubdirs
 Source: "..\extension\*"; DestDir: "{app}\extension"; Excludes: "_key.txt"; Flags: recursesubdirs ignoreversion createallsubdirs
+Source: "..\app guides\*"; DestDir: "{app}\app guides"; Flags: recursesubdirs ignoreversion createallsubdirs
 
 [Icons]
 Name: "{group}\Voice Assistant"; Filename: "{app}\VoiceAssistant.exe"

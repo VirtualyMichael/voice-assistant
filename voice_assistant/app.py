@@ -66,7 +66,7 @@ from .phone_share import ShareReceiver
 from .answer_cards import CardCollector, build_image_tools, fetch_thumbnail
 from .attach_strip import AttachStrip
 from .deep_research import DEEP_RESEARCH_PROMPT, build_deep_research_tools
-from .library import LIBRARY_PROMPT, Library as ReferenceLibrary, build_library_tools
+from .library import LIBRARY_PROMPT, Library as ReferenceLibrary, build_library_tools, bundled_folder
 from .research import RESEARCH_PROMPT, build_research_tools
 from .setup_wizard import run_wizard
 from . import glass
@@ -92,6 +92,7 @@ class Bridge(QObject):
     partial = Signal(str)
     user = Signal(str)
     delta = Signal(str)
+    thinking = Signal(str)  # the model's reasoning, streamed
     done = Signal(str)
     error = Signal(str)
     confirm = Signal(str, object)
@@ -174,6 +175,7 @@ class QtEvents(SessionEvents):
             self.on_state(s.value)
     def partial(self, t): self.b.partial.emit(t)
     def user_final(self, t): self.b.user.emit(t)
+    def thinking(self, t): self.b.thinking.emit(t)
     def assistant_delta(self, t):
         self.b.delta.emit(t)
         if self.on_delta:
@@ -304,6 +306,44 @@ class TabbedForm:
         self.forms[self.current].insertRow(index, *args)
 
 
+class ThinkBlock(QWidget):
+    """A folded 'Thinking' block: the title shows how long the model thought; click it to read the reasoning."""
+
+    def __init__(self):
+        super().__init__()
+        self._t0 = time.monotonic()
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+        self.head = QPushButton("▸ Thinking…", objectName="version", flat=True)
+        self.head.setCursor(Qt.PointingHandCursor)
+        self.head.setToolTip("The model's reasoning. Click to show or hide it")
+        self.body = QLabel("", objectName="small")
+        self.body.setWordWrap(True)
+        self.body.setTextFormat(Qt.PlainText)
+        self.body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.body.setVisible(False)
+        col.addWidget(self.head, 0, Qt.AlignLeft)
+        col.addWidget(self.body)
+        self.head.clicked.connect(self._toggle)
+        self._title = "Thinking…"
+
+    def _toggle(self) -> None:
+        self.body.setVisible(not self.body.isVisible())
+        self._retitle()
+
+    def _retitle(self) -> None:
+        self.head.setText(("▾ " if self.body.isVisible() else "▸ ") + self._title)
+
+    def add(self, text: str, width: int) -> None:
+        self.body.setMaximumWidth(width)
+        self.body.setText(self.body.text() + text)
+
+    def finish(self) -> None:
+        self._title = f"Thought for {max(1, round(time.monotonic() - self._t0))} s"
+        self._retitle()
+
+
 class Chat(QScrollArea):
     """Scrolling list of message bubbles; the assistant bubble grows as text streams in."""
 
@@ -318,6 +358,7 @@ class Chat(QScrollArea):
         self.col.addStretch(1)
         self.setWidget(body)
         self._ai: QLabel | None = None
+        self._think: "ThinkBlock | None" = None
         self._labels: list[QLabel] = []
         bar = self.verticalScrollBar()
         bar.rangeChanged.connect(lambda _a, hi: bar.setValue(hi))
@@ -341,6 +382,9 @@ class Chat(QScrollArea):
         self.col.insertLayout(self.col.count() - 1, row)
         self._labels.append(label)
         self._ai = None if kind != "bubbleAI" else label
+        if self._think is not None:
+            self._think.finish()
+            self._think = None
         return label
 
     def add_user(self, text: str, media: list[Path] | None = None, frames: dict[str, bytes] | None = None) -> None:
@@ -409,13 +453,32 @@ class Chat(QScrollArea):
                 drop(item.layout())
         self._labels.clear()
         self._ai = None
+        self._think = None
+
+    def think(self, delta: str) -> None:
+        """The model's reasoning, in a folded block above its answer. Open it to read; it is never spoken."""
+        if self._think is None:
+            self._think = ThinkBlock()
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(self._think)
+            row.addStretch(1)
+            self.col.insertLayout(self.col.count() - 1, row)
+            self._ai = None
+        self._think.add(delta, self._max_width())
 
     def stream(self, delta: str) -> None:
+        if self._think is not None:
+            self._think.finish()
+            self._think = None
         if self._ai is None:
             self.add("bubbleAI", "")
         self._ai.setText(self._ai.text() + delta)
 
     def end_stream(self) -> None:
+        if self._think is not None:  # reasoning with no answer after it (a tool call, or a stopped reply)
+            self._think.finish()
+            self._think = None
         self._ai = None
 
     def _max_width(self) -> int:
@@ -542,6 +605,7 @@ class MainWindow(QMainWindow):
         b.partial.connect(self.partial.setText)
         b.user.connect(self._on_user)
         b.delta.connect(self.chat.stream)
+        b.thinking.connect(lambda t: self.cfg.show_thinking and self.chat.think(t))
         b.done.connect(self._on_done)
         b.error.connect(self._on_error)
         b.confirm.connect(self._on_confirm)
@@ -1026,6 +1090,11 @@ class MainWindow(QMainWindow):
         lib_row = QHBoxLayout()
         for w in (add_lib, rem_lib, rescan_lib):
             lib_row.addWidget(w)
+        self.guides_box = QCheckBox("Include the built-in app guides (Windows, Chrome, Discord, OBS, Excel, VS Code, Steam, YouTube Music)")
+        self.guides_box.setChecked(cfg.app_guides)
+        self.guides_box.setToolTip("Short how-to guides for common apps. Ask things like 'how do I record my screen in OBS'. Turn off to search only your own documents.")
+        self.guides_box.toggled.connect(self._toggle_guides)
+        form.addRow(self.guides_box)
         form.addRow(self.library_folders_list)
         form.addRow(lib_row)
         form.addRow(self.library_status)
@@ -1427,7 +1496,13 @@ class MainWindow(QMainWindow):
 
     def _library_folders(self) -> list[str]:
         """The folders the user added, plus every active skill's folder (its reference files become searchable across all documents)."""
-        return list(dict.fromkeys([*self.cfg.library_folders, *(str(s.dir) for s in self.skills.active)]))
+        guides = bundled_folder("app guides") if self.cfg.app_guides else None
+        return list(dict.fromkeys([*self.cfg.library_folders, *(str(s.dir) for s in self.skills.active), *([str(guides)] if guides else [])]))
+
+    def _toggle_guides(self, on: bool) -> None:
+        self.cfg.app_guides = on
+        save_config(self.cfg)
+        self._sync_library()
 
     def _sync_library(self) -> None:
         def work() -> None:

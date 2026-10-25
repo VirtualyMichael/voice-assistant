@@ -130,6 +130,7 @@ class Config:
     approved_folders: list[str] = field(default_factory=list)
     max_tool_rounds: int = 8
     skill_folders: list[str] = field(default_factory=list)  # folders holding SKILL.md skills (one skill, or a parent of skills)
+    app_guides: bool = True  # also search the built-in guides for common apps (the 'app guides' folder next to the program)
     library_folders: list[str] = field(default_factory=list)  # folders of reference documents the assistant can search (library.py); each folder is a collection
     disabled_skills: list[str] = field(default_factory=list)
     remember_conversation: bool = True  # every chat is saved on this PC only (the chats folder) and listed in the history sidebar; untick to stop saving
@@ -154,6 +155,7 @@ class Config:
     confirm_links: bool = True  # ask before opening a web link (turn off only if you trust the pages and files the assistant reads)
     confirm_clipboard: bool = True  # ask before reading or replacing your clipboard
     confirm_screen: bool = True  # ask before every screenshot (turn off only if you trust your AI provider)
+    show_thinking: bool = True  # show the model's reasoning in a folded block above its answer (PC chat and phone); never spoken
     tool_filler: str = "One moment."  # spoken when a task starts before the reply; empty = silent
     vr_announce: bool = True  # speak a short confirmation when the VR profile switches
     remote_enabled: bool = False  # let a paired phone talk to this PC over Tailscale (see remote.py)

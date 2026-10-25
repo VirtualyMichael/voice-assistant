@@ -202,6 +202,20 @@ def test_notifications_are_marked_as_untrusted_and_off_is_explained():
     assert "No contact" in tools(FakeRemote((False, "no_contact"))).call("phone_call", json.dumps({"to": "Zed"}))
 
 
+def test_music_control_checks_the_command_and_explains_when_it_is_off():
+    r = FakeRemote((True, "Sent 'pause' to YouTube Music."))
+    reg = tools(r)
+    assert "YouTube Music" in reg.call("phone_media", json.dumps({"command": "Pause"}))
+    reg.call("phone_media", json.dumps({"command": "play search", "query": "Daft Punk", "app": "YouTube Music"}))
+    assert r.calls == [("media", {"command": "pause", "query": "", "app": ""}),
+                       ("media", {"command": "play_search", "query": "Daft Punk", "app": "YouTube Music"})]
+    assert "Error" in reg.call("phone_media", json.dumps({"command": "explode"}))
+    assert "Error" in reg.call("phone_media", json.dumps({"command": "play_search"}))
+    assert "Error" in reg.call("phone_media", json.dumps({"command": "set_volume"}))
+    assert len(r.calls) == 2
+    assert "Control music and video" in tools(FakeRemote((False, "media_off"))).call("phone_media", json.dumps({"command": "pause"}))
+
+
 def test_long_phone_replies_survive_the_link(tmp_path):
     s = Setup(tmp_path)
     try:

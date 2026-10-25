@@ -29,6 +29,19 @@ _WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+#.-]*")
 _STOP = set("a an and are as at be by can do does for from how i in is it of on or the this that to was what when where which who why with you your".split())
 
 
+def bundled_folder(name: str) -> Path | None:
+    """A folder that ships with the program: beside the program when installed, in the project folder when run from source."""
+    import sys
+
+    bases = [Path(__file__).resolve().parent.parent]
+    if getattr(sys, "frozen", False):
+        bases.insert(0, Path(sys.executable).resolve().parent)
+    for base in bases:
+        if (base / name).is_dir():
+            return base / name
+    return None
+
+
 @dataclass
 class Hit:
     title: str
@@ -199,13 +212,21 @@ class Library:
             return []
         sql = ("SELECT d.title, d.collection, p.loc, d.mtime, p.text, d.path FROM passages p JOIN docs d ON d.id = p.doc "
                "WHERE passages MATCH ?" + (" AND lower(d.collection) = lower(?)" if collection else "") + " ORDER BY bm25(passages) LIMIT ?")
-        args: list = [q] + ([collection] if collection else []) + [max(1, min(int(k), MAX_RESULTS))]
+        k = max(1, min(int(k), MAX_RESULTS))
+        args: list = [q] + ([collection] if collection else []) + [k * 6]
         with self._lock:
             try:
                 rows = self._db.execute(sql, args).fetchall()
             except sqlite3.OperationalError:
                 return []
-        return [Hit(t, c, loc or "", time.strftime("%Y-%m-%d", time.localtime(m)), text, path) for t, c, loc, m, text, path in rows]
+        asked = {w.lower() for w in _WORD.findall(query)}
+
+        def named(title: str) -> bool:
+            """The question names the document ('...in Discord' finds the Discord guide first, whatever else mentions voice chat)."""
+            return any(len(w) >= 3 and w.lower() in asked for w in _WORD.findall(title) if w.lower() not in ("guide", "the", "and"))
+
+        rows = sorted(rows, key=lambda r: not named(r[0]))  # stable: the search ranking is kept inside each group
+        return [Hit(t, c, loc or "", time.strftime("%Y-%m-%d", time.localtime(m)), text, path) for t, c, loc, m, text, path in rows[:k]]
 
     def close(self) -> None:
         with self._lock:
@@ -252,7 +273,9 @@ def build_library_tools(get_library) -> list[Tool]:
 
 LIBRARY_PROMPT = (
     " The user keeps a local reference library. For questions in medicine, science, maths, coding or any technical field, or when they mention their documents or notes, call "
-    "library_search first and answer from the passages it returns, naming the document; fall back to research or your own knowledge only when it finds nothing relevant."
+    "library_search first and answer from the passages it returns, naming the document; fall back to research or your own knowledge only when it finds nothing relevant. "
+    "For how-to questions about an app or program, search the 'app guides' collection and put the app's name in the query (for example 'OBS record screen') so its guide "
+    "comes first; give the steps in order with the exact button names, and if the guide does not cover it or the user's screen differs, say so instead of guessing."
 )
 
 

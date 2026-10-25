@@ -168,6 +168,7 @@ SETTINGS: tuple[Setting, ...] = (
     text("anthropic_model", "Claude model", "A faster, cheaper model or a stronger one.", "ai", maxlen=120),
     text("anthropic_key_env", "Claude key name", "The name of the PC setting that holds the key. The key itself is never shown or sent.", "ai", maxlen=80, sensitive=True),
     text("llm_api_key_env", "Server key name", "For cloud endpoints: the name of the PC setting that holds the key.", "ai", maxlen=80, sensitive=True),
+    toggle("show_thinking", "Show its thinking", "Shows the model's reasoning in a folded block above each answer, if the model produces any. It is never read aloud.", "ai", apply=LIVE),
     number("max_tool_rounds", "Steps it may take per request", "How many tool steps it can chain before answering.", "ai", 1, 30, 1, integer=True),
     number("history_messages", "Conversation it remembers", "How many recent messages are sent to the model each time.", "ai", 4, 200, 2, integer=True),
     number("vram_reserve_gb", "Graphics memory kept free", "Memory left free for games and other programs when choosing a model.", "ai", 0, 24, 0.5, unit="GB"),
@@ -214,6 +215,7 @@ SETTINGS: tuple[Setting, ...] = (
     text("system_prompt", "Basic instructions", "The standing instructions the assistant follows. Changing them changes how it behaves.", "safety", multiline=True, maxlen=4000, sensitive=True),
     readonly("approved_folders", "Folders it may use", "Folders the assistant may read and write. Edit these on the PC."),
     readonly("skill_folders", "Skill folders", "Folders that hold extra skills. Edit these on the PC."),
+    toggle("app_guides", "Built-in app guides", "Lets the assistant answer how-to questions about common apps (Windows, Chrome, Discord, OBS, Excel and more) from short guides. Takes effect after a rescan or restart.", "memory"),
     readonly("library_folders", "Reference library folders", "Folders of documents (textbooks, guidelines, manuals, notes) the assistant searches before answering technical questions. Edit these on the PC."),
     readonly("disabled_skills", "Skills turned off", "Skills you switched off. Edit these on the PC."),
     readonly("mcp_servers", "Tool servers (MCP)", "Extra tools from other programs. Edit these on the PC."),
@@ -272,7 +274,7 @@ PC_ONLY: dict[str, str] = {
 # Settings read each time they are used, so a change takes effect at once. Everything else is read when the assistant starts.
 LIVE_VERIFIED = frozenset({
     "listen_mode", "interrupt_mode", "barge_in_min_chars", "listen_tone", "listen_delay_s", "post_speech_guard_s", "listen_timeout_s",
-    "follow_up", "follow_up_s", "tool_filler", "voice_approval", "main_language", "remote_output", "duck_music",
+    "follow_up", "follow_up_s", "show_thinking", "tool_filler", "voice_approval", "main_language", "remote_output", "duck_music",
     "confirm_launch", "confirm_links", "confirm_screen", "confirm_clipboard", "confirm_routines",
 })
 

@@ -20,6 +20,7 @@ class Agent:
     ):
         self.llm, self.tools, self.max_rounds, self.max_messages = llm, tools, max_rounds, max_messages
         self.on_tool = on_tool or (lambda _msg: None)
+        self.on_thinking: Callable[[str], None] | None = None  # the model's reasoning as it streams; never spoken and never kept in the history
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
         self.on_update: Callable[[list[dict]], None] | None = None  # called after every turn (used to save the chat)
 
@@ -45,6 +46,12 @@ class Agent:
                     if ev.kind == "text":
                         pending.append(ev.text)
                         yield ev.text
+                    elif ev.kind == "thinking":
+                        if self.on_thinking:
+                            try:
+                                self.on_thinking(ev.text)
+                            except Exception:  # showing the reasoning must never break a reply
+                                pass
                     else:
                         calls = ev.calls
                 if not calls or not self.tools:

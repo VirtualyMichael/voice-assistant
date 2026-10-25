@@ -22,9 +22,51 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class StreamEvent:
-    kind: str  # "text" | "tool_calls"
+    kind: str  # "text" | "thinking" | "tool_calls"
     text: str = ""
     calls: tuple[ToolCall, ...] = ()
+
+
+class ThinkSplitter:
+    """Separate <think>...</think> reasoning from the answer in streamed text, even when a tag is cut across two chunks.
+
+    Models that put their reasoning inline (instead of in a separate field) are shown the same way as the ones that do not.
+    """
+
+    OPEN, CLOSE = "<think>", "</think>"
+
+    def __init__(self):
+        self._inside = False
+        self._hold = ""
+
+    def feed(self, chunk: str) -> list[tuple[str, str]]:
+        """Returns [("text" | "thinking", piece), ...] in order."""
+        out: list[tuple[str, str]] = []
+        buf = self._hold + chunk
+        self._hold = ""
+        while buf:
+            tag = self.CLOSE if self._inside else self.OPEN
+            i = buf.find(tag)
+            if i >= 0:
+                if i:
+                    out.append(("thinking" if self._inside else "text", buf[:i]))
+                buf = buf[i + len(tag):]
+                self._inside = not self._inside
+                continue
+            keep = 0  # hold back a possible start of the tag at the end of the chunk
+            for n in range(min(len(tag) - 1, len(buf)), 0, -1):
+                if tag.startswith(buf[-n:]):
+                    keep = n
+                    break
+            if len(buf) > keep:
+                out.append(("thinking" if self._inside else "text", buf[: len(buf) - keep]))
+            self._hold = buf[len(buf) - keep:]
+            break
+        return out
+
+    def flush(self) -> list[tuple[str, str]]:
+        rest, self._hold = self._hold, ""
+        return [("thinking" if self._inside else "text", rest)] if rest else []
 
 
 class LLM(Protocol):
@@ -47,6 +89,7 @@ class OpenAICompatClient:
             body["tools"] = tools
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         calls: dict[int, dict] = {}
+        splitter = ThinkSplitter()
         try:
             with httpx.Client(transport=self._transport, timeout=httpx.Timeout(120, connect=5)) as client:
                 with client.stream("POST", self.url, json=body, headers=headers) as r:
@@ -65,8 +108,12 @@ class OpenAICompatClient:
                         if not choices:
                             continue
                         delta = choices[0].get("delta") or {}
+                        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                        if reasoning:
+                            yield StreamEvent("thinking", text=reasoning)
                         if delta.get("content"):
-                            yield StreamEvent("text", text=delta["content"])
+                            for kind, piece in splitter.feed(delta["content"]):
+                                yield StreamEvent(kind, text=piece)
                         for tc in delta.get("tool_calls") or []:
                             acc = calls.setdefault(tc.get("index", 0), {"id": "", "name": "", "arguments": ""})
                             acc["id"] = tc.get("id") or acc["id"]
@@ -75,6 +122,8 @@ class OpenAICompatClient:
                             acc["arguments"] += fn.get("arguments") or ""
         except httpx.HTTPError as e:
             raise LLMError(f"Cannot reach {self.url}: {e}") from e
+        for kind, piece in splitter.flush():
+            yield StreamEvent(kind, text=piece)
         if calls:
             yield StreamEvent(
                 "tool_calls",
@@ -165,6 +214,8 @@ class AnthropicClient:
                             d = ev["delta"]
                             if d["type"] == "text_delta" and d.get("text"):
                                 yield StreamEvent("text", text=d["text"])
+                            elif d["type"] == "thinking_delta" and d.get("thinking"):
+                                yield StreamEvent("thinking", text=d["thinking"])
                             elif d["type"] == "input_json_delta":
                                 calls[ev["index"]]["arguments"] += d.get("partial_json", "")
                         elif kind == "error":

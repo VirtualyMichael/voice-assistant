@@ -22,8 +22,10 @@ _WHY = {
     "notifications_off": "Reading notifications is off. The user can turn it on in the phone app: Settings, This phone, Read my notifications.",
     "no_contact": "No contact on the phone matches that name. Ask the user for the number or the name as saved in their contacts.",
     "contacts_denied": "The phone app is not allowed to look up contacts. Ask the user for the number, or to allow contacts when the phone asks.",
+    "media_off": "Music control is off on the phone. The user can turn it on in the phone app: Settings, This phone, Control music and video (it also needs notification access).",
 }
-ACTION_NAMES = ("phone_set_alarm", "phone_set_timer", "phone_add_calendar_event", "phone_send_text", "phone_call", "phone_read_notifications")
+ACTION_NAMES = ("phone_set_alarm", "phone_set_timer", "phone_add_calendar_event", "phone_send_text", "phone_call", "phone_read_notifications", "phone_media")
+MEDIA_COMMANDS = ("now_playing", "play", "pause", "toggle", "next", "previous", "stop", "forward", "back", "volume_up", "volume_down", "set_volume", "play_search")
 
 
 def _hhmm(text: str) -> tuple[int, int]:
@@ -104,7 +106,21 @@ def build_phone_action_tools(get_remote) -> list[Tool]:
     def phone_read_notifications(app: str = "", limit: int = 10) -> str:
         return ask("read_notifications", {"app": str(app)[:40], "limit": max(1, min(int(limit or 10), 25))}, untrusted=True)
 
+    def phone_media(command: str, query: str = "", app: str = "") -> str:
+        command = str(command).strip().lower().replace(" ", "_")
+        if command not in MEDIA_COMMANDS:
+            return f"Error: command must be one of {', '.join(MEDIA_COMMANDS)}."
+        if command in ("play_search", "set_volume") and not str(query).strip():
+            return "Error: " + ("say what to play in query." if command == "play_search" else "give the volume percentage in query, e.g. '40'.")
+        return ask("media", {"command": command, "query": str(query)[:200], "app": str(app)[:40]})
+
     return [
+        Tool("phone_media",
+             "Control music and video playing ON THE USER'S PHONE (YouTube Music, Spotify, a podcast, a video): play, pause, toggle, next, previous, stop, forward/back "
+             "(15 seconds), volume_up, volume_down, set_volume (query = percent), now_playing (what is playing and in which app), or play_search (query = song, "
+             "artist or playlist; starts it in YouTube Music unless app names another). Use this when the user talks to you from their phone or says 'my phone'; "
+             "use the PC music tools when they mean the PC. No question is asked on the phone, so just call it.",
+             _obj({"command": {"type": "string", "enum": list(MEDIA_COMMANDS)}, "query": _str, "app": _str}, ["command"]), phone_media),
         Tool("phone_set_alarm",
              "Set an alarm on the user's phone (it rings even if the PC is off). time is the time of day, e.g. '07:30' or '6:45 am'. days repeats it on those "
              "weekdays (mon..sun); leave empty for once. The user confirms on the phone. It only creates a new alarm: it cannot list or check alarms, "
@@ -135,6 +151,6 @@ def build_phone_action_tools(get_remote) -> list[Tool]:
 
 PHONE_ACTIONS_PROMPT = (
     " On the user's phone you can set alarms (phone_set_alarm), start timers (phone_set_timer), add calendar events (phone_add_calendar_event), "
-    "write texts (phone_send_text), start calls (phone_call) and read its notifications (phone_read_notifications). The user confirms each action on the phone "
+    "write texts (phone_send_text), start calls (phone_call), read its notifications (phone_read_notifications) and control its music and video (phone_media). The user confirms each action on the phone "
     "and taps send or call there themselves, so just call the tool. Things the user shares from their phone arrive as attachments: use the attachment tools on them."
 )
