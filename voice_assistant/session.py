@@ -97,6 +97,19 @@ def looks_like_noise(text: str, min_words: int) -> bool:
     return " ".join(words) not in SHORT_COMMANDS
 
 
+def utterance_level(audio: list[np.ndarray], sr: int = 16000) -> float:
+    """How loud the loudest part of a recorded sentence was (RMS of 20 ms pieces, 95th percentile; speech at a normal distance is around 0.05 to 0.2, a quiet room well under 0.01)."""
+    if not audio:
+        return 0.0
+    x = np.concatenate(audio)
+    frame = int(0.02 * sr)
+    n = len(x) // frame
+    if n < 1:
+        return float(np.sqrt((x ** 2).mean())) if len(x) else 0.0
+    rms = np.sqrt((x[: n * frame].reshape(n, frame) ** 2).mean(axis=1))
+    return float(np.percentile(rms, 95))
+
+
 def trim_leading_silence(x: np.ndarray, sr: int = 16000, pad_s: float = 0.5) -> np.ndarray:
     """Cut the quiet lead-in off a recording but keep `pad_s` before the first loud frame.
 
@@ -416,10 +429,14 @@ class Session:
         audio, self._utt = self._utt, []
         rec.reset()
         self._last_partial, self._heard = "", False
-        if final and self._ambient and looks_like_noise(final, getattr(self.cfg, "ambient_min_words", 3)):
-            log.info("ignored a stray sentence picked up from the room: %r", final)
-            self.events.partial("")
-            return  # keep listening; the usual window timeout closes it
+        if final and self._ambient:
+            level = utterance_level(audio)
+            too_quiet = level < getattr(self.cfg, "ambient_min_level", 0.02)
+            log.info("sentence picked up with the mic open on its own: %r (loudest part %.3f, needs %.3f)", final, level, getattr(self.cfg, "ambient_min_level", 0.02))
+            if too_quiet or looks_like_noise(final, getattr(self.cfg, "ambient_min_words", 3)):
+                # near-silence and room noise make the recogniser invent words ("Element endless one of the"); a real request is louder than the room and longer than a word or two
+                self.events.partial("")
+                return  # keep listening; the usual window timeout closes it
         if final:
             final = self._refine(final, audio)
             with self._lock:

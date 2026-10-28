@@ -188,13 +188,46 @@ class Notes:
         return f"Deleted: {gone['text']}"
 
 
-ROUTINE_TOOL_NAMES = ("run_routine", "list_routines", "save_routine", "delete_routine")
-NOT_IN_ROUTINES = {"run_routine", "save_routine", "delete_routine", "list_routines", "run_powershell", "delegate_task", "computer_task", "control_click", "control_type",
+ROUTINE_TOOL_NAMES = ("run_routine", "list_routines", "save_routine", "save_routine_from_recent", "delete_routine")
+NOT_LEARNED = ("list_", "get_", "read_", "search_", "look_", "what_", "vrchat_parameters", "vrchat_notes", "ask_")  # lookups: they change nothing, so a preset made from "what I just did" skips them
+_FAILED = ("Error", "No ", "The user declined", "Could not", "I could not")
+RUN_WORDS = ("run", "do", "start", "activate", "apply", "use", "load", "switch to", "turn on", "enable", "set")
+NAME_SUFFIXES = ("preset", "routine", "mode", "macro")
+
+
+class Recent:
+    """The last few things the assistant did (tool name, arguments), so "save that as a preset" can reuse the exact calls that just worked instead of the
+    model guessing the switch names again. Fed by ToolRegistry.listeners."""
+
+    def __init__(self, keep: int = 30, clock=time.time):
+        self.calls: list[tuple[float, str, dict]] = []
+        self.keep, self.clock = keep, clock
+
+    def listener(self, name: str, args: dict, result: str) -> None:
+        if name in NOT_IN_ROUTINES or name.startswith(NOT_LEARNED) or result.startswith(_FAILED):
+            return
+        self.calls.append((self.clock(), name, dict(args)))
+        del self.calls[:-self.keep]
+
+    def last(self, count: int, within_s: float = 900) -> list[dict]:
+        now = self.clock()
+        picked = [c for c in self.calls if now - c[0] <= within_s][-max(1, count):]
+        out: list[dict] = []
+        for _t, name, args in picked:
+            step = {"tool": name, "args": args}
+            if not out or out[-1] != step:
+                out.append(step)
+        return out
+
+
+NOT_IN_ROUTINES = {"run_routine", "save_routine", "save_routine_from_recent", "delete_routine", "list_routines", "run_powershell", "delegate_task", "computer_task", "control_click", "control_type",
                    "control_keys", "control_scroll", "control_focus", "write_clipboard", "write_text_file"}  # a routine must not hide a shell command, a delegated job or a computer-control session in a phrase
 
 
-def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=press, session=media_session, audio=None, known_tools=lambda: [], persist=lambda: None) -> list[Tool]:
-    """call_tool(name, json_args) runs another registered tool (used by routines); known_tools() lists the tool names a routine step may use; persist() saves the settings."""
+def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=press, session=media_session, audio=None, known_tools=lambda: [], persist=lambda: None,
+                      recent: Recent | None = None, shortcuts: list | None = None) -> list[Tool]:
+    """call_tool(name, json_args) runs another registered tool (used by routines); known_tools() lists the tool names a routine step may use; persist() saves the settings.
+    recent remembers the latest actions for save_routine_from_recent; a function appended to shortcuts runs a routine straight from the user's words (no model)."""
     from .agent_tools import _obj, _str
 
     notes = notes or Notes()
@@ -257,19 +290,70 @@ def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=
         near = sorted(((similarity(name, key), key) for key in cfg.routines), reverse=True)
         return near[0][1] if near and near[0][0] >= 0.85 and (len(near) == 1 or near[1][0] < near[0][0] - 0.05) else None
 
+    def play(key: str) -> list[str]:
+        out = []
+        for s in cfg.routines[key]:
+            if s.get("tool") in NOT_IN_ROUTINES:
+                continue  # no routines calling routines, and nothing hidden inside one
+            out.append(f"{s.get('tool')}: {call_tool(s.get('tool', ''), json.dumps(s.get('args', {})))}")
+        return out
+
     def run_routine(name: str) -> str:
         key = find_routine(name)
         if key is None:
             return "No such routine. Known routines: " + (", ".join(cfg.routines) or "none") + "."
-        steps = cfg.routines[key]
-        if cfg.confirm_routines and not confirm(f"Run routine '{key}'?\n\n" + "\n".join(s.get("tool", "?") for s in steps)):
+        if cfg.confirm_routines and not confirm(f"Run routine '{key}'?\n\n" + "\n".join(s.get("tool", "?") for s in cfg.routines[key])):
             return declined
-        out = []
-        for s in steps:
-            if s.get("tool") in NOT_IN_ROUTINES:
-                continue  # no routines calling routines, and nothing hidden inside one
-            out.append(f"{s.get('tool')}: {call_tool(s.get('tool', ''), json.dumps(s.get('args', {})))}")
-        return "\n".join(out) or "The routine has no steps."
+        return "\n".join(play(key)) or "The routine has no steps."
+
+    def spoken_routine(text: str) -> str | None:
+        """'Run white outfit', 'white outfit preset' or just 'white outfit' runs that saved routine at once, with no model round trip and no questions:
+        saying its name is the consent. Only an exact name matches, so ordinary sentences never trigger one. Returns what to say, or None when it is not a routine."""
+        from .ytm_browser import compact
+
+        if not cfg.routines:
+            return None
+        words = " ".join("".join(c if c.isalnum() or c == "'" else " " for c in text.lower()).split())
+        for verb in sorted(RUN_WORDS, key=len, reverse=True):
+            if words.startswith(verb + " "):
+                words = words[len(verb) + 1:]
+                break
+        words = words.removeprefix("the ").removeprefix("my ").strip()
+        for suffix in NAME_SUFFIXES:
+            words = words.removesuffix(" " + suffix).strip()
+        want = compact(words)
+        if not want:
+            return None
+        def spoken_forms(k: str) -> set[str]:
+            parts = k.split()
+            return {compact(k), compact(" ".join(parts[:-1])) if len(parts) > 1 and parts[-1] in NAME_SUFFIXES else ""} - {""}
+
+        key = next((k for k in cfg.routines if want in spoken_forms(k)), None)
+        if key is None:
+            return None
+        results = play(key)
+        failed = [r for r in results if r.split(": ", 1)[-1].startswith(_FAILED)]
+        if failed:
+            return f"I ran {key}, but {len(failed)} of {len(results)} steps had a problem: " + failed[0][:160]
+        return f"Done: {key}."
+
+    if shortcuts is not None:
+        shortcuts.append(spoken_routine)
+
+    def save_routine_from_recent(name: str, count: int = 5) -> str:
+        key = " ".join(name.lower().split())
+        if not key or len(key) > 60:
+            return "Error: give the preset a short name."
+        steps = recent.last(int(count)) if recent is not None else []
+        if not steps:
+            return "Nothing to save: I have not done anything with a tool in the last 15 minutes. Do the actions first, or describe them and use save_routine."
+        listing = "\n".join(f"{s['tool']} {json.dumps(s['args'])}" for s in steps)
+        replacing = key in cfg.routines
+        if not confirm(f"{'Replace' if replacing else 'Save'} the preset '{key}'? Saying its name will do this at once, with no questions.\n\n{listing}"):
+            return declined
+        cfg.routines[key] = steps
+        persist()
+        return f"Saved the preset '{key}' with {len(steps)} step(s). The user can now just say '{key}' and it runs straight away."
 
     def list_routines() -> str:
         if not cfg.routines:
@@ -316,11 +400,15 @@ def build_extra_tools(cfg, confirm, call_tool, notes: Notes | None = None, keys=
         Tool("delete_note", "Delete a saved note by its number.", _obj({"number": {"type": "integer"}}, ["number"]), lambda number: notes.remove(int(number))),
     ]
     tools += [
-        Tool("run_routine", "Run one of the user's saved routines (several actions under one phrase, like 'good night'). Call list_routines to see them.", _obj({"name": _str}, ["name"]), run_routine),
+        Tool("run_routine", "Run one of the user's saved routines, also called presets or modes (several actions under one phrase, like 'good night' or 'white outfit'). Call list_routines to see them. Run it straight away: do not ask which switches or values.", _obj({"name": _str}, ["name"]), run_routine),
         Tool("list_routines", "List the user's saved routines and their steps.", _obj({}), list_routines),
         Tool("save_routine", "Save a routine the user describes ('make a gaming mode routine that dims the lights and sets YouTube Music to 20%'). steps is a JSON list of {\"tool\": name, \"args\": {...}} using the other tools "
              "(set_lights, set_volume, media_control, play_music, vrchat_set, ...). The user confirms before it is saved.", _obj({"name": _str, "steps": _str}, ["name", "steps"]), save_routine),
-        Tool("delete_routine", "Delete a saved routine by name (the user confirms).", _obj({"name": _str}, ["name"]), delete_routine),
+        Tool("save_routine_from_recent", "Save a PRESET from what you just did: use it when the user says 'save that as X', 'make that a preset called X' or 'remember that as X' right after you changed something "
+             "(avatar switches, lights, volume...). count = how many of your latest actions to include (default 5; one batch call counts as one). The exact calls that worked are reused, so do not re-look-up names. "
+             "Afterwards saying the name runs it instantly, with no questions. To make a preset without doing it first, use save_routine.",
+             _obj({"name": _str, "count": {"type": "integer"}}, ["name"]), save_routine_from_recent),
+        Tool("delete_routine","Delete a saved routine by name (the user confirms).", _obj({"name": _str}, ["name"]), delete_routine),
     ]
     if cfg.allow_web:
         tools.append(Tool("get_weather", "Current weather and today's forecast for a place (city name).", _obj({"place": _str}, ["place"]), weather))

@@ -83,3 +83,33 @@ def test_stray_words_are_dropped_when_the_mic_opened_by_itself_but_not_when_aske
     s.feed_audio(AUDIO)
     assert wait(lambda: "Weather" in ev.finals)
     s.close()
+
+
+def test_quiet_sounds_are_dropped_and_loud_speech_is_kept_when_the_mic_opened_by_itself():
+    import numpy as np
+
+    from voice_assistant.session import utterance_level
+
+    rng = np.random.default_rng(1)
+    hiss = [(rng.standard_normal(16000) * 0.004).astype(np.float32)]
+    speech = [(rng.standard_normal(16000) * 0.1).astype(np.float32)]
+    assert utterance_level(hiss) < 0.02 < utterance_level(speech)
+    assert utterance_level([]) == 0.0
+
+    def run(audio_level):
+        s, rec, ev, played = build(Config(listen_tone=False, follow_up=True, follow_up_s=5, listen_mode="push", post_speech_guard_s=0.0), play_s=0.0)
+        speak_utterance(s, rec)
+        assert ev.done.wait(3)
+        assert wait(lambda: s.state is State.LISTENING)
+        loud = (np.ones(3200, np.float32) * audio_level)
+        s.feed_audio(loud)
+        time.sleep(0.05)
+        rec.t, rec.end = "what is the weather like today", True
+        s.feed_audio(loud)
+        time.sleep(0.3)
+        got = list(ev.finals)
+        s.close()
+        return got
+
+    assert run(0.002) == ["hello there"]  # a long sentence, but it was only room noise: ignored
+    assert "what is the weather like today" in run(0.1)

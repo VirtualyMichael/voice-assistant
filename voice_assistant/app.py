@@ -43,14 +43,14 @@ from .delegate import UsageLog, build_delegate_tools
 from .computer import build_computer_tools
 from .backup import make_backup, restore_backup
 from .briefing import build_briefing_tools
-from .extras import Audio, Notes, build_extra_tools
+from .extras import Audio, Notes, Recent, build_extra_tools
 from .music import build_music_tools, open_users_youtube_music
 from .ytm_bridge import YtmBridge, extension_folder, make_music_actions, make_player, make_playlist_player
 from .ytm_library import Library
 from .ytm_browser import YtmBrowser, make_judge
 from .screen import list_windows
 from .profile import Profile, build_profile_tools
-from .screen import build_screen_tools
+from .screen import build_screen_tools, build_screenshot_tools
 from .smart_home import HOME_TOOL_NAMES, build_home_tools, make_govee
 from .diagnostics import CallLog, build_diagnostic_tools
 from .ducking import Ducker
@@ -103,6 +103,7 @@ class Bridge(QObject):
     tool = Signal(str)
     vr_note = Signal(str)
     note = Signal(str)
+    screenshot = Signal(str, bytes)  # a screenshot the assistant took: shown in the chat with Copy and Save buttons
     apps_count = Signal(int)
     route = Signal(str, bool)
     tasks_changed = Signal()  # a scheduled task ran or changed: refresh the Tasks tab
@@ -437,6 +438,48 @@ class Chat(QScrollArea):
         self.col.insertLayout(self.col.count() - 1, row)
         self._ai = None
 
+    def add_shot(self, label: str, png: bytes) -> None:
+        """A screenshot the assistant took: the picture with its title and Copy / Save buttons."""
+        image = QImage.fromData(png)
+        if image.isNull():
+            return
+        box = QWidget()
+        box.setObjectName("bubbleNote")
+        col = QVBoxLayout(box)
+        col.setContentsMargins(8, 8, 8, 8)
+        col.setSpacing(4)
+        pic = QLabel()
+        pic.setPixmap(QPixmap.fromImage(image).scaledToWidth(min(480, self._max_width()), Qt.SmoothTransformation))
+        col.addWidget(pic)
+        col.addWidget(QLabel(f"{label}  ({image.width()}×{image.height()})", objectName="small"))
+        buttons = QHBoxLayout()
+        copy, save = QPushButton("Copy"), QPushButton("Save…")
+        status = QLabel("", objectName="small")
+
+        def do_copy() -> None:
+            QApplication.clipboard().setImage(image)
+            status.setText("Copied. Paste it anywhere.")
+
+        def do_save() -> None:
+            folder = Path.home() / "Pictures" / "Screenshots"
+            stem = "".join(c if c.isalnum() else "-" for c in label).strip("-")[:40] or "screenshot"
+            path, _ = QFileDialog.getSaveFileName(None, "Save screenshot", str(folder / f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}.png"), "PNG (*.png)")
+            if path:
+                status.setText("Saved." if image.save(path, "PNG") else "Could not save there.")
+
+        copy.clicked.connect(do_copy)
+        save.clicked.connect(do_save)
+        buttons.addWidget(copy)
+        buttons.addWidget(save)
+        buttons.addWidget(status, 1)
+        col.addLayout(buttons)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(box)
+        row.addStretch(1)
+        self.col.insertLayout(self.col.count() - 1, row)
+        self._ai = None
+
     def clear(self) -> None:
         def drop(layout) -> None:
             while layout.count():
@@ -633,6 +676,7 @@ class MainWindow(QMainWindow):
         b.vr.connect(self._on_vr)
         b.vr_note.connect(self._on_vr_note)
         b.note.connect(lambda m: self.chat.add("bubbleNote", m))
+        b.screenshot.connect(self.chat.add_shot)
         b.chats_changed.connect(self._refresh_history)
         b.tasks_changed.connect(self.tasks_page.refresh)
         hp = self.history_panel
@@ -1424,9 +1468,14 @@ class MainWindow(QMainWindow):
         registry.add(build_profile_tools(cfg, self.profile, self._confirm))
         if cfg.delegate_enabled:
             registry.add(build_delegate_tools(cfg, self.policy, self._confirm, self.usage))
-        registry.add(build_extra_tools(cfg, self._confirm, lambda name, args: self._full.call(name, args), known_tools=registry.names, persist=lambda: save_config(self.cfg)))
+        self.recent = Recent()
+        registry.listeners.append(self.recent.listener)
+        self._shortcuts: list = []
+        registry.add(build_extra_tools(cfg, self._confirm, lambda name, args: self._full.call(name, args), known_tools=registry.names, persist=lambda: save_config(self.cfg),
+                                       recent=self.recent, shortcuts=self._shortcuts))
         registry.add(self._music_and_computer_tools())
         registry.add(build_screen_tools(cfg, self._confirm, lambda: self.session.agent.llm))
+        registry.add(build_screenshot_tools(lambda label, png: self.bridge.screenshot.emit(label, png)))
         registry.log = CallLog()
         registry.add(build_diagnostic_tools(registry.log, lambda: self.warnings))
         self.pdfs = PdfStore()
@@ -1459,6 +1508,7 @@ class MainWindow(QMainWindow):
             max_messages=cfg.history_messages,
             on_tool=lambda m: self.bridge.tool.emit(m),
         )
+        agent.shortcuts = self._shortcuts  # a saved preset's name runs it at once, without the model
         self.chats = ChatLibrary(config_dir() / "chats", legacy=config_dir() / "conversation.json")
         self.chats.migrate_legacy()  # the old single saved conversation becomes the first chat
         latest = self.chats.list()[:1]

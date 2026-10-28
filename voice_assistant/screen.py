@@ -122,6 +122,43 @@ def ask_about_image(llm, question: str, png: bytes, language: str = "English", m
     return text or "The model returned no answer. It may not support images."
 
 
+SHOT_WIDTH = 3840  # a picture to keep or paste elsewhere: no need to shrink it like the ones sent to a model
+
+
+def build_screenshot_tools(show, windows=list_windows, rect=window_rect, capture=capture_png) -> list[Tool]:
+    """take_screenshot: one picture per named window (or the whole screen), shown in the chat with Copy and Save buttons. show(label, png) puts it there.
+    The picture stays on this PC: it is not sent to the AI model, so there is nothing to confirm."""
+    from .agent_tools import _obj, _str
+
+    def take_screenshot(windows_wanted: str = "", monitor: int = 1) -> str:
+        names = [n.strip() for n in windows_wanted.replace(" and ", ",").replace(";", ",").split(",") if n.strip()]
+        if not names:
+            show(f"Monitor {int(monitor)}", capture(int(monitor), max_width=SHOT_WIDTH))
+            return f"Took a screenshot of monitor {int(monitor)}. It is in the chat with Copy and Save buttons."
+        all_w = windows()
+        done, missing = [], []
+        for name in names:
+            found = match_window(all_w, name, loose=True)
+            if found is None:
+                missing.append(name)
+                continue
+            try:
+                show(found[1], capture(1, max_width=SHOT_WIDTH, region=rect(found[0])))
+                done.append(found[1])
+            except Exception as e:
+                missing.append(f"{name} ({e.__class__.__name__})")
+        out = (f"Took {len(done)} screenshot(s): {', '.join(done)}. They are in the chat with Copy and Save buttons." if done else "No screenshot was taken.")
+        if missing:
+            have = ", ".join(sorted({w[2] or w[1] for w in all_w if w[1]})[:25])
+            out += f" Could not capture: {', '.join(missing)}: no such open window. Do NOT open anything yourself; tell the user. Open windows: {have}."
+        return out
+
+    return [Tool("take_screenshot", "Take a screenshot (a picture the user can copy or save, nothing is described). windows_wanted is the name of one window or several separated by commas "
+                 "('VRChat, Discord'); leave it empty for the whole screen (monitor 1, 2...). Each window is brought to the front for a moment. The pictures appear in the chat "
+                 "with Copy and Save buttons. Use look_at_screen instead when the user wants something explained or read.",
+                 _obj({"windows_wanted": _str, "monitor": {"type": "integer"}}), take_screenshot)]
+
+
 def build_screen_tools(cfg, confirm, get_llm, capture=capture_png, windows=list_windows, rect=window_rect) -> list[Tool]:
     from .agent_tools import _obj, _str
 

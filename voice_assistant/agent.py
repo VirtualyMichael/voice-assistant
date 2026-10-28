@@ -23,6 +23,7 @@ class Agent:
         self.on_thinking: Callable[[str], None] | None = None  # the model's reasoning as it streams; never spoken and never kept in the history
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
         self.on_update: Callable[[list[dict]], None] | None = None  # called after every turn (used to save the chat)
+        self.shortcuts: list[Callable[[str], str | None]] = []  # each gets the user's words; one that returns text answers the turn itself (e.g. a saved preset) without the model
 
     def load_history(self, history: list[dict]) -> None:
         """Continue an earlier conversation: user/assistant messages after the system prompt."""
@@ -37,6 +38,15 @@ class Agent:
         self._trim()
         pending: list[str] = []  # streamed text of an unfinished round, kept if interrupted
         try:
+            for shortcut in self.shortcuts:
+                try:
+                    quick = shortcut(user_text)
+                except Exception:  # a broken shortcut falls through to the model
+                    quick = None
+                if quick:
+                    self.messages.append({"role": "assistant", "content": quick})
+                    yield quick
+                    return
             for _ in range(self.max_rounds + 1):
                 calls = ()
                 pending.clear()
