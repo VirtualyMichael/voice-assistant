@@ -93,11 +93,22 @@ class Config:
     models_dir: str = field(default_factory=lambda: str(default_models_dir()))
     tts_speed: float = 1.0
     tts_voice: str = ""  # voice id, e.g. "am_michael"; empty = the model's first voice
+    # voices shown in the Voice list (the others stay installed but hidden); empty list or tts_show_all_voices = every voice
+    tts_voice_list: list = field(default_factory=lambda: ["af_sky", "af_heart", "af_bella", "af_nicole", "bm_george", "am_michael", "bm_lewis"])
+    tts_show_all_voices: bool = False
     tts_threads: int = 6
     chatterbox_launch: str = ""  # path to Start-Chatterbox-Server.bat: started automatically (hidden) when the server is not running, and stopped on exit
     chatterbox_url: str = ""  # e.g. "http://127.0.0.1:8123": speak with your cloned voice from a local Chatterbox server; empty = built-in voices
     tts_pronunciations: dict = field(default_factory=dict)  # extra word -> spoken form, e.g. {"Nguyen": "Win"}
+    # A speech server with OpenAI's /v1/audio/speech (OpenAI itself, or Kokoro-FastAPI, Orpheus-FastAPI, Chatterbox-TTS-API, Fish Speech...); empty = off.
+    # Its key is in Credential Manager ("tts_server"); for api.openai.com the saved OpenAI key is used when it has none of its own.
+    tts_server_url: str = ""
+    tts_server_model: str = "gpt-4o-mini-tts"
+    tts_server_voices: str = "alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse"  # comma list, each becomes "server:<name>"
+    tts_server_instructions: str = ""  # speaking style, e.g. "Warm and relaxed, like a friend"; sent only when not empty (gpt-4o-mini-tts reads it)
+    elevenlabs_model: str = "eleven_flash_v2_5"  # ElevenLabs is on when its key is saved in Credential Manager ("elevenlabs")
     vram_reserve_gb: float = 4.0  # VRAM kept free for games and other workloads
+    gpu_priority: str = "below_normal"  # graphics-card priority of the model server and cloned-voice server: normal | below_normal | idle (a game then goes first)
     always_on_top: bool = False
     opacity: float = 1.0
     window_size: list[int] = field(default_factory=list)

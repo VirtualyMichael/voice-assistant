@@ -72,7 +72,7 @@ ADVANCED = frozenset({
     "remote_port", "barge_in_min_chars", "listen_delay_s", "post_speech_guard_s", "listen_timeout_s", "end_of_speech_s", "wake_threshold",
     "tts_threads", "tts_voice", "custom_voice_dir", "chatterbox_url", "chatterbox_launch", "tts_pronunciations",
     "llm_extra_body", "llm_base_url", "ollama_base_url", "ollama_model", "custom_base_url", "custom_model", "custom_key_env", "openai_base_url",
-    "openai_model", "openai_key_env", "anthropic_model", "anthropic_key_env", "llm_api_key_env", "max_tool_rounds", "history_messages", "vram_reserve_gb",
+    "openai_model", "openai_key_env", "anthropic_model", "anthropic_key_env", "llm_api_key_env", "max_tool_rounds", "history_messages", "vram_reserve_gb", "gpu_priority",
     "video_custom_edge", "video_custom_mb", "video_custom_fps", "video_custom_frames", "video_identify_model", "video_skip_still",
     "ytm_extension", "duck_level", "system_prompt", "approved_folders", "skill_folders", "library_folders", "disabled_skills", "mcp_servers",
     "delegate_cmd_claude", "delegate_cmd_codex", "delegate_cooldown_s", "delegate_timeout_s", "odysseus_url", "odysseus_endpoint_id", "odysseus_model",
@@ -173,6 +173,8 @@ SETTINGS: tuple[Setting, ...] = (
     toggle("show_thinking", "Show its thinking", "Shows the model's reasoning in a folded block above each answer, if the model produces any. It is never read aloud.", "ai", apply=LIVE),
     number("max_tool_rounds", "Steps it may take per request", "How many tool steps it can chain before answering.", "ai", 1, 30, 1, integer=True),
     number("history_messages", "Conversation it remembers", "How many recent messages are sent to the model each time.", "ai", 4, 200, 2, integer=True),
+    choice("gpu_priority", "AI priority on the graphics card", "Lower it so a game or video gets the card first and the AI uses what is left. Applies to the model server and the cloned-voice server.", "ai",
+           (("normal", "Normal"), ("below_normal", "Below normal (recommended)"), ("idle", "Lowest")), apply=RESTART),
     number("vram_reserve_gb", "Graphics memory kept free", "Memory left free for games and other programs when choosing a model.", "ai", 0, 24, 0.5, unit="GB"),
     readonly("llm_extra_body", "Extra model options", "Advanced options sent with every request. Edit these on the PC."),
     # ---- apps and music ----
@@ -271,6 +273,13 @@ PC_ONLY: dict[str, str] = {
     "mic_forward": "needs the PC's audio routing set up (virtual cable)",
     "plantnet_enabled": "sends plant photos to a third party and needs a key entered on the PC",
     "remote_allow_safety_changes": "the owner's switch on the PC; it must never be changeable from the phone",
+    "tts_voice_list": "a list of voice ids; chosen on the PC with \"Show every installed voice\"",
+    "tts_show_all_voices": "only changes the PC's Voice list",
+    "tts_server_url": "can send every reply's text to an online service, and its key is entered on the PC",
+    "tts_server_model": "part of the speech server set-up done on the PC",
+    "tts_server_voices": "part of the speech server set-up done on the PC",
+    "tts_server_instructions": "part of the speech server set-up done on the PC",
+    "elevenlabs_model": "part of the ElevenLabs set-up done on the PC (its key is entered there)",
 }
 
 # Settings read each time they are used, so a change takes effect at once. Everything else is read when the assistant starts.

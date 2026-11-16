@@ -40,7 +40,14 @@ MODEL_SPECS = [
     ModelSpec("supertonic", "Supertonic v3 (natural voices)", f"{REL}/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2", "more natural voices; MIT licence for the code, check the model card", size_mb=128, core=False),
     ModelSpec("piper_kusal", "Piper Kusal (US male)", f"{REL}/tts-models/vits-piper-en_US-kusal-medium-int8.tar.bz2", "a natural male voice", size_mb=20, core=False),
     ModelSpec("kokoro2", "Kokoro v1.0 (53 voices, better male voices)", f"{REL}/tts-models/kokoro-multi-lang-v1_0.tar.bz2", "newer Kokoro: more and better male voices", size_mb=340, core=False),
+    ModelSpec("pocket", "Pocket TTS by Kyutai (copies a voice from a recording)", f"{REL}/tts-models/sherpa-onnx-pocket-tts-2026-01-26.tar.bz2", "speaks in the voice of a short recording; read its licence first", size_mb=160, core=False),
 ]
+
+
+def is_installed(models_dir: Path, slot: str) -> bool:
+    """A model folder is there: tokens.txt for most models; Supertonic and Pocket have none, so any .onnx file counts too."""
+    d = Path(models_dir) / slot
+    return (d / "tokens.txt").exists() or (d.is_dir() and any(d.rglob("*.onnx")))
 
 
 class ModelsMissing(RuntimeError):
@@ -349,20 +356,34 @@ class ChatterboxSynth:
         import wave
 
         req = urllib.request.Request(f"{self.url}/tts", json.dumps({"text": text}).encode(), {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=60) as r, wave.open(io.BytesIO(r.read())) as w:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=20) as r, wave.open(io.BytesIO(r.read())) as w:  # noqa: S310
             pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
             return pcm.astype(np.float32) / 32768.0, w.getframerate()
 
 
 class MultiSynth:
-    """Several voice engines behind one voice list; picking a voice switches to its engine."""
+    """Several voice engines behind one voice list; picking a voice switches to its engine. An engine with a `prefix` ("pocket:", "eleven:")
+    also takes ids it does not list yet (ElevenLabs lists its voices in the background)."""
 
     def __init__(self, engines: list):
         self.engines = engines
-        self.voices = [v for e in engines for v in e.voices]
         self.engine = "+".join(e.engine for e in engines)
         self._cur = engines[0]
         self._speed = getattr(engines[0], "speed", 1.0)
+
+    @property
+    def voices(self) -> list:
+        return [v for e in self.engines for v in e.voices]
+
+    def engine_for(self, voice_id: str):
+        """The engine that speaks this voice id, or None."""
+        return (next((e for e in self.engines if any(v.id == voice_id for v in e.voices)), None)
+                or next((e for e in self.engines if getattr(e, "prefix", "") and voice_id.startswith(e.prefix)), None))
+
+    def refresh_voices(self) -> None:
+        for e in self.engines:
+            if hasattr(e, "refresh_voices"):
+                e.refresh_voices()
 
     @property
     def speed(self) -> float:
@@ -375,23 +396,34 @@ class MultiSynth:
             e.speed = value
 
     def set_voice(self, voice_id: str) -> Voice:
-        for e in self.engines:
-            if any(v.id == voice_id for v in e.voices):
-                self._cur = e
-                return e.set_voice(voice_id)
-        self._cur = self.engines[0]
+        self._cur = self.engine_for(voice_id) or self.engines[0]
         return self._cur.set_voice(voice_id)
 
     def __call__(self, text: str) -> tuple[np.ndarray, int]:
         return self._cur(text)
 
 
+CLONE_VOICE = Voice("clone", "My voice (Chatterbox)", "male", 0)
+ALWAYS_SHOWN = ("clone", "custom", "server:", "eleven:")  # your own voices and online voices you set up yourself
+
+
+def shown_voices(voices: list, allowed: list | None, current: str = "") -> list:
+    """The voices for the Voice list: those in `allowed`, your own and online ones, and the one in use. Empty or None `allowed` = every voice."""
+    if not allowed:
+        return list(voices)
+    keep = set(allowed)
+    return [v for v in voices if v.id in keep or v.id == current or v.id.startswith(ALWAYS_SHOWN)]
+
+
 class PendingClone:
-    """The built-in voices until the cloned-voice server answers, then the clone. The server can take a minute or two to start,
-    and the window should not wait for it."""
+    """Your cloned voice next to the built-in voices in one list. The Chatterbox server can take a minute or two to start and the
+    window should not wait for it: until it answers, a sentence for the clone is spoken by the built-in voice. Choosing any other
+    voice speaks with the built-in voices and leaves the clone alone."""
 
     def __init__(self, fallback, url: str, launch: str, speed: float, on_ready=None, ensure=None, make=None):
-        self._cur, self.ready = fallback, False
+        self._builtin, self._clone = fallback, None
+        self._want_clone = True  # until a voice is chosen, the clone speaks once it is ready (as before)
+        self.ready = False
         self._url, self._launch, self._speed, self._on_ready = url, launch, speed, on_ready
         self._ensure, self._make = ensure or ensure_chatterbox_server, make or ChatterboxSynth
         threading.Thread(target=self._connect, daemon=True, name="chatterbox-start").start()
@@ -403,9 +435,15 @@ class PendingClone:
         except ModelsMissing as e:
             log.warning("%s - keeping the built-in voices", e)
             return
-        self._cur, self.ready = clone, True
+        from .tts_engines import FallbackSynth
+
+        self._clone, self.ready = FallbackSynth(clone, self._builtin), True  # a sentence the clone cannot speak uses the built-in voice
         if self._on_ready:
             self._on_ready()
+
+    @property
+    def _cur(self):
+        return self._clone if self._want_clone and self._clone is not None else self._builtin
 
     @property
     def engine(self) -> str:
@@ -413,7 +451,11 @@ class PendingClone:
 
     @property
     def voices(self):
-        return self._cur.voices
+        return [CLONE_VOICE, *self._builtin.voices]
+
+    def refresh_voices(self) -> None:
+        if hasattr(self._builtin, "refresh_voices"):
+            self._builtin.refresh_voices()
 
     @property
     def speed(self) -> float:
@@ -422,31 +464,64 @@ class PendingClone:
     @speed.setter
     def speed(self, value: float) -> None:
         self._speed = value
-        self._cur.speed = value
+        self._builtin.speed = value
+        if self._clone is not None:
+            self._clone.speed = value
 
     def set_voice(self, voice_id: str) -> Voice:
-        return self._cur.set_voice(voice_id)
+        self._want_clone = voice_id == CLONE_VOICE.id
+        return CLONE_VOICE if self._want_clone else self._builtin.set_voice(voice_id)
 
     def __call__(self, text: str) -> tuple[np.ndarray, int]:
         return self._cur(text)
 
 
-def load_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_dir: str = "", chatterbox_url: str = "", chatterbox_launch: str = "", on_clone_ready=None):
+def load_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_dir: str = "", chatterbox_url: str = "", chatterbox_launch: str = "", on_clone_ready=None,
+               extra: list | None = None):
     """A Chatterbox server (your cloned voice) if chatterbox_url is set, else the user's own voice folder, else Kokoro (models_dir/kokoro), else Piper (models_dir/tts).
-    A Chatterbox server that is not answering yet is started in the background; the built-in voices speak until it is ready (on_clone_ready is called then)."""
+    A Chatterbox server that is not answering yet is started in the background; the built-in voices speak until it is ready (on_clone_ready is called then).
+    `extra` engines (tts_engines.voice_engines) join the same voice list; they and the clone fall back to the built-in voice for a sentence they cannot speak."""
+    from .tts_engines import FallbackSynth
+
+    extra = list(extra or [])
+    local = lambda: _local_synth(models_dir, speed, threads, voice, custom_dir)  # noqa: E731
+    base = builtin = None
     if chatterbox_url:
-        if _chatterbox_up(chatterbox_url, timeout=0.5):
-            try:
-                return ChatterboxSynth(chatterbox_url, speed)
-            except ModelsMissing as e:
-                log.warning("%s - falling back to built-in voices", e)
-        else:
-            try:
-                builtin = load_synth(models_dir, speed, threads, voice, custom_dir)
-            except Exception:  # no built-in voice to speak meanwhile: wait for the clone as before
+        try:
+            builtin = local()
+        except Exception:  # no built-in voice to speak meanwhile: wait for the clone as before
+            if not extra:
                 ensure_chatterbox_server(chatterbox_url, chatterbox_launch)
                 return ChatterboxSynth(chatterbox_url, speed)
-            return PendingClone(builtin, chatterbox_url, chatterbox_launch, speed, on_clone_ready)
+        else:
+            base = PendingClone(builtin, chatterbox_url, chatterbox_launch, speed, on_clone_ready)
+            base.set_voice(voice)
+    if base is None and builtin is None:
+        try:
+            base = builtin = local()
+        except Exception:
+            if not extra:
+                raise
+            log.warning("no built-in voice could be loaded; the other voices have no backup", exc_info=True)
+    if not extra:
+        return base
+    _preload([e for e in extra if hasattr(e, "load_quietly") and voice.startswith(getattr(e, "prefix", "\0"))])
+    synth = MultiSynth(([base] if base is not None else []) + [FallbackSynth(e, builtin) for e in extra])
+    synth.set_voice(voice)
+    return synth
+
+
+def _preload(engines: list) -> None:
+    """Load these engines' models in the background once start-up has settled."""
+    if not engines:
+        return
+    timer = threading.Timer(LAZY_VOICE_DELAY_S, lambda: [e.load_quietly() for e in engines])
+    timer.daemon = True
+    timer.start()
+
+
+def _local_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_dir: str = ""):
+    """The voices on this PC: your own voice folder, else Kokoro, Supertonic and Piper Kusal (as many as are installed), else Piper Amy."""
     if custom_dir and Path(custom_dir).is_dir():
         return SherpaSynth(Path(custom_dir), speed, threads, voice, custom=True)
     # (engine, its voices, how to load it); the voice lists are known without loading the models
@@ -470,10 +545,7 @@ def load_synth(models_dir: Path, speed: float, threads: int, voice: str, custom_
     first = next((i for i, (_e, vs, _f) in enumerate(specs) if any(v.id == voice for v in vs)), 0)
     engines = [specs[i][2]() if i == first else LazySynth(*specs[i], speed) for i in range(len(specs))]
     engines.insert(0, engines.pop(first))
-    lazy = [e for e in engines if isinstance(e, LazySynth)]
-    timer = threading.Timer(LAZY_VOICE_DELAY_S, lambda: [e.load_quietly() for e in lazy])
-    timer.daemon = True
-    timer.start()
+    _preload([e for e in engines if isinstance(e, LazySynth)])
     synth = MultiSynth(engines)
     synth.set_voice(voice)
     return synth

@@ -44,6 +44,10 @@ How much it looks at depends on the video detail setting (Settings > Video on th
 
 **Sound** is on by default (setting *Video sound*, on the PC and in the phone's settings): the clip is recorded with sound, the recording screen says *with sound*, and the PC turns the speech into text. Switch it off and the clip is recorded silent.
 
+## Asking from a Wear OS watch
+
+The phone app has a companion watch app (see [WATCH.md](WATCH.md)). On the phone, *Settings* > *This phone*: **Let my watch talk to the assistant** (off by default; until it is on, the watch is ignored and only told "switched off"). Once it is on, a second setting appears below it: **Where replies play when I ask from my watch**, *Watch* or *Phone* (default *Phone*). With *Watch*, spoken replies to questions asked on the watch play on the watch's speaker (or earbuds connected to the watch); questions asked on the phone still answer on the phone. A watch without a speaker shows those replies as text only. Status: built and unit-tested, not yet tried with a real watch.
+
 ## Removing a phone
 
 On the PC: *Settings* > *Phone*, select the phone, press **Remove the selected phone**. On the phone: **Forget PC** in the app's settings

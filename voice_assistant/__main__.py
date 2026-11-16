@@ -1,4 +1,4 @@
-"""python -m voice_assistant [run|--setup|--selftest [file]|doctor|setup|fetch-models [kokoro] [--yes]|phone [pair [name]|list|unpair <id>]|eval [--only vision,phone] [--case ID] [--verbose]]"""
+"""python -m voice_assistant [run|--setup|--selftest [file]|doctor|setup|fetch-models [kokoro] [--yes]|phone [pair [name]|list|unpair <id>]|audition [--out DIR] [--only ENGINES]|eval [--only vision,phone] [--case ID] [--verbose]]"""
 from __future__ import annotations
 
 import sys
@@ -10,12 +10,12 @@ from .config import load_config
 def doctor() -> int:
     import httpx
 
-    from .models import MODEL_SPECS
+    from .models import MODEL_SPECS, is_installed
 
     cfg = load_config()
     print(f"Models dir: {cfg.models_dir}")
     for spec in MODEL_SPECS:
-        ok = (Path(cfg.models_dir) / spec.slot / "tokens.txt").exists()
+        ok = is_installed(Path(cfg.models_dir), spec.slot)
         print(f"  [{'ok' if ok else 'missing'}] {spec.slot}: {spec.name} ({spec.note})")
     try:
         r = httpx.get(cfg.llm_base_url.rstrip("/") + "/models", timeout=3)
@@ -39,10 +39,10 @@ def setup() -> int:
     cfg = load_config()
     print("\nMissing models can be downloaded now (about 100 MB, from github.com/k2-fsa/sherpa-onnx releases).")
     if input("Download missing models? [y/N] ").strip().lower() == "y":
-        from .models import MODEL_SPECS, fetch_model
+        from .models import MODEL_SPECS, fetch_model, is_installed
 
         for spec in MODEL_SPECS:
-            if not (Path(cfg.models_dir) / spec.slot / "tokens.txt").exists():
+            if spec.core and not is_installed(Path(cfg.models_dir), spec.slot):
                 print(f"Fetching {spec.name} ...")
                 fetch_model(spec, Path(cfg.models_dir))
     for key, kind, label in (("input_device", "input", "microphone"), ("output_device", "output", "speaker")):
@@ -127,6 +127,10 @@ def main(argv: list[str]) -> int:
         return fetch_models(argv[1:])
     if cmd == "phone":
         return phone(argv[1:])
+    if cmd == "audition":
+        from .audition import main as audition
+
+        return audition(argv[1:])
     if cmd == "eval":
         from .evaluate import main as evaluate
 

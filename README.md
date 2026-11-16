@@ -28,6 +28,7 @@
   - [Ask first](#ask-first)
 - [Voices and audio](#voices-and-audio)
   - [Voices and speech quality](#voices-and-speech-quality)
+  - [More lifelike voices](#more-lifelike-voices)
   - [Using your own voice model](#using-your-own-voice-model)
   - [Audio devices and game voice](#audio-devices-and-game-voice)
 - [VR and games](#vr-and-games)
@@ -210,6 +211,22 @@ By default the assistant asks before it opens a link, takes a screenshot, reads 
   are split at 220 characters because TTS models truncate very long input.
 - Verified: Kokoro voices sound natural and words are no longer cut off.
 - Known weak point: the small 20M recognizer often drops the first word of an utterance ("Hello" heard as "O").
+
+### More lifelike voices
+
+Settings > Voice > **More lifelike voices** adds three optional engines to the same Voice list (details in [docs/VOICES.md](docs/VOICES.md)):
+
+- **Pocket** (Kyutai, on this PC): speaks in the voice of a short `.wav` recording. **Download Pocket** (~160 MB, or `fetch-models pocket`), then
+  **Add a voice from a recording...** (copied to `%APPDATA%\VoiceAssistant\voices`). Only use a voice you have the right to use.
+- **Speech server**: anything with OpenAI's `/v1/audio/speech`, such as OpenAI itself (`gpt-4o-mini-tts`, with an optional speaking style) or Kokoro-FastAPI,
+  Orpheus-FastAPI, Chatterbox-TTS-API or Fish Speech on this PC. Settings `tts_server_url`, `tts_server_model`, `tts_server_voices`, `tts_server_instructions`;
+  the key is kept in Credential Manager (for api.openai.com the saved OpenAI key is used when it has none of its own).
+- **ElevenLabs**: your account's voices once its key is saved; model `elevenlabs_model` (default `eleven_flash_v2_5`).
+
+With the online options the text of every spoken reply is sent to that company. If any of these (or the Chatterbox cloned voice) cannot speak a sentence, the built-in voice
+says it instead; after 3 failures in a row the built-in voice is used for 60 seconds. `python -m voice_assistant audition` writes a sample of every voice and an `index.html`
+to compare them by ear. Pocket has been run on this PC (first sentence in about half a second on the CPU); OpenAI, ElevenLabs and local speech servers are tested with fakes only.
+Pocket's licence is unclear for paid use (see `THIRD_PARTY_NOTICES.md`), so it is never bundled.
 
 ### Using your own voice model
 
@@ -464,6 +481,14 @@ have not been run against the real services because no keys are saved.
 Each turn shows first-text and first-audio time, tagged local/cloud. They are measured from the
 recognizer's end-of-speech detection, which already includes its trailing-silence wait (0.8 s rule),
 so add that when comparing with total perceived delay. `MetricsLog.summary()` gives medians.
+
+### Sharing the graphics card with a game
+
+The model server (LM Studio's `llama-server.exe`) and the cloned-voice server run at **below normal graphics priority** (Settings > AI > "AI priority on the graphics card":
+normal, below normal or lowest; restart to apply). Windows then gives a game or a video the card first and the AI the leftovers: with nothing else running it still
+uses the whole card, and while a game needs all of it the AI slows down instead of the game. This is a priority, not a fixed percentage. It is checked every 20 seconds, so
+a reloaded model is lowered too. In LM Studio, a smaller **Evaluation Batch Size** (for example 512 instead of 2048) breaks the AI's work into shorter pieces that a game's
+frames can slip between. Memory is separate: `vram_reserve_gb` only advises a model size. Verified: Windows accepted the change on the live model server; not yet measured in a VR session.
 
 ### Status and not yet verified
 

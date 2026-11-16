@@ -30,6 +30,14 @@ Generated from the installed packages' metadata. **Not legal advice; verify each
 | Kokoro English v0.19 (voices) | k2-fsa/sherpa-onnx releases | Apache-2.0 (LICENSE file ships with the model) |
 | Piper en_US amy low (fallback voice) | k2-fsa/sherpa-onnx releases | **unclear**: its MODEL_CARD only says 'See URL' (mimic3-voices dataset). Do not ship or advertise it until confirmed; Kokoro alone is enough |
 | Zipformer KWS (wake word) | k2-fsa/sherpa-onnx releases | Apache-2.0 per its README |
+| Pocket TTS by Kyutai (optional voice that copies a recording), sherpa-onnx conversion | k2-fsa/sherpa-onnx releases (`sherpa-onnx-pocket-tts-2026-01-26`), downloaded only when the user presses Download | **Unclear: do not bundle or advertise it in a paid build.** The archive's `LICENSE` file is Creative Commons Attribution 4.0, but its `README.md` says "It is for non-commercial" and points to the ONNX export's licence on Hugging Face. Until that is resolved it stays a download the user chooses, credited to Kyutai and to KevinAHM's ONNX export. Voice recordings the user adds are theirs; the app tells them to use only voices they have the right to use |
+
+## Online services (only when the user sets them up)
+
+| Service | What is sent | Note |
+|---|---|---|
+| OpenAI speech (`/v1/audio/speech`) or another server set as the speech server | The text of each spoken reply | The user's own account and key; the service's terms apply |
+| ElevenLabs | The text of each spoken reply | The user's own account and key; the service's terms apply |
 
 ## Phone app only
 

@@ -14,7 +14,7 @@ import numpy as np
 from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QPlainTextEdit, QSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QGroupBox, QInputDialog, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QDoubleSpinBox, QFileDialog, QPlainTextEdit, QSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -36,7 +36,8 @@ from .pdf_tools import PdfStore
 from .skill_tools import build_skill_tools
 from .skills import SkillLibrary
 from .metrics import TurnMetrics
-from .models import AccurateRecognizer, ModelsMissing, SherpaRecognizer, SherpaWakeWord, load_synth
+from .models import MODEL_SPECS, AccurateRecognizer, ModelsMissing, SherpaRecognizer, SherpaWakeWord, is_installed, load_synth, shown_voices
+from .tts_engines import ELEVEN_KEY, SERVER_KEY, add_voice_file, voice_engines
 from .permissions import FolderPolicy
 from .routing import double_voice_warnings, listen_routes
 from .delegate import UsageLog, build_delegate_tools
@@ -76,6 +77,7 @@ from .theme import ACCENTS, ICON_FONT, STATE_COLORS, STYLE, build_style, window_
 from .agent_tools import Timers, build_agent_tools, capabilities_prompt
 from .apps import AppCatalog
 from .tools import build_file_tools
+from .gpu_priority import GpuCourtesy
 from .vr import VrWatcher
 
 
@@ -116,6 +118,7 @@ class Bridge(QObject):
     new_chat_requested = Signal()  # the phone's New chat button (arrives on the phone link's thread)
     gui_call = Signal(object)  # run a function on the window's thread (used by the phone link, which runs on its own)
     library_changed = Signal()  # the reference library finished indexing: refresh its status and the assistant's prompt
+    voices_changed = Signal()  # a voice engine's list arrived or changed (ElevenLabs, the cloned voice, an added recording): refill the voice picker
 
 
 def icon_button(glyph: str, tip: str, checkable: bool = False) -> QPushButton:
@@ -590,6 +593,7 @@ class MainWindow(QMainWindow):
         self.bridge.attachments_changed.connect(self._attachments_changed)
         self.bridge.new_chat_requested.connect(self._new_chat)
         self.bridge.library_changed.connect(self._library_changed)
+        self.bridge.voices_changed.connect(self._fill_voice_box)
         self.bridge.gui_call.connect(lambda fn: fn())
         self.setAcceptDrops(True)
         self.chat = Chat()
@@ -696,6 +700,8 @@ class MainWindow(QMainWindow):
         self.vr_watcher = VrWatcher(b.vr.emit, cfg.vr_processes, cfg.vr_poll_s)
         if cfg.vr_autoswitch:
             self.vr_watcher.start()
+        self.gpu_courtesy = GpuCourtesy(cfg.gpu_priority)  # games and video go first on the graphics card; the AI uses what is left
+        self.gpu_courtesy.start()
         self._on_state("idle")
         self.setWindowOpacity(cfg.opacity)
         if cfg.always_on_top:
@@ -1011,6 +1017,7 @@ class MainWindow(QMainWindow):
         form.addRow(clone_file)
         form.addRow(clone_check)
         form.addRow(self._clone_status)
+        self._lifelike_rows(form)
         sens =QSlider(Qt.Horizontal, minimum=0, maximum=100, value=self._sens_from_threshold(cfg.wake_threshold))
         sens.setToolTip("Right: reacts more easily (but may wake on other sounds)")
         sens.valueChanged.connect(self._set_wake_sensitivity)
@@ -1034,6 +1041,14 @@ class MainWindow(QMainWindow):
         form.use("AI", advanced=True)
         form.addRow("Graphics memory to keep free for games", reserve)
         form.addRow(info)
+        prio = QComboBox()
+        for key, label in (("normal", "Normal"), ("below_normal", "Below normal (recommended)"), ("idle", "Lowest")):
+            prio.addItem(label, key)
+        prio.setCurrentIndex(max(prio.findData(cfg.gpu_priority), 0))
+        prio.setToolTip("The model server (LM Studio) and the cloned-voice server run at this priority on the graphics card, so a game or video gets the card first "
+                        "and the AI uses what is left. With nothing else running it still gets the whole card. Restart the assistant to apply.")
+        prio.currentIndexChanged.connect(lambda _i: self._set_field("gpu_priority", prio.currentData()))
+        form.addRow("AI priority on the graphics card (restart to apply)", prio)
         fwd = QCheckBox("Send my microphone to the second speaker (for game voice chat)")
         fwd.setToolTip("Replaces Windows 'Listen to this device'. Follows the VR mic when VR auto-switch is active.")
         fwd.setChecked(cfg.mic_forward)
@@ -1428,7 +1443,8 @@ class MainWindow(QMainWindow):
             "recognizer": lambda: SherpaRecognizer(models / "asr", end_silence_s=cfg.end_of_speech_s),
             "accurate": lambda: AccurateRecognizer(models / "asr2", cfg.tts_threads) if cfg.accurate_asr and (models / "asr2").is_dir() else None,
             "synth": lambda: load_synth(models, cfg.tts_speed, cfg.tts_threads, cfg.tts_voice, cfg.custom_voice_dir, cfg.chatterbox_url, cfg.chatterbox_launch,
-                                        on_clone_ready=lambda: self.bridge.note.emit("Your cloned voice is ready.")),
+                                        on_clone_ready=lambda: (self.bridge.note.emit("Your cloned voice is ready."), self.bridge.voices_changed.emit()),
+                                        extra=voice_engines(cfg, models, config_dir() / "voices", on_voices=self.bridge.voices_changed.emit)),
             "wake": lambda: SherpaWakeWord(models / "kws", cfg.wake_phrase, threshold=cfg.wake_threshold) if cfg.wake_word_enabled else None,
         }
         with ThreadPoolExecutor(len(factories), thread_name_prefix="load") as pool:  # the models load side by side: a quicker start
@@ -1602,17 +1618,34 @@ class MainWindow(QMainWindow):
         if not self.synth:
             return
         box = QComboBox()
-        for gender in ("female", "male", "other"):
-            for v in self.synth.voices:
-                if v.gender == gender:
-                    box.addItem(f"{gender.title()} \u2014 {v.label}" if gender != "other" else v.label, v.id)
+        self._voice_box = box
         cur = self.synth.set_voice(self.cfg.tts_voice)
-        box.setCurrentIndex(max(box.findData(cur.id), 0))
+        self._fill_voice_box(cur.id)
         box.setToolTip("Install the Kokoro model (fetch-models kokoro) for more natural voices" if self.synth.engine == "piper" else "")
         box.currentIndexChanged.connect(lambda _i: self._set_voice(box.currentData()))
-        self._voice_box = box
         self._form.use("Voice")
         self._form.insertRow(0, "Voice", box)
+        every = QCheckBox("Show every installed voice")
+        every.setToolTip("Off: only the voices picked as the best sounding, plus your own voices. The others stay installed.")
+        every.setChecked(self.cfg.tts_show_all_voices)
+        every.toggled.connect(lambda v: (self._set_field("tts_show_all_voices", v), self._fill_voice_box()))
+        self._form.insertRow(1, "", every)
+
+    def _fill_voice_box(self, current: str | None = None) -> None:
+        """Built-in voices by gender, then the other engines' voices (each labelled with its engine). Refilled when a list changes."""
+        box = getattr(self, "_voice_box", None)
+        if box is None or not self.synth:
+            return
+        current = current or box.currentData() or self.cfg.tts_voice
+        box.blockSignals(True)
+        box.clear()
+        voices = shown_voices(self.synth.voices, None if self.cfg.tts_show_all_voices else self.cfg.tts_voice_list, current)
+        for gender in ("female", "male", "other"):
+            for v in voices:
+                if v.gender == gender:
+                    box.addItem(f"{gender.title()} \u2014 {v.label}" if gender != "other" else v.label, v.id)
+        box.setCurrentIndex(max(box.findData(current), 0))
+        box.blockSignals(False)
 
     def _set_voice(self, voice_id: str) -> None:
         v = self.synth.set_voice(voice_id)
@@ -1996,6 +2029,107 @@ class MainWindow(QMainWindow):
         self.profile_edit.setPlainText(saved)
         self.session.agent.messages[0]["content"] = self._system_prompt()
         self.chat.add("bubbleNote", f"Profile saved ({len(saved)} characters).")
+
+    # ---- more lifelike voices ---------------------------------------------------
+    def _lifelike_rows(self, form: "TabbedForm") -> None:
+        """The 'More lifelike voices' group: Pocket (download + add a recording), a speech server, ElevenLabs. Changes apply after a restart."""
+        cfg, was = self.cfg, form.is_advanced
+        box = QGroupBox("More lifelike voices")
+        f = QFormLayout(box)
+        note = lambda text: QLabel(text, objectName="small", wordWrap=True)  # noqa: E731
+        f.addRow(note("Their voices join the Voice list above, marked with where they come from. Changes here apply after a restart. "
+                      "If one of them can't speak a sentence, the built-in voice says it instead."))
+        f.addRow(QLabel("<b>Pocket</b> (on this PC, copies a voice from a recording)", objectName="small"))
+        spec = next(s for s in MODEL_SPECS if s.slot == "pocket")
+        self._pocket_btn = QPushButton()
+        self._pocket_btn.clicked.connect(self._download_pocket)
+        self._show_pocket_state()
+        add = QPushButton("Add a voice from a recording…")
+        add.setToolTip("A .wav file with 5 to 15 seconds of one person speaking clearly, without music. It is copied into the voices folder.")
+        add.clicked.connect(self._add_recorded_voice)
+        f.addRow(self._pocket_btn)
+        f.addRow(add)
+        f.addRow(note(f"Download about {spec.size_mb} MB from the sherpa-onnx releases on GitHub. Only use a voice you have the right to use."))
+        f.addRow(QLabel("<b>Speech server</b> (OpenAI, or a voice server you run)", objectName="small"))
+        f.addRow(note("With an online address such as api.openai.com, the text of every spoken reply is sent to that company. A server on this PC keeps it here."))
+        fields = (("tts_server_url", "Address", "https://api.openai.com/v1, or http://127.0.0.1:8880/v1 for a server on this PC"),
+                  ("tts_server_model", "Model", "gpt-4o-mini-tts"), ("tts_server_voices", "Voices", "alloy, coral, onyx (comma separated)"),
+                  ("tts_server_instructions", "Speaking style", "optional, e.g. Warm and relaxed, like a friend"))
+        for name, label, hint in fields:
+            edit = QLineEdit(getattr(cfg, name))
+            edit.setPlaceholderText(hint)
+            edit.editingFinished.connect(lambda n=name, e=edit: self._set_field(n, e.text().strip()))
+            f.addRow(label, edit)
+        srv_key = QPushButton("Set speech server key…")
+        srv_key.setToolTip("Kept in Windows Credential Manager. For api.openai.com your saved OpenAI key is used when this is empty.")
+        srv_key.clicked.connect(lambda: self._ask_voice_key(SERVER_KEY, "Speech server key", "Paste the speech server's API key:"))
+        f.addRow(srv_key)
+        f.addRow(QLabel("<b>ElevenLabs</b> (online)", objectName="small"))
+        f.addRow(note("The text of every spoken reply is sent to ElevenLabs and uses your account's credits. Your account's voices appear in the list."))
+        el_model = QLineEdit(cfg.elevenlabs_model)
+        el_model.setPlaceholderText("eleven_flash_v2_5")
+        el_model.editingFinished.connect(lambda: self._set_field("elevenlabs_model", el_model.text().strip() or "eleven_flash_v2_5"))
+        el_key = QPushButton("Set ElevenLabs key…")
+        el_key.setToolTip("Kept in Windows Credential Manager. Without a key ElevenLabs is off.")
+        el_key.clicked.connect(lambda: self._ask_voice_key(ELEVEN_KEY, "ElevenLabs key", "Paste your ElevenLabs API key:"))
+        f.addRow("Model", el_model)
+        f.addRow(el_key)
+        form.advanced(False)
+        form.addRow(box)
+        form.advanced(was)
+
+    def _show_pocket_state(self) -> None:
+        spec = next(s for s in MODEL_SPECS if s.slot == "pocket")
+        done = is_installed(Path(self.cfg.models_dir), "pocket")
+        self._pocket_btn.setText("Pocket is installed" if done else f"Download Pocket (~{spec.size_mb} MB)")
+        self._pocket_btn.setEnabled(not done)
+
+    def _download_pocket(self) -> None:
+        from .setup_wizard import _Downloader
+
+        spec = next(s for s in MODEL_SPECS if s.slot == "pocket")
+        if QMessageBox.question(self, "Download Pocket?", f"Download {spec.name} (about {spec.size_mb} MB) from the sherpa-onnx releases on GitHub?\n\n"
+                                "Read its licence on the model card before sharing it.") != QMessageBox.Yes:
+            return
+        self._pocket_btn.setEnabled(False)
+        self._pocket_dl = _Downloader([spec], Path(self.cfg.models_dir))
+        self._pocket_dl.progress.connect(lambda _n, frac: self._pocket_btn.setText(f"Downloading Pocket… {int(frac * 100)}%"))
+        self._pocket_dl.finished_all.connect(self._pocket_downloaded)
+        self._pocket_dl.start()
+
+    def _pocket_downloaded(self, errors: list) -> None:
+        self._show_pocket_state()
+        self.chat.add("bubbleErr" if errors else "bubbleNote", ("Pocket download failed: " + "; ".join(errors)) if errors else "Pocket is installed. Restart the assistant to use its voices.")
+
+    def _add_recorded_voice(self) -> None:
+        f, _ = QFileDialog.getOpenFileName(self, "Choose a recording of the voice", "", "WAV recordings (*.wav)")
+        if not f:
+            return
+        try:
+            dest = add_voice_file(Path(f), config_dir() / "voices")
+        except (OSError, ValueError) as e:
+            self._on_error(str(e))
+            return
+        vid = f"pocket:{dest.stem}"
+        if vid not in self.cfg.tts_voice_list:
+            self._set_field("tts_voice_list", [*self.cfg.tts_voice_list, vid])
+        if self.synth is not None and hasattr(self.synth, "refresh_voices"):
+            self.synth.refresh_voices()
+            self._fill_voice_box()
+        listed = any(v.id == f"pocket:{dest.stem}" for v in (self.synth.voices if self.synth else []))
+        then = ("It is in the Voice list now." if listed else "Restart the assistant to see it in the Voice list."
+                if is_installed(Path(self.cfg.models_dir), "pocket") else "Download Pocket to speak with it.")
+        self.chat.add("bubbleNote", f"Added the voice \"{dest.stem}\". {then}")
+
+    def _ask_voice_key(self, name: str, title: str, text: str) -> None:
+        key, ok = QInputDialog.getText(self, title, text, QLineEdit.Password)
+        if ok and key.strip():
+            try:
+                save_key(name, key)
+            except Exception as e:
+                self._on_error(f"Could not save the key: {e}")
+                return
+            self.chat.add("bubbleNote", f"{title} saved. Restart the assistant to use it.")
 
     def _pick_voice_folder(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Folder with your voice model (.onnx, tokens.txt, espeak-ng-data)")
@@ -2761,6 +2895,8 @@ class MainWindow(QMainWindow):
         self.hide()  # the window goes at once; the clean-up below happens out of sight
         save_config(self.cfg)
         self.timer.stop()
+        if getattr(self, "gpu_courtesy", None):
+            self.gpu_courtesy.stop()
         if getattr(self, "_share", None):
             self._share.stop()
         if getattr(self, "scheduler", None):

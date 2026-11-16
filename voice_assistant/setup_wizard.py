@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 from .audio_io import list_devices
 from .config import Config, save_config
 from .hardware import detect_gpus, recommend
-from .models import MODEL_SPECS, fetch_model
+from .models import MODEL_SPECS, fetch_model, is_installed
 from .providers import save_key
 
 LMSTUDIO_URL = "https://lmstudio.ai/download"
@@ -95,7 +95,7 @@ class ModelsPage(QWizardPage):
         col = QVBoxLayout(self)
         self.boxes = []
         for spec in MODEL_SPECS:
-            installed = (Path(cfg.models_dir) / spec.slot / "tokens.txt").exists()
+            installed = is_installed(Path(cfg.models_dir), spec.slot)
             cb = QCheckBox(f"{spec.name} — {spec.note} (~{spec.size_mb} MB)" + ("  [installed]" if installed else ""))
             cb.setChecked(not installed and spec.slot in ("asr", "kokoro", "asr2"))
             cb.setEnabled(not installed)
