@@ -222,6 +222,12 @@ def _grab(path: Path, plan: Callable[[float], list[float]], edge: int) -> tuple[
         if player.mediaStatus() != QMediaPlayer.LoadedMedia or player.duration() <= 0:
             raise VideoError("this computer cannot read that video" + (f" ({errors[0]})" if errors else ""))
         duration = player.duration() / 1000.0
+        # Pausing the moment the file is loaded leaves newer Qt backends with a pipeline that never delivers a picture, so play until the
+        # first one arrives (or a short time passes), then pause.
+        want["t"] = -1.0
+        player.play()
+        wait(2000)
+        want["t"], want["image"] = None, None
         player.pause()
         frames: list[Frame] = []
         for t in plan(duration):
